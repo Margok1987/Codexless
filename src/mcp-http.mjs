@@ -1,6 +1,7 @@
 import http from "node:http";
 import { createRequire } from "node:module";
 import { createPublicRuntime } from "./public-runtime.mjs";
+import { handleRecentCallHttpRequest } from "./recent-call-http.mjs";
 
 const require = createRequire(import.meta.url);
 const { createMcpHandler } = require("@modelcontextprotocol/server");
@@ -33,6 +34,7 @@ const server = http.createServer(async (req, res) => {
     if (!validateHost(req, res)) return;
     if (!validateOrigin(req, res)) return;
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    if (handleRecentCallHttpRequest({ req, res, url, diagnostics: runtime.recentCallDiagnostics })) return;
     if (req.method === "GET" && (url.pathname === "/healthz" || url.pathname === "/readyz")) {
       res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
       res.end(JSON.stringify({
@@ -42,6 +44,16 @@ const server = http.createServer(async (req, res) => {
         version: runtime.version,
         surfaceVersion: runtime.surfaceVersion,
         toolCount: runtime.toolNames.length,
+        health: {
+          core: { status: "ok" },
+          capabilities: {
+            browserReader: { status: "not_checked", reason: "use_codex_browser_status_or_doctor" },
+          },
+          optionalDependencies: { status: "not_checked" },
+        },
+        diagnostics: {
+          recentCalls: { persistence: runtime.recentCallDiagnostics.persistenceHealth() },
+        },
       }));
       return;
     }

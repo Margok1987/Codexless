@@ -126,6 +126,77 @@ nodeRepl.write(JSON.stringify(__cxTabs.map((tab) => ({
     };
   }
 
+  async tabBinding({ tabRef, cwd = this.#defaultCwd }) {
+    const effectiveCwd = path.resolve(cwd);
+    if (typeof tabRef !== "string" || !tabRef) {
+      throw new BrowserReaderError("BROWSER_TAB_REF_REQUIRED", "tabRef is required; call codex.browser_tabs first");
+    }
+    await this.#requireReady(effectiveCwd);
+    const state = this.#tabs.get(tabRef);
+    if (!state) {
+      throw new BrowserReaderError(
+        "BROWSER_TAB_REF_UNKNOWN",
+        `unknown or expired browser tabRef: ${tabRef}`,
+        ["Call codex.browser_tabs again and use a fresh tabRef from the current Chrome session."]
+      );
+    }
+    return { ...state, cwd: effectiveCwd };
+  }
+
+  adoptProviderTab({ providerTabId, title = null, url = null, lastOpened = null }) {
+    if (typeof providerTabId !== "string" || !providerTabId) {
+      throw new BrowserReaderError("BROWSER_PROTOCOL_ERROR", "providerTabId is required to adopt a Browser tab");
+    }
+    let tabRef = this.#providerToRef.get(providerTabId);
+    if (!tabRef) {
+      tabRef = `browser_tab_${randomUUID()}`;
+      this.#providerToRef.set(providerTabId, tabRef);
+    }
+    const state = {
+      tabRef,
+      providerTabId,
+      contextGeneration: this.#contextGeneration,
+      title: stringOrNull(title),
+      url: stringOrNull(url),
+      lastOpened: stringOrNull(lastOpened),
+      seenAt: Date.now(),
+    };
+    this.#tabs.set(tabRef, state);
+    return publicTab(state);
+  }
+
+  updateTabState(tabRef, patch = {}) {
+    const state = this.#tabs.get(tabRef);
+    if (!state) return null;
+    const current = {
+      ...state,
+      ...(Object.hasOwn(patch, "title") ? { title: stringOrNull(patch.title) } : {}),
+      ...(Object.hasOwn(patch, "url") ? { url: stringOrNull(patch.url) } : {}),
+      ...(Object.hasOwn(patch, "lastOpened") ? { lastOpened: stringOrNull(patch.lastOpened) } : {}),
+      seenAt: Date.now(),
+    };
+    this.#tabs.set(tabRef, current);
+    return publicTab(current);
+  }
+
+  forgetTab(tabRef, providerTabId = null) {
+    const state = this.#tabs.get(tabRef);
+    if (!state) return false;
+    if (providerTabId !== null && state.providerTabId !== providerTabId) return false;
+    this.#tabs.delete(tabRef);
+    if (this.#providerToRef.get(state.providerTabId) === tabRef) this.#providerToRef.delete(state.providerTabId);
+    return true;
+  }
+
+  get generation() {
+    this.#syncGeneration();
+    return this.#contextGeneration;
+  }
+
+  async runBrowserJson({ cwd = this.#defaultCwd, body, title, mutationKind = null, expectedGeneration = null }) {
+    return this.#runJson(path.resolve(cwd), body, title, { mutationKind, expectedGeneration });
+  }
+
   async readTab({ tabRef, cwd = this.#defaultCwd, maxChars = DEFAULT_MAX_SNAPSHOT_CHARS }) {
     const effectiveCwd = path.resolve(cwd);
     if (typeof tabRef !== "string" || !tabRef) {
@@ -290,7 +361,7 @@ nodeRepl.write(JSON.stringify(__cxBackends.map((backend) => ({
     return Array.isArray(result) ? result.map(sanitizeBackend) : [];
   }
 
-  async #runJson(cwd, body, title, { expectedGeneration = null } = {}) {
+  async #runJson(cwd, body, title, { mutationKind = null, expectedGeneration = null } = {}) {
     const clientUrl = await this.#resolveBrowserClientUrl(cwd);
     const bootstrap = `
 if (globalThis.__codexlessBrowserAgent?.browsers == null) {
@@ -317,6 +388,13 @@ if (globalThis.__codexlessBrowserAgent?.browsers == null) {
           ["Call codex.browser_tabs again and use a fresh tabRef from the current runtime generation."]
         );
       }
+      if (mutationKind) {
+        throw new BrowserReaderError(
+          `BROWSER_${String(mutationKind).toUpperCase()}_RESULT_UNCERTAIN`,
+          `Browser ${mutationKind} request may have been dispatched but its response was not received reliably: ${message}`,
+          ["Read current Browser/page state before deciding what to do next. Do not blindly replay the mutation."]
+        );
+      }
       throw classifyBrowserError(error);
     }
     if (response?.isError) {
@@ -324,6 +402,13 @@ if (globalThis.__codexlessBrowserAgent?.browsers == null) {
     }
     const text = typeof response?.text === "string" ? response.text.trim() : "";
     if (!text) {
+      if (mutationKind) {
+        throw new BrowserReaderError(
+          `BROWSER_${String(mutationKind).toUpperCase()}_RESULT_UNCERTAIN`,
+          `Browser ${mutationKind} request returned no usable response after dispatch may have occurred.`,
+          ["Read current Browser/page state before deciding what to do next. Do not blindly replay the mutation."]
+        );
+      }
       throw new BrowserReaderError(
         "BROWSER_EMPTY_RESPONSE",
         "Browser runtime returned no text result",
@@ -333,6 +418,13 @@ if (globalThis.__codexlessBrowserAgent?.browsers == null) {
     try {
       return JSON.parse(text);
     } catch {
+      if (mutationKind) {
+        throw new BrowserReaderError(
+          `BROWSER_${String(mutationKind).toUpperCase()}_RESULT_UNCERTAIN`,
+          `Browser ${mutationKind} request returned an unreadable response after dispatch may have occurred.`,
+          ["Read current Browser/page state before deciding what to do next. Do not blindly replay the mutation."]
+        );
+      }
       throw new BrowserReaderError(
         "BROWSER_PROTOCOL_ERROR",
         `Browser runtime returned non-JSON text: ${text.slice(0, 1000)}`,

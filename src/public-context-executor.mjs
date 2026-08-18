@@ -1,6 +1,10 @@
 import path from "node:path";
 import { CodexAppServerClient } from "./codex-app-server-client.mjs";
 import { readPreviewAccountPreflight } from "./codex-preview-account-preflight.mjs";
+import {
+  StockPromptInputSkillRoutingCore,
+  implicitSkillRoutingUnavailable,
+} from "./stock-prompt-input-skill-routing.mjs";
 
 const CHROME_SKILL_NAME = "chrome:control-chrome";
 const NODE_REPL_SERVER = "node_repl";
@@ -15,31 +19,41 @@ export class CodexPublicContextExecutor {
   #codexBin;
   #defaultCwd;
   #configOverrides;
+  #skillRouting;
   #generation = 0;
   #startPromise = null;
   #threadsByCwd = new Map();
 
-  constructor({ codexBin, defaultCwd, configOverrides = [], clientFactory = null }) {
+  constructor({
+    codexBin,
+    defaultCwd,
+    configOverrides = [],
+    clientFactory = null,
+    promptInputRunner = null,
+    runtimeKind,
+  }) {
     if (!codexBin) throw new Error("CodexPublicContextExecutor requires codexBin");
     if (!defaultCwd) throw new Error("CodexPublicContextExecutor requires defaultCwd");
     if (!Array.isArray(configOverrides) || !configOverrides.every((value) => typeof value === "string" && value.trim())) {
       throw new Error("configOverrides must be an array of non-empty strings");
     }
+    if (promptInputRunner !== null && typeof promptInputRunner !== "function") throw new Error("promptInputRunner must be null or a function");
+    if (typeof runtimeKind !== "string" || !runtimeKind.trim()) throw new Error("runtimeKind must be explicitly provided");
 
     this.#codexBin = codexBin;
     this.#defaultCwd = path.resolve(defaultCwd);
     this.#configOverrides = [...configOverrides];
+    const routingOptions = {
+      runtimeKind,
+      codexBin: this.#codexBin,
+      appServerCwd: this.#defaultCwd,
+      configOverrides: this.#configOverrides,
+    };
+    if (promptInputRunner) routingOptions.promptInputRunner = promptInputRunner;
+    this.#skillRouting = new StockPromptInputSkillRoutingCore(routingOptions);
     const options = {
       cwd: this.#defaultCwd,
-      launch: () => ({
-        command: this.#codexBin,
-        args: [
-          ...this.#configOverrides.flatMap((value) => ["-c", value]),
-          "app-server",
-          "--stdio",
-        ],
-        options: { cwd: this.#defaultCwd },
-      }),
+      launch: () => this.#skillRouting.appServerSpec(),
       requestTimeoutMs: 30_000,
       initializeCapabilities: { experimentalApi: true },
       clientInfo: {
@@ -70,7 +84,18 @@ export class CodexPublicContextExecutor {
 
   async projectContext({ cwd = this.#defaultCwd } = {}) {
     const effectiveCwd = path.resolve(cwd);
-    const started = await this.#request("thread/start", { cwd: effectiveCwd, ephemeral: true });
+    const method = "thread/start";
+    const params = { cwd: effectiveCwd, ephemeral: true };
+    const started = await this.#request(method, params);
+    let implicit;
+    try {
+      implicit = await this.#skillRouting.readImplicitFromThreadStart({ method, params, result: started });
+    } catch {
+      implicit = implicitSkillRoutingUnavailable(
+        "IMPLICIT_SKILLS_CORE_FAILED",
+        "implicit Skill routing failed closed without affecting project context"
+      );
+    }
     return {
       threadId: started?.thread?.id ?? null,
       cwd: started?.cwd ?? started?.thread?.cwd ?? effectiveCwd,
@@ -81,6 +106,7 @@ export class CodexPublicContextExecutor {
       approvalsReviewer: started?.approvalsReviewer ?? null,
       sandbox: started?.sandbox ?? null,
       cliVersion: started?.thread?.cliVersion ?? null,
+      skillRouting: { implicit },
     };
   }
 
@@ -94,8 +120,7 @@ export class CodexPublicContextExecutor {
 
   async skillList({ cwd = this.#defaultCwd, query = "" } = {}) {
     const effectiveCwd = path.resolve(cwd);
-    const result = await this.#request("skills/list", { cwds: [effectiveCwd], forceReload: false });
-    const skills = (result?.data ?? []).flatMap((row) => row?.skills ?? []);
+    const skills = await this.#readExplicitSkills(effectiveCwd);
     const needle = query.trim().toLowerCase();
     return {
       cwd: effectiveCwd,
@@ -108,8 +133,7 @@ export class CodexPublicContextExecutor {
 
   async skillRead({ name, cwd = this.#defaultCwd }) {
     const effectiveCwd = path.resolve(cwd);
-    const result = await this.#request("skills/list", { cwds: [effectiveCwd], forceReload: false });
-    const skills = (result?.data ?? []).flatMap((row) => row?.skills ?? []);
+    const skills = await this.#readExplicitSkills(effectiveCwd);
     const exact = skills.find((skill) => skill.name === name);
     const matches = exact ? [exact] : skills.filter((skill) => skill.name.toLowerCase().includes(name.toLowerCase()));
     if (matches.length !== 1) {
@@ -127,6 +151,11 @@ export class CodexPublicContextExecutor {
       path: skill.path,
       text: decodeBase64(read?.dataBase64),
     };
+  }
+
+  async #readExplicitSkills(effectiveCwd) {
+    const result = await this.#request("skills/list", { cwds: [effectiveCwd], forceReload: false });
+    return (result?.data ?? []).flatMap((row) => row?.skills ?? []);
   }
 
   async browserPrerequisites({ cwd = this.#defaultCwd } = {}) {

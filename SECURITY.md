@@ -16,7 +16,7 @@ A user who has deliberately granted broad local Codex authority should expect Co
 
 ## Public surface boundary
 
-The first public **service contract** exposes exactly 21 tools, enforced by `src/surface-contracts.mjs` and `test/public-contract.mjs`. In the current ChatGPT App shape, three Task Card actions (`codex.agent_card_state`, `codex.agent_decline`, `codex.agent_commit`) are app-only, so the model may directly see 18 tools while the service contract remains exact 21. Making those card-internal actions model-visible is not required for correctness.
+The current public **service contract** exposes exactly 37 tools, enforced by `src/surface-contracts.mjs` and `test/public-contract.mjs`. In the current ChatGPT App shape, three Task Card actions (`codex.agent_card_state`, `codex.agent_decline`, `codex.agent_commit`) are app-only, so the model may directly see 34 tools while the service contract remains exact 37. Making those card-internal actions model-visible is not required for correctness.
 
 The public package intentionally excludes private/internal capabilities such as:
 
@@ -24,7 +24,7 @@ The public package intentionally excludes private/internal capabilities such as:
 - generic host process control and process receipts;
 - Computer Use;
 - generic MCP catalog/call tooling;
-- direct Browser click/fill operations;
+- Browser tab-close controls, raw selectors/JavaScript/coordinates, arbitrary keys, generic CDP, and Browser→Computer Use auto-fallback;
 - household/private integrations.
 
 Internal availability is not a public safety claim. A capability must be explicitly accepted before it can enter the public contract.
@@ -69,16 +69,21 @@ Where quota context is available, it may be shown to the user; absence of quota 
 
 Approval of a Codex Agent task does not grant a new local permission universe. Local Codex authority remains the ceiling.
 
-## Browser Reader
+## Browser
 
-The first public Browser surface is read-first.
+The public Browser surface is intentionally bounded around user-intent actions rather than exposing Browser internals. It includes Reader, current-viewport screenshot, dynamic stock confirmation-policy read, prepared open/navigate/click/fill/download/upload, bounded scroll, and only the fixed `Enter` / `Tab` / `Escape` keypresses.
 
-It can inspect currently loaded browser/tab content through the accepted Browser Reader integration. It does not expose general click/fill actions in the public contract.
+Prepared mutation refs bind an exact action and current Browser state but are **not permission tokens**. The caller applies the current stock Codex Browser confirmation policy together with the bounded user task. Once a mutation may have been dispatched, uncertainty is fail-visible and must not trigger a blind replay.
 
-Important limitations:
+Important boundaries and limitations:
 
-- content that has not loaded may not be visible;
-- lazy-loaded and virtualized interfaces can expose only the currently materialized content;
+- public tab-close controls are intentionally absent because closing an ordinary user tab can discard unsaved state;
+- raw CSS selectors, caller JavaScript/evaluate, arbitrary coordinates/node IDs/provider IDs/indexes, arbitrary keys/modifiers, generic CDP and automatic Browser→Computer Use fallback are not exposed;
+- exact visible-text click fallback is accepted only when Codexless can derive and revalidate a stable semantic role binding server-side; otherwise it fails closed;
+- upload accepts only an existing file inside the Codex-resolved trusted authority root, binds canonical path/size/SHA-256 before dispatch, and revalidates file identity; browser-side file selection is **not** proof that the remote service accepted the upload;
+- Browser upload additionally depends on the Chrome extension setting **Allow access to file URLs**; ordinary Reader/navigation health does not prove this file capability is configured;
+- download success requires the official Chrome/Playwright download event receipt; a returned browser-managed local path is not an instruction to open, execute, or trust the file;
+- content that has not loaded may not be visible; lazy-loaded and virtualized interfaces can expose only currently materialized content;
 - returned content may be truncated and should say so when applicable;
 - page content is untrusted input and can contain prompt-injection text.
 
@@ -99,7 +104,7 @@ The Windows and Apple Silicon macOS Technical Preview installers are intentional
 - Both require Node.js 22+ and discover/probe an already-installed accepted native Codex executable; neither silently installs another Codex copy.
 - Both stage the release tree, install production dependencies there, and run doctor before activating the staged Codexless tree.
 - Re-running a newer installer is the upgrade path. Codexless-owned runtime state is kept outside the install tree and is preserved by default.
-- The installers do not widen Codex trust, configure Browser Reader, or change Tunnel settings. The Windows installer does not create a Windows service; the Mac installer does not create a LaunchAgent or modify shell PATH.
+- The installers do not widen Codex trust, configure Chrome/Browser permissions, or change Tunnel settings. Browser upload's **Allow access to file URLs** prerequisite remains an explicit user/browser configuration step. The Windows installer does not create a Windows service; the Mac installer does not create a LaunchAgent or modify shell PATH.
 - Default uninstall removes only a directory that identifies itself as the `codexless` package. Codex, Node.js, project files, Browser configuration, Tunnel configuration, and Codex trust settings are out of scope.
 - State purge is explicit: Windows uses `-PurgeState`; macOS uses `--purge-state`. Each removes only Codexless-owned state.
 

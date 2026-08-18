@@ -1,30 +1,44 @@
 import { createRequire } from "node:module";
 import { registerAgentPreviewTools } from "./agent-tools.mjs";
 import { registerBrowserReaderTools } from "./browser-reader-tools.mjs";
+import { registerBrowserOperatorTools } from "./browser-operator-tools.mjs";
 import { registerConstructionTools } from "./construction-tools.mjs";
 import { registerPublicContextTools } from "./public-context-tools.mjs";
+import { installRecentCallToolInstrumentation } from "./recent-call-diagnostics.mjs";
 import { PUBLIC_SERVER_VERSION, PUBLIC_SURFACE_VERSION } from "./surface-contracts.mjs";
 
 const require = createRequire(import.meta.url);
 const { McpServer } = require("@modelcontextprotocol/server");
 const z = require("zod/v4");
 
+const PUBLIC_BASE_INSTRUCTIONS =
+  "Codexless Public Technical Preview. Public surface is deliberately small: authority-bounded project construction, Codex project context and Skills, a narrow existing-login Chrome Browser surface, and explicit metered Codex Agent delegation with visible consent/usage state. Browser exposes Reader plus the reviewed bounded Operator slice: dynamic confirmation-policy read, current viewport screenshot, prepared exact single-tab close/open/navigate/click/fill/download/upload, bounded scroll, and fixed Enter/Tab/Escape. Prepared refs are exact-action bindings rather than permission tokens; mutation uncertainty is fail-visible/no-replay; tab close revalidates one exact current tab and never batch-closes or blindly retries; upload file selection is not remote acceptance; download success requires a Chrome download event receipt. Arbitrary keys, raw selectors/JavaScript/coordinates, Computer Use, generic MCP calls/catalogs, raw host filesystem/process Workbench controls, and private household capabilities remain absent. Remote callers cannot widen Codex permission profiles, sandbox, approval policy, trusted roots, or network authority. Model-free work and metered Codex Agent work are separate lanes.";
+
+export const PUBLIC_SKILL_ROUTING_INSTRUCTIONS =
+  "Simple tasks do not require bootstrap. For non-simple local project, code, file, or tool work, prefer codex.project_context(cwd); use codex.skill_read only when a Skill is materially relevant, and revisit project context or that Skill if stuck.";
+
+export const PUBLIC_SERVER_INSTRUCTIONS = `${PUBLIC_BASE_INSTRUCTIONS} ${PUBLIC_SKILL_ROUTING_INSTRUCTIONS}`;
+
 export function createPublicServerFactory({
   executor,
   authorityExecutor,
   publicContext,
   browserReader,
+  browserOperator,
   agentExecutor,
   meteredConsentMode = "off",
   meteredQuotaProvider = null,
   agentPreviewState = null,
+  recentCallDiagnostics,
   maxConcurrent = 1,
 }) {
   if (!executor) throw new Error("Codexless public server requires an authority executor");
   if (!authorityExecutor) throw new Error("Codexless public server requires authorityExecutor");
   if (!publicContext) throw new Error("Codexless public server requires publicContext");
   if (!browserReader) throw new Error("Codexless public server requires browserReader");
+  if (!browserOperator) throw new Error("Codexless public server requires browserOperator");
   if (!agentExecutor) throw new Error("Codexless public server requires agentExecutor");
+  if (!recentCallDiagnostics) throw new Error("Codexless public server requires recentCallDiagnostics");
   if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1 || maxConcurrent > 4) {
     throw new Error("maxConcurrent must be an integer between 1 and 4");
   }
@@ -49,10 +63,10 @@ export function createPublicServerFactory({
         description: "Local bridge that lets ChatGPT use accepted Codex-backed capabilities and explicitly escalate to Codex when needed.",
       },
       {
-        instructions:
-          "Codexless Public Technical Preview. Public surface is deliberately small: authority-bounded project construction, Codex project context and Skills, read-only Browser Reader, and explicit metered Codex Agent delegation with visible consent/usage state. Browser click/fill, Computer Use, generic MCP calls/catalogs, raw host filesystem/process Workbench controls, and private household capabilities are not part of this package. Remote callers cannot widen Codex permission profiles, sandbox, approval policy, trusted roots, or network authority. Model-free work and metered Codex Agent work are separate lanes.",
+        instructions: PUBLIC_SERVER_INSTRUCTIONS,
       }
     );
+    installRecentCallToolInstrumentation(server, recentCallDiagnostics);
 
     server.registerTool(
       "codex.command_exec",
@@ -103,6 +117,7 @@ export function createPublicServerFactory({
     registerPublicContextTools(server, publicContext);
     registerConstructionTools(server, { authorityExecutor });
     registerBrowserReaderTools(server, browserReader);
+    registerBrowserOperatorTools(server, browserOperator);
     registerAgentPreviewTools(server, {
       agentExecutor,
       authorityExecutor,

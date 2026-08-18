@@ -85,6 +85,100 @@ function quotaFallbackText(window, index) {
   return `${label}: ${remaining}${reset}`;
 }
 
+function portableShortTaskId(taskRef) {
+  const digest = createHash("sha256").update(String(taskRef), "utf8").digest("hex").slice(0, 10).toUpperCase();
+  return `C-${digest}`;
+}
+
+function portableLocale() {
+  const envLocale = process.env.LC_ALL || process.env.LC_MESSAGES || process.env.LANG || "";
+  if (envLocale) return envLocale.split(".")[0].replace(/_/g, "-");
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().locale || "en";
+  } catch {
+    return "en";
+  }
+}
+
+function portableStrings(locale = portableLocale()) {
+  const value = String(locale || "en").toLowerCase();
+  if (value.startsWith("zh")) {
+    return { call: "调用 Codex？", task: "任务", model: "模型", quota: "Codex 额度", left: "剩余", reset: "重置", unavailable: "当前未提供", reply: "请回复「Yes」或「No」。" };
+  }
+  if (value.startsWith("ja")) {
+    return { call: "Codexを呼び出しますか？", task: "タスク", model: "モデル", quota: "Codex 利用枠", left: "残り", reset: "リセット", unavailable: "現在は提供なし", reply: "「Yes」または「No」と返信してください。" };
+  }
+  return { call: "Call Codex?", task: "Task", model: "Model", quota: "Codex quota", left: "left", reset: "reset", unavailable: "not provided", reply: "Please reply \"Yes\" or \"No\"." };
+}
+
+function portableResetText(unixSeconds, locale = portableLocale()) {
+  if (!Number.isInteger(unixSeconds)) return "";
+  try {
+    return new Intl.DateTimeFormat(locale || undefined, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(unixSeconds * 1000));
+  } catch {
+    return new Date(unixSeconds * 1000).toLocaleString();
+  }
+}
+
+function portableQuotaText(window, index, locale = portableLocale()) {
+  const strings = portableStrings(locale);
+  const label = quotaWindowLabel(window, index);
+  const remaining = Number.isInteger(window?.remainingPercent) ? `${window.remainingPercent}% ${strings.left}` : strings.unavailable;
+  const reset = portableResetText(window?.resetsAt, locale);
+  return `${label}：${remaining}${reset ? ` · ${reset} ${strings.reset}` : ""}`;
+}
+
+function portableDisplayWidth(value) {
+  let width = 0;
+  for (const char of String(value ?? "")) {
+    const code = char.codePointAt(0) ?? 0;
+    const wide = code >= 0x1100 && (
+      code <= 0x115f
+      || code === 0x2329 || code === 0x232a
+      || (code >= 0x2e80 && code <= 0xa4cf)
+      || (code >= 0xac00 && code <= 0xd7a3)
+      || (code >= 0xf900 && code <= 0xfaff)
+      || (code >= 0xfe10 && code <= 0xfe19)
+      || (code >= 0xfe30 && code <= 0xfe6f)
+      || (code >= 0xff01 && code <= 0xff60)
+      || (code >= 0xffe0 && code <= 0xffe6)
+      || (code >= 0x1f300 && code <= 0x1faff)
+    );
+    width += wide ? 2 : 1;
+  }
+  return width;
+}
+
+function portableWrap(value, maxWidth = 44) {
+  const lines = [];
+  let line = "";
+  let width = 0;
+  for (const char of String(value ?? "")) {
+    const charWidth = portableDisplayWidth(char);
+    if (line && width + charWidth > maxWidth) {
+      lines.push(line);
+      line = "";
+      width = 0;
+    }
+    line += char;
+    width += charWidth;
+  }
+  if (line || !lines.length) lines.push(line);
+  return lines;
+}
+
+function portableFrame(lines, width = 44) {
+  const framed = [`┌${"─".repeat(width + 2)}┐`];
+  for (const raw of lines) {
+    for (const line of portableWrap(raw, width)) {
+      const padding = " ".repeat(Math.max(0, width - portableDisplayWidth(line)));
+      framed.push(`│ ${line}${padding} │`);
+    }
+  }
+  framed.push(`└${"─".repeat(width + 2)}┘`);
+  return framed;
+}
+
 function manualFallback(payload) {
   const status = payload?.status ?? "unknown";
   const quota = payload?.meteredConsent?.quota ?? payload?.taskCard?.quota ?? payload?.resourceReceipt?.accountQuota ?? null;
@@ -92,22 +186,35 @@ function manualFallback(payload) {
   const quotaLines = windows.length ? windows.map((window, index) => quotaFallbackText(window, index)) : ["Codex quota: unavailable"];
 
   if (status === "consent_required") {
+    const locale = portableLocale();
+    const strings = portableStrings(locale);
     const summary = compactOneLine(payload?.taskCard?.summary ?? "Codex task");
+    const requestedModel = payload?.execution?.requestedModel ?? payload?.taskCard?.requestedModel ?? null;
+    const model = requestedModel ? compactOneLine(requestedModel) : null;
+    const taskRef = payload?.taskRef ?? payload?.taskId ?? payload?.taskCard?.taskRef ?? null;
+    const taskId = taskRef ? portableShortTaskId(taskRef) : null;
+    const portableQuotaLines = windows.length
+      ? windows.map((window, index) => portableQuotaText(window, index, locale))
+      : [strings.unavailable];
+    const body = [strings.call, "", `${strings.task}：${summary}`];
+    if (model) body.push(`${strings.model}：${model}`);
+    body.push("", strings.quota, ...portableQuotaLines, "", strings.reply);
+    const lines = portableFrame(body);
     return {
-      kind: "task_card_required",
-      choices: [],
+      kind: "portable_card",
+      choices: ["Yes", "No"],
       summary,
+      taskId,
       quota: { windows },
-      requiresTaskCard: true,
+      requiresTaskCard: false,
       nextAction: "codex.agent_card_render",
-      lines: [
-        "Codex approval required",
-        `Task: ${summary}`,
-        "Codex quota",
-        ...quotaLines,
-        "Open or re-render the Codex Task Card to approve or decline.",
-        "No Codex turn has started. A chat reply alone cannot authorize this task.",
-      ],
+      decision: taskId ? {
+        approveTool: "codex.agent_commit",
+        declineTool: "codex.agent_decline",
+        taskId,
+      } : null,
+      lines,
+      text: lines.join("\n"),
     };
   }
 
@@ -575,6 +682,7 @@ export function registerAgentPreviewTools(server, {
         serviceTier: null,
         reasoningEffort: null,
       };
+      pending.manualFallback = manualFallback(pending);
       return pending;
     }
     if (!record.agentRef) throw new Error("prepared Codex task is authorized but its agentRef is not available yet");
@@ -589,6 +697,51 @@ export function registerAgentPreviewTools(server, {
     };
     if (isTerminalStatus(payload.status)) return freezeRecord(record, payload);
     return payload;
+  }
+
+  function preparedRecordByPortableTaskId(taskId) {
+    const matches = [...taskRecords.values()].filter((record) => portableShortTaskId(record.taskRef) === taskId);
+    if (matches.length !== 1) throw new Error("unknown, stale, or ambiguous Portable Card task ID");
+    const record = matches[0];
+    if (!record.consent?.consentRef) throw new Error("Portable Card task ID is not bound to a prepared metered task");
+    return record;
+  }
+
+  function declinePrepared(record) {
+    if (record.terminalSnapshot) return structuredClone(record.terminalSnapshot);
+    if (record.authorized) throw new Error("prepared Codex task already started and cannot be declined as a pre-call task");
+    record.declinedAt = Date.now();
+    return freezeRecord(record, {
+      agentRef: record.agentRef,
+      turnId: null,
+      status: "rejected",
+      pendingApproval: null,
+      finalResult: null,
+      resourceReceipt: null,
+      timing: { startedAt: null, endedAt: record.declinedAt, durationMs: 0 },
+      execution: { requestedModel: record.payload?.model ?? null, resolvedModel: null, modelProvider: null, serviceTier: null, reasoningEffort: null },
+      latestError: null,
+      events: [],
+      nextSeq: 0,
+      meteredConsent: { status: "rejected", quota: record.consent.quota },
+    });
+  }
+
+  function approvePrepared(record) {
+    if (record.terminalSnapshot) return { ...structuredClone(record.terminalSnapshot), duplicate: true };
+    if (record.declinedAt) return { ...structuredClone(record.terminalSnapshot ?? lostRecord(record)), duplicate: true };
+    const consentRef = record.consent?.consentRef;
+    if (!consentRef) throw new Error("prepared Codex task is missing its metered consentRef");
+    const approval = meteredConsent.approve({
+      action: record.action,
+      requestId: record.consent.requestId,
+      subjectRef: record.action === "send" ? record.agentRef : null,
+      payload: record.payload,
+      consentRef,
+    });
+    if (!approval.authorized) throw new Error("prepared Codex task approval did not authorize dispatch");
+    record.authorized = true;
+    return dispatchPrepared(record);
   }
 
   async function dispatchPrepared(record) {
@@ -681,7 +834,7 @@ export function registerAgentPreviewTools(server, {
     {
       title: "Start Codex Agent",
       description:
-        `Experimental Preview. Prepare one formal Codex agent thread/turn under Codexless's locally resolved Codex authority. Local metered consent mode is ${meteredConsent.mode}; when set to always, every unapproved logical start returns consent_required and quota context without starting a turn. requestId is a caller-stable idempotency key and MUST be reused if the same start is retried after an uncertain response. A returned consentRef identifies the prepared task but is never proof of approval: replaying it through this public tool cannot start Codex work. Only the server-side Task Card commit path may approve and dispatch the prepared task. model is optional; omit it to preserve Codex's current default routing. The caller cannot choose permission profile, sandbox, approval policy, roots, or network authority.`,
+        `Experimental Preview. Prepare one formal Codex agent thread/turn under Codexless's locally resolved Codex authority. Local metered consent mode is ${meteredConsent.mode}; when set to always, every unapproved logical start returns consent_required and quota context without starting a turn. requestId is a caller-stable idempotency key and MUST be reused if the same start is retried after an uncertain response. A returned consentRef identifies the prepared task but is never proof of approval: replaying it through this public tool cannot start Codex work. Approval normally occurs through the Rich Task Card; when the Host cannot render that UI, codex.agent_card_render returns a Portable Card and an explicit user Yes/No may be bound to that exact prepared task through codex.agent_commit / codex.agent_decline. model is optional; omit it to preserve Codex's current default routing. The caller cannot choose permission profile, sandbox, approval policy, roots, or network authority.`,
       inputSchema: z.object({
         prompt: z.string().min(1).max(200_000),
         requestId: z.string().min(1).max(512)
@@ -726,6 +879,7 @@ export function registerAgentPreviewTools(server, {
         pending.turnId = null;
         pending.timing = { startedAt: null, endedAt: null, durationMs: null };
         pending.execution = { requestedModel: model ?? null, resolvedModel: null, modelProvider: null, serviceTier: null, reasoningEffort: null };
+        pending.manualFallback = manualFallback(pending);
         return pending;
       }
       const record = directRecord({
@@ -744,7 +898,7 @@ export function registerAgentPreviewTools(server, {
     {
       title: "Render Prepared Codex Task Card",
       description:
-        "Read-only render step for a prepared metered Codex start/send. Call this only after codex.agent_start or codex.agent_send returns consent_required. It does not start or continue Codex work; it re-reads the server-bound prepared record and renders the confirmation card. The card itself calls app-only commit/show/approve/reject/cancel tools so later state updates do not remount the template.",
+        "Read-only render step for a prepared metered Codex start/send. Call this only after codex.agent_start or codex.agent_send returns consent_required. It does not start or continue Codex work; it re-reads the server-bound prepared record. Rich-UI Hosts can mount the Codex Task Card from outputTemplate; Hosts that cannot render that UI still receive the same confirmation as a framed Portable Card in ordinary MCP text content. Rich Card buttons use the card capability path; Portable Card Yes/No decisions bind the exact prepared task through codex.agent_commit / codex.agent_decline.",
       inputSchema: z.object({ consentRef: z.string().min(1).max(512) }).strict(),
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       _meta: {
@@ -763,7 +917,8 @@ export function registerAgentPreviewTools(server, {
       () => {
         const record = preparedMetered.get(consentRef);
         return record?.commitToken ? { codexlessCommitToken: record.commitToken } : {};
-      }
+      },
+      (payload) => payload?.manualFallback?.text ?? null
     )
   );
 
@@ -825,7 +980,7 @@ export function registerAgentPreviewTools(server, {
     {
       title: "Continue Codex Agent",
       description:
-        `Experimental Preview. Prepare one exact Codexless-owned Codex agent follow-up by opaque agentRef. The caller must deliberately choose the target agentRef; Codexless has no implicit "most recent agent" routing. Local metered consent mode is ${meteredConsent.mode}; when set to always, every unapproved logical send returns consent_required and quota context without starting a turn. requestId is a caller-stable idempotency key and MUST be reused if the same send is retried after an uncertain response. A returned consentRef identifies the prepared follow-up but is never proof of approval: replaying it through this public tool cannot start Codex work. Only the server-side Task Card commit path may approve and dispatch the prepared follow-up. model is optional and may override the model for this turn and subsequent turns. Active turns, stale parent turns, and pending approvals fail visibly; Codexless never auto-replays an accepted or uncertain send.`,
+        `Experimental Preview. Prepare one exact Codexless-owned Codex agent follow-up by opaque agentRef. The caller must deliberately choose the target agentRef; Codexless has no implicit "most recent agent" routing. Local metered consent mode is ${meteredConsent.mode}; when set to always, every unapproved logical send returns consent_required and quota context without starting a turn. requestId is a caller-stable idempotency key and MUST be reused if the same send is retried after an uncertain response. A returned consentRef identifies the prepared follow-up but is never proof of approval: replaying it through this public tool cannot start Codex work. Approval normally occurs through the Rich Task Card; when the Host cannot render that UI, codex.agent_card_render returns a Portable Card and an explicit user Yes/No may be bound to that exact prepared follow-up through codex.agent_commit / codex.agent_decline. model is optional and may override the model for this turn and subsequent turns. Active turns, stale parent turns, and pending approvals fail visibly; Codexless never auto-replays an accepted or uncertain send.`,
       inputSchema: z.object({
         agentRef: z.string().min(1).max(512),
         message: z.string().min(1).max(200_000),
@@ -890,6 +1045,7 @@ export function registerAgentPreviewTools(server, {
         pending.turnId = null;
         pending.timing = { startedAt: null, endedAt: null, durationMs: null };
         pending.execution = { requestedModel: model ?? null, resolvedModel: current.execution?.resolvedModel ?? null, modelProvider: current.execution?.modelProvider ?? null, serviceTier: current.execution?.serviceTier ?? null, reasoningEffort: current.execution?.reasoningEffort ?? null };
+        pending.manualFallback = manualFallback(pending);
         return pending;
       }
       const record = directRecord({
@@ -909,31 +1065,21 @@ export function registerAgentPreviewTools(server, {
     {
       title: "Decline Prepared Metered Codex Task",
       description:
-        "App-only terminal decline for one prepared Codex task card. It never starts Codex work. After decline the same consentRef is sealed; a cached Yes/commit cannot revive this task. A rerun requires a new requestId and a new task card.",
-      inputSchema: z.object({ consentRef: z.string().min(1).max(512) }).strict(),
+        "Decline exactly one prepared Codex task without starting Codex work. Rich Task Card callers use the opaque consentRef. Portable Card callers use only the exact short taskId carried in structured content, and should call this only after the user explicitly replies No to that displayed Portable Card. After decline the prepared task is terminal and cannot be revived by a cached commit.",
+      inputSchema: z.object({
+        consentRef: z.string().min(1).max(512).optional(),
+        taskId: z.string().regex(/^C-[A-F0-9]{10}$/).optional(),
+      }).strict(),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      _meta: { ui: { visibility: ["app"] } },
     },
-    async ({ consentRef }) => structured(async () => {
-      const record = preparedMetered.get(consentRef);
-      if (!record) throw new Error("unknown or stale prepared metered consentRef");
-      if (record.terminalSnapshot) return structuredClone(record.terminalSnapshot);
-      if (record.authorized) throw new Error("prepared Codex task already started and cannot be declined as a pre-call task");
-      record.declinedAt = Date.now();
-      return freezeRecord(record, {
-        agentRef: record.agentRef,
-        turnId: null,
-        status: "rejected",
-        pendingApproval: null,
-        finalResult: null,
-        resourceReceipt: null,
-        timing: { startedAt: null, endedAt: record.declinedAt, durationMs: 0 },
-        execution: { requestedModel: record.payload?.model ?? null, resolvedModel: null, modelProvider: null, serviceTier: null, reasoningEffort: null },
-        latestError: null,
-        events: [],
-        nextSeq: 0,
-        meteredConsent: { status: "rejected", quota: record.consent.quota },
-      });
+    async ({ consentRef, taskId }) => structured(async () => {
+      const portableMode = typeof taskId === "string";
+      if (portableMode === (typeof consentRef === "string")) {
+        throw new Error("provide exactly one of consentRef (Rich Card) or taskId (Portable Card)");
+      }
+      const record = portableMode ? preparedRecordByPortableTaskId(taskId) : preparedMetered.get(consentRef);
+      if (!record) throw new Error("unknown or stale prepared metered Codex task");
+      return declinePrepared(record);
     })
   );
 
@@ -942,16 +1088,25 @@ export function registerAgentPreviewTools(server, {
     {
       title: "Commit Prepared Metered Codex Task",
       description:
-        "App-only exact commit for a previously prepared metered Codex start/send. The Task Card must supply both the opaque consentRef and its separate card-only commit capability; Codexless retrieves the bound action, requestId, prompt/message, cwd and subject from server memory and cannot accept replacements at commit time. Repeated exact commits reuse the same idempotency key and never create a second logical turn.",
+        "Commit exactly one previously prepared metered Codex start/send. Rich Task Card callers must supply both consentRef and the separate card-only commitToken. Portable Card callers supply only the exact short taskId carried in structured content, and should call this only after the user explicitly replies Yes to that displayed Portable Card. In either mode Codexless retrieves the bound requestId, prompt/message, cwd, model, subject and authority from server memory; callers cannot replace them at commit time. Repeated exact commits never create a second logical turn.",
       inputSchema: z.object({
-        consentRef: z.string().min(1).max(512),
-        commitToken: z.string().min(1).max(512)
-          .describe("Task-Card-only capability token delivered outside model-visible structured content. It must match the exact prepared task."),
+        consentRef: z.string().min(1).max(512).optional(),
+        commitToken: z.string().min(1).max(512).optional()
+          .describe("Rich-Task-Card-only capability token delivered outside model-visible structured content. It must match the exact prepared task."),
+        taskId: z.string().regex(/^C-[A-F0-9]{10}$/).optional()
+          .describe("Exact short task ID from the Portable Card structured content. Use only after an explicit user Yes for that displayed task."),
       }).strict(),
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
-      _meta: { ui: { visibility: ["app"] } },
     },
-    async ({ consentRef, commitToken }) => structured(async () => {
+    async ({ consentRef, commitToken, taskId }) => structured(async () => {
+      const portableMode = typeof taskId === "string";
+      if (portableMode) {
+        if (consentRef || commitToken) throw new Error("Portable Card commit accepts only taskId");
+        return approvePrepared(preparedRecordByPortableTaskId(taskId));
+      }
+      if (!consentRef || !commitToken) {
+        throw new Error("Rich Task Card commit requires both consentRef and commitToken");
+      }
       const record = preparedMetered.get(consentRef);
       if (!record) throw new Error("unknown or stale prepared metered consentRef");
       if (record.terminalSnapshot) return { ...structuredClone(record.terminalSnapshot), duplicate: true };
@@ -959,16 +1114,7 @@ export function registerAgentPreviewTools(server, {
       if (!record.commitToken || commitToken !== record.commitToken) {
         throw new Error("Codex Task Card commit capability is missing or does not match this prepared task");
       }
-      const approval = meteredConsent.approve({
-        action: record.action,
-        requestId: record.consent.requestId,
-        subjectRef: record.action === "send" ? record.agentRef : null,
-        payload: record.payload,
-        consentRef,
-      });
-      if (!approval.authorized) throw new Error("prepared Codex task approval did not authorize dispatch");
-      record.authorized = true;
-      return dispatchPrepared(record);
+      return approvePrepared(record);
     })
   );
 
@@ -1046,12 +1192,13 @@ export function registerAgentPreviewTools(server, {
   );
 }
 
-async function structuredCard(task, extraMeta = null) {
+async function structuredCard(task, extraMeta = null, contentProjector = null) {
   try {
     const payload = await task();
     const projectedMeta = typeof extraMeta === "function" ? await extraMeta(payload) : extraMeta;
+    const projectedText = typeof contentProjector === "function" ? await contentProjector(payload) : contentProjector;
     return {
-      content: [{ type: "text", text: JSON.stringify(payload) }],
+      content: [{ type: "text", text: typeof projectedText === "string" && projectedText ? projectedText : JSON.stringify(payload) }],
       structuredContent: payload,
       _meta: { toolwireAgentState: payload, ...(projectedMeta && typeof projectedMeta === "object" ? projectedMeta : {}) },
       isError: false,

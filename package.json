@@ -1,6 +1,6 @@
 {
   "name": "codexless",
-  "version": "0.1.0-preview.0",
+  "version": "0.1.1-preview.0",
   "private": true,
   "license": "Apache-2.0",
   "description": "Windows and Apple Silicon macOS Technical Preview: let ChatGPT use accepted Codex-backed local capabilities and escalate to Codex only when needed.",
@@ -20,10 +20,23 @@
     "start:stdio": "node scripts/launch.mjs stdio",
     "start:http": "node scripts/launch.mjs http",
     "doctor": "node scripts/doctor.mjs",
-    "test:contract": "node test/public-command-policy.mjs && node test/public-contract.mjs",
+    "test:contract": "node test/release-identity.mjs && node test/lifecycle-contract.mjs && node test/release-discovery.mjs && node test/bootstrap-archive-policy.mjs && node test/bootstrap-persistence.mjs && node test/codex-version-gate.mjs && node test/stock-prompt-input-catalog.mjs && node test/public-command-policy.mjs && node test/public-contract.mjs",
     "test:consent": "node test/metered-consent.mjs && node test/agent-consent-card.mjs",
     "test:browser-reader": "node test/browser-reader-lifecycle.mjs",
-    "test": "node test/metered-consent.mjs && node test/agent-consent-card.mjs && node test/public-command-policy.mjs && node test/browser-reader-lifecycle.mjs && node test/public-contract.mjs"
+    "test:browser-operator": "node test/browser-operator-contract.mjs",
+    "test:diagnostics": "node test/recent-call-diagnostics.mjs && node test/recent-call-http.mjs && node test/doctor-health.mjs",
+    "test": "node test/release-identity.mjs && node test/lifecycle-contract.mjs && node test/installer-lifecycle-windows.mjs && node test/release-discovery.mjs && node test/bootstrap-archive-policy.mjs && node test/bootstrap-persistence.mjs && node test/bootstrap-updater-windows.mjs && node test/public-auto-update-check.mjs && node test/codex-version-gate.mjs && node test/stock-prompt-input-catalog.mjs && node test/recent-call-diagnostics.mjs && node test/recent-call-http.mjs && node test/doctor-health.mjs && node test/metered-consent.mjs && node test/agent-consent-card.mjs && node test/public-command-policy.mjs && node test/browser-reader-lifecycle.mjs && node test/browser-operator-contract.mjs && node test/public-contract.mjs",
+    "release:manifest": "node scripts/generate-release-manifest.mjs",
+    "release:check": "node scripts/check-release.mjs check",
+    "release:verify": "node scripts/check-release.mjs verify",
+    "bootstrap:update": "node scripts/bootstrap.mjs update",
+    "bootstrap:materialize": "node scripts/materialize-bootstrap.mjs",
+    "test:release-identity": "node test/release-identity.mjs",
+    "test:lifecycle": "node test/lifecycle-contract.mjs && node test/installer-lifecycle-windows.mjs",
+    "test:release-discovery": "node test/release-discovery.mjs",
+    "test:bootstrap": "node test/bootstrap-archive-policy.mjs && node test/bootstrap-persistence.mjs && node test/bootstrap-updater-windows.mjs",
+    "update:release": "node scripts/bootstrap.mjs update",
+    "test:auto-update": "node test/public-auto-update-check.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/node": "2.0.0",
@@ -51,6 +64,8 @@
     "README.zh-CN.md",
     "SECURITY.md",
     "EXPORT_SYNC.md",
-    "THIRD_PARTY_NOTICES.md"
+    "THIRD_PARTY_NOTICES.md",
+    "bin/codexless-update.cmd",
+    "bin/codexless-update.sh"
   ]
 }

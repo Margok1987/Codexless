@@ -1,4 +1,4 @@
-export const PUBLIC_SERVER_VERSION = "0.1.0-preview.0";
+export const PUBLIC_SERVER_VERSION = "0.1.1-preview.0";
 export const PUBLIC_SURFACE_VERSION = "codexless-public-preview-v1";
 
 export const PUBLIC_TOOL_NAMES = Object.freeze([
@@ -10,8 +10,26 @@ export const PUBLIC_TOOL_NAMES = Object.freeze([
   "codex.read_many",
   "codex.precise_edit",
   "codex.browser_status",
+  "codex.browser_confirmation_policy",
   "codex.browser_tabs",
   "codex.browser_read",
+  "codex.browser_screenshot",
+  "codex.browser_prepare_close_tab",
+  "codex.browser_close_tab",
+  "codex.browser_prepare_open_tab",
+  "codex.browser_open_tab",
+  "codex.browser_scroll",
+  "codex.browser_keypress",
+  "codex.browser_prepare_navigate",
+  "codex.browser_navigate",
+  "codex.browser_prepare_click",
+  "codex.browser_click",
+  "codex.browser_prepare_download",
+  "codex.browser_download",
+  "codex.browser_prepare_upload",
+  "codex.browser_upload",
+  "codex.browser_prepare_fill",
+  "codex.browser_fill",
   "codex.model_list",
   "codex.agent_start",
   "codex.agent_card_render",

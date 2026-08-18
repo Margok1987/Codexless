@@ -89,6 +89,20 @@ export async function readManyAuthorized({ authorityExecutor, paths, cwd, maxCha
   };
 }
 
+export async function resolveAuthorizedExistingFile({ authorityExecutor, requestedPath, cwd, access = "readOnly" }) {
+  const authority = await authorityExecutor.resolveAuthority({ cwd, access });
+  const root = await canonicalRoot(authority);
+  const filePath = await canonicalExistingFile({ requestedPath, cwd: authority.effectiveCwd, root });
+  const info = await stat(filePath);
+  return {
+    path: filePath,
+    byteLength: info.size,
+    cwd: authority.effectiveCwd,
+    trustedAncestor: root,
+    permissionProfile: authority.permissionProfile,
+  };
+}
+
 export async function preciseEditAuthorized({ authorityExecutor, path: requestedPath, expectedText, replacementText, expectedOccurrences = 1, expectedSha256, cwd, previewOnly = false }) {
   const authority = await authorityExecutor.resolveAuthority({ cwd, access: "inherit" });
   const root = await canonicalRoot(authority);

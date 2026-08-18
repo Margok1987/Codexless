@@ -61,7 +61,7 @@ The export must not bring in implementation or registration for:
 - generic host process / PTY controls or process receipts;
 - Computer Use;
 - generic MCP catalog or generic MCP call tools;
-- direct Browser click/fill actions;
+- Browser tab-close controls, raw selectors/JavaScript/coordinates, arbitrary keys, generic CDP, or Browser→Computer Use auto-fallback outside the accepted public Operator slice;
 - private household integrations;
 - local tunnel identities, tokens, endpoints, or machine-specific service configuration;
 - local test fixtures that contain user/project data.
@@ -82,7 +82,7 @@ For each upstream-to-public sync:
 8. Run `test/public-contract.mjs` through the public tree itself with `NODE_PATH` cleared. The contract intentionally poisons legacy `CODEX_TOOLBOX_*` variables so a regression cannot silently borrow household Toolwire configuration.
 9. Start and probe both stdio and HTTP entry points from the public tree.
 10. Verify HTTP binds only to loopback and health metadata does not expose the configured project path.
-11. Run `npm pack --dry-run` and inspect the exact packed file list. While the README advertises the current broad package bounds, verify the package remains under 100 KB compressed / under 0.5 MB unpacked; if either bound is exceeded, update the README in the same release rather than leaving a stale size claim.
+11. Run `npm pack --dry-run` and inspect the exact packed file list. Compare the measured compressed/unpacked size with the README's current package-size statement; if either published bound is exceeded, update the README in the same release rather than leaving a stale size claim. Package growth is a review signal, not permission to silently weaken the export boundary.
 12. Scan the public tree and packed file list for secrets, user-specific absolute paths, tunnel IDs/URLs, account identifiers, and private project names.
 13. Review `package.json`, lockfile, dependency versions, third-party notices, README, and SECURITY documentation for drift.
 14. Run the release Golden path before declaring the exported version releasable.

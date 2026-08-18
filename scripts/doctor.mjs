@@ -3,9 +3,15 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { CodexAppServerClient } from "../src/codex-app-server-client.mjs";
+import { CodexBrowserReaderExecutor } from "../src/browser-reader-executor.mjs";
 import { ACCEPTED_CODEX_VERSIONS, CodexAuthorityExecutor } from "../src/codex-authority-executor.mjs";
 import { probeCodexExecutable, redactHomePath, resolveCodexExecutable } from "../src/codex-bin.mjs";
+import { buildDoctorHealth, legacyNodeReplView, normalizeBrowserReaderHealth } from "../src/doctor-health.mjs";
 import { readJsonFile } from "../src/json-file.mjs";
+import { CodexPublicContextExecutor } from "../src/public-context-executor.mjs";
+import { createRecentCallDiagnostics, recentCallOptionsFromEnv } from "../src/recent-call-diagnostics.mjs";
+import { STOCK_RUNTIME_KIND } from "../src/stock-prompt-input-skill-routing.mjs";
+import { opportunisticCodexlessUpdateCheck } from "../src/public-update-check.mjs";
 import { PUBLIC_SERVER_VERSION, PUBLIC_SURFACE_VERSION, PUBLIC_TOOL_NAMES } from "../src/surface-contracts.mjs";
 
 const require = createRequire(import.meta.url);
@@ -22,8 +28,9 @@ let codexResolution = null;
 let codexProbe = null;
 let appServer = null;
 let projectContext = null;
-let browser = { status: "not_checked", reason: "conditional_feature" };
+let browser = normalizeBrowserReaderHealth({ status: "unavailable", reason: "not_checked" });
 let nodeRepl = { status: "not_checked", reason: "conditional_feature" };
+const recentCallDiagnostics = createRecentCallDiagnostics(recentCallOptionsFromEnv(process.env, { readOnly: true }));
 
 const supportedPlatform = process.platform === "win32" || (process.platform === "darwin" && process.arch === "arm64");
 record(
@@ -37,7 +44,7 @@ record(
 );
 const nodeMajor = Number.parseInt(process.versions.node.split(".")[0], 10);
 record("node", Number.isInteger(nodeMajor) && nodeMajor >= 22, `Node ${process.version}`, nodeMajor >= 22 ? null : "Node.js 22+ is required");
-record("public-surface", PUBLIC_TOOL_NAMES.length === 21, `${PUBLIC_SURFACE_VERSION}; ${PUBLIC_TOOL_NAMES.length} tools`);
+record("public-surface", PUBLIC_TOOL_NAMES.length === 39, `${PUBLIC_SURFACE_VERSION}; ${PUBLIC_TOOL_NAMES.length} tools`);
 
 for (const spec of ["@modelcontextprotocol/node", "@modelcontextprotocol/server", "zod"]) {
   try {
@@ -117,28 +124,21 @@ if (codexResolution?.path && codexProbe?.ok) {
     }
 
     try {
-      const skillsResult = await client.request("skills/list", { cwds: [runtimeCwd], forceReload: false });
-      const skills = (skillsResult?.data ?? []).flatMap((row) => row?.skills ?? []);
-      const chromeSkill = skills.find((skill) => skill?.name === "chrome:control-chrome" && skill?.enabled !== false);
-      const mcp = await client.request("mcpServerStatus/list", { detail: "toolsAndAuthOnly", limit: 100 });
-      const rows = Array.isArray(mcp?.data) ? mcp.data : [];
-      const codexApps = rows.find((server) => server?.name === "codex_apps");
-      const appTools = codexApps?.tools && typeof codexApps.tools === "object" ? Object.values(codexApps.tools) : [];
-      const browserTools = appTools.map((tool) => tool?.name).filter((name) => typeof name === "string" && name.startsWith("browser."));
-      const repl = rows.find((server) => server?.name === "node_repl");
-      const replTools = repl?.tools && typeof repl.tools === "object" ? Object.values(repl.tools).map((tool) => tool?.name).filter(Boolean) : [];
-      browser = chromeSkill?.path && browserTools.length
-        ? { status: "available", skill: "chrome:control-chrome", toolCount: browserTools.length }
-        : { status: "unavailable", reason: !chromeSkill?.path ? "chrome_skill_unavailable" : "browser_tools_unavailable", toolCount: browserTools.length };
-      nodeRepl = replTools.includes("js")
-        ? { status: "available", toolCount: replTools.length }
-        : { status: "unavailable", reason: repl?.error ? "node_repl_error" : "node_repl_js_unavailable", toolCount: replTools.length };
-      if (browser.status !== "available" || nodeRepl.status !== "available") {
-        warnings.push({ kind: "browser-reader", message: "Browser Reader prerequisites are not fully available. Core Codexless can still be usable; Browser Reader is conditional." });
+      const browserContext = new CodexPublicContextExecutor({
+        codexBin: codexResolution.path,
+        defaultCwd: runtimeCwd,
+        clientFactory: () => client,
+        runtimeKind: STOCK_RUNTIME_KIND,
+      });
+      const browserReader = new CodexBrowserReaderExecutor({ context: browserContext, defaultCwd: runtimeCwd });
+      browser = normalizeBrowserReaderHealth(await browserReader.status({ cwd: runtimeCwd }));
+      nodeRepl = legacyNodeReplView(browser);
+      if (browser.status !== "available") {
+        warnings.push({ kind: "browser-reader", message: `Browser Reader is not currently available (${browser.reason ?? "unverified connection"}). Core Codexless can still be healthy.` });
       }
     } catch (error) {
-      browser = { status: "unknown", reason: "probe_failed" };
-      nodeRepl = { status: "unknown", reason: "probe_failed" };
+      browser = normalizeBrowserReaderHealth({ status: "unavailable", reason: "probe_failed" });
+      nodeRepl = legacyNodeReplView(browser);
       warnings.push({ kind: "browser-reader", message: sanitizeText(error instanceof Error ? error.message : String(error)) });
     }
   } catch (error) {
@@ -156,11 +156,33 @@ notes.push("Permission fields have different meanings: permissionCeiling is the 
 notes.push("codex.project_context reports a fresh Codex bootstrap projection for its cwd; per-operation authority is resolved separately. Doctor --cwd uses the same Codexless authority resolver as project execution rather than treating the bootstrap projection as a global permission result.");
 notes.push("Tunnel connectivity is intentionally not changed or provisioned by doctor. Verify the release-candidate tunnel separately after local install/doctor passes.");
 notes.push("Doctor does not start a Codex model turn.");
+notes.push("Recent-call diagnostics are bounded evidence: no matching receipt means only that no server-arrival record was found in the retained local window; it does not prove the Host did not send the call.");
 
-const failedCoreChecks = checks.filter((check) => check.required && !check.ok);
-const status = failedCoreChecks.length ? "error" : warnings.length || (requestedCwd && !projectContext?.ok) ? "partial" : "ok";
+const finalWarnings = dedupeWarnings(warnings);
+const projectResult = requestedCwd ? projectContext ?? { ok: false, error: "project context was not checked" } : { status: "not_requested" };
+const recentCalls = recentCallDiagnostics.query({ limit: 10 });
+const health = buildDoctorHealth({
+  checks,
+  browserReader: browser,
+  projectRequested: Boolean(requestedCwd),
+  project: projectResult,
+  optionalWarnings: finalWarnings.filter((warning) => warning.kind === "configured-mcp"),
+});
+const status = health.core.status;
+let updateAdvisory = null;
+try {
+  const updateCheck = await opportunisticCodexlessUpdateCheck({ currentRoot: projectRoot });
+  if (updateCheck.advisory) {
+    const launcher = process.platform === "win32" ? "codexless-update.cmd" : "codexless-update.sh";
+    updateAdvisory = {
+      ...updateCheck.advisory,
+      command: path.join(projectRoot, "bin", launcher),
+    };
+  }
+} catch {}
 const result = {
   status,
+  health,
   codexless: {
     packageVersion: packageJson.version,
     serverVersion: PUBLIC_SERVER_VERSION,
@@ -179,14 +201,18 @@ const result = {
     version: codexProbe?.versionText ?? null,
     appServer,
   },
-  project: requestedCwd ? projectContext ?? { ok: false, error: "project context was not checked" } : { status: "not_requested" },
+  project: projectResult,
   capabilities: {
     browserReader: browser,
     nodeRepl,
     tunnel: { status: "not_checked", reason: "separate_release_boundary" },
   },
+  diagnostics: {
+    recentCalls,
+  },
+  ...(updateAdvisory ? { updateAdvisory } : {}),
   checks,
-  warnings: dedupeWarnings(warnings),
+  warnings: finalWarnings,
   notes,
 };
 
@@ -273,7 +299,10 @@ function printHuman(result) {
     process.stdout.write(`[${mark(check.ok)}] ${check.name}: ${check.detail}\n`);
     if (!check.ok && check.action) process.stdout.write(`       -> ${check.action}\n`);
   }
-  process.stdout.write(`\nBrowser Reader: ${result.capabilities.browserReader.status}\n`);
+  process.stdout.write(`\nCore health: ${result.health.core.status}\n`);
+  process.stdout.write(`Capability health: ${result.health.capabilities.status}\n`);
+  process.stdout.write(`Optional dependency health: ${result.health.optionalDependencies.status}\n`);
+  process.stdout.write(`Browser Reader: ${result.capabilities.browserReader.status} (connection=${result.capabilities.browserReader.connection.status})\n`);
   process.stdout.write(`Tunnel: ${result.capabilities.tunnel.status} (verified separately)\n`);
   if (result.project.status !== "not_requested") {
     process.stdout.write(`Project authority: ${result.project.ok ? "ok" : "needs attention"}\n`);
@@ -283,9 +312,17 @@ function printHuman(result) {
       process.stdout.write(`  authority source: ${result.project.authoritySource}\n`);
     }
   }
+  const recent = result.diagnostics.recentCalls;
+  process.stdout.write(`Recent calls: ${recent.count} retained match(es); persistence=${recent.persistence.status}\n`);
+  if (!recent.count && recent.no_match_meaning) process.stdout.write(`  ${recent.no_match_meaning}\n`);
   if (result.warnings.length) {
     process.stdout.write("\nWarnings:\n");
     for (const warning of result.warnings) process.stdout.write(`- ${warning.kind}: ${warning.message}\n`);
+  }
+  if (result.updateAdvisory) {
+    const latest = result.updateAdvisory.latestVersion ? ` ${result.updateAdvisory.latestVersion}` : "";
+    process.stdout.write(`\nUpdate available:${latest}\n`);
+    process.stdout.write(`Run: ${result.updateAdvisory.command}\n`);
   }
   process.stdout.write("\nNo Codex model turn was started.\n");
 }

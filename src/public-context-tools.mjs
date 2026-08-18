@@ -11,7 +11,7 @@ export function registerPublicContextTools(server, context) {
     {
       title: "Codex Project Context",
       description:
-        "Read a fresh model-free Codex project bootstrap for cwd: workspace roots, effective permission profile, instruction sources, approval policy, sandbox projection, and CLI version. This does not start a Codex model turn and does not let the remote caller choose a stronger permission profile.",
+        "Read a fresh Codex project bootstrap for cwd: workspace roots, effective permission profile, instruction sources, approval policy, sandbox projection, CLI version, and authoritative implicit Skill routing when stock prompt-input alignment is proven. The App Server path starts no turn; implicit routing fails closed without using the explicit Skill catalog, and the remote caller cannot choose a stronger permission profile.",
       inputSchema: z.object({ cwd: z.string().min(1).max(32_768).optional() }).strict(),
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },

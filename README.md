@@ -17,11 +17,13 @@
 
 </div>
 
-Codexless gives the ChatGPT you're already talking to the local tools it has actually tested and exposed. Set things up, maintain projects, edit files, run commands, inspect web pages — and keep going in the same conversation.
+Codexless gives the ChatGPT you're already talking to a tested set of local capabilities backed by the Codex tooling already on your machine.
 
-**Fewer unnecessary Codex calls means less Codex usage. Save that quota for the calls that matter.** That's the **less** in Codexless.
+Set up an environment, maintain a project, edit files, run commands, inspect or operate a browser — **start by telling ChatGPT what you want done. If the exposed tools are enough, it keeps working. When the task really needs Codex, it can bring Codex in explicitly.**
 
-> **Curious? Give this repo to the ChatGPT you already use. Ask it whether your machine can run it and what you'll be able to do after setup.**
+**Fewer unnecessary Codex calls means less Codex usage. Save that quota for the calls that actually need it.** That's the **less** in Codexless.
+
+> **Curious? Give this repository to the ChatGPT you already use and ask it to check whether your machine can run Codexless and what you'll be able to do after setup.**
 
 ---
 
@@ -29,13 +31,13 @@ Codexless gives the ChatGPT you're already talking to the local tools it has act
 
 ### 1. Hand ChatGPT Codex's local toolbox
 
-The ChatGPT you're already talking to can work with the local Codex tools that Codexless has actually tested and exposed.
+The ChatGPT you're already talking to can use the local capabilities Codexless has tested and exposed.
 
-Inspect a project, set up the environment, handle maintenance, edit files, run commands, check the result — and keep going in the same conversation.
+Inspect a project, set up an environment, handle maintenance, edit files, run commands, check the result — and stay in the same conversation.
 
-**Plain English: the step that used to force you over to Codex can now happen right here.**
+**Plain English: work that used to force a handoff to Codex can often continue right where you are.**
 
-These supported tool actions **do not call Codex itself or consume Codex quota.**
+These supported tool actions **do not call the Codex model and do not consume Codex quota.**
 
 ---
 
@@ -47,24 +49,26 @@ Project rules, Skills, directory conventions — when Codexless can safely reuse
 
 > **Take the toolbox. Bring the manual too.**
 
-There is a long-term benefit too: **as the Codex toolbox evolves, Codexless does not have to rebuild every useful capability from scratch.** New capabilities can come along after they have been re-tested and accepted for the public surface.
+There is a longer-term benefit as well: **as the Codex toolbox evolves, Codexless does not have to rebuild every useful capability from scratch.** New capabilities can be promoted after they have been re-tested and accepted for the public surface.
 
-That does **not** mean every Codex update instantly becomes a ChatGPT capability. If it has not been tested and accepted, it is not a public promise.
+That does **not** mean every Codex update instantly becomes a ChatGPT capability. If it has not been tested and accepted, it is not part of the public promise.
 
 ---
 
 ### 3. Start with ChatGPT. Bring in Codex when needed
 
-**ChatGPT can be your default starting point.** Give it the task; if the current tools are enough, it keeps going. If it really needs Codex, it can escalate from the same Chat. Prefer to open Codex directly? That's fine too — Codexless does not lock you into one workflow.
+**ChatGPT can be your default starting point.** Give it the task. If the current tools are enough, it keeps going. If the work really needs Codex, it can escalate from the same Chat. Prefer to open Codex directly? That's fine too — Codexless does not lock you into one workflow.
 
-When it really is time to call Codex, it **asks you first**:
+When it really is time to call Codex, Codexless **asks first**:
 
 1. what it wants Codex to do;
 2. how much Codex quota you have left right now;
-3. whether to make the call is up to you — Yes or No;
-4. when it's done, how much it used and how much quota is left.
+3. whether to make the call — Yes or No;
+4. after the run, how much was used and how much remains.
 
 > **Keep working in ChatGPT. Bring in Codex when you actually need it.**
+
+If the current Chat cannot render the Task Card, Codexless falls back to a plain-text confirmation. You still have to answer Yes or No; it never auto-approves the call.
 
 <p align="center">
   <img src="docs/images/codex-task-card-flow.gif" width="100%" alt="Codex Task Card showing call, running, and completed states">
@@ -72,19 +76,23 @@ When it really is time to call Codex, it **asks you first**:
 
 ---
 
-### 4. Stop taking screenshots. Just let it look
+### 4. ChatGPT can work inside Chrome too
 
-> **Let the ChatGPT you're already talking to look at the page you already have open.**
+**It can do more than look at a page — it can carry out a bounded set of browser actions as well.**
 
-Error pages, articles, products, settings, dashboards — one less screenshot to take, one less block of text to paste.
+The current public Browser surface supports:
 
-**You're looking at it. Now ChatGPT can look too.**
+- reading tabs and page content, plus viewport screenshots;
+- opening, closing, and navigating pages;
+- semantic clicks and text entry;
+- bounded scrolling and `Enter` / `Tab` / `Escape`;
+- prepared uploads and downloads.
 
-The first public version is **read-first**: it can inspect tabs and already-loaded page content. It does not yet promise arbitrary clicking, typing, navigation, or full browser automation.
+#### Browser prerequisites
 
-**Browser Reader has passed real-machine read-only acceptance on Windows and Apple Silicon Mac.** Mac coverage here means the public Reader path only; private Browser Operator experiments are a separate surface and are not part of this release.
+Chrome must be installed on the same machine, with the ChatGPT browser extension installed and connected in the Chrome profile you actually use.
 
-![Browser Reader: ChatGPT reads an already-open Chrome tab and picks up the previous context](docs/images/browser-reader.png)
+For local file upload, the extension also needs **Allow access to file URLs** enabled.
 
 ---
 
@@ -93,33 +101,37 @@ The first public version is **read-first**: it can inspect tabs and already-load
 **Probably yes if:**
 
 1. you already use ChatGPT + Codex on real projects and are tired of moving context back and forth or maintaining two separate setups;
-2. Codex quota is often tight and you want Codex to show up less often, saving the quota for the calls that really need it;
-3. you have a long-running AI assistant or companion you already know and trust, and you would rather give that familiar AI local hands than switch to a different agent that doesn't know you every time real work starts.
+2. Codex quota is often tight and you want to save it for work that genuinely needs Codex;
+3. you have a long-running AI assistant or companion you already know and trust, and would rather give that familiar assistant local hands than switch to a different agent every time real work starts.
 
-**Probably not if:** you use Codex for almost everything, already maintain mature custom agent infrastructure, or need a full browser agent in the first release.
+**Probably not if:** you use Codex for nearly everything, already maintain mature custom agent infrastructure, or need unrestricted browser / desktop automation.
 
 ---
 
 ## Before you install
 
 - **Platforms:** Windows + **Apple Silicon macOS (`arm64`)** Technical Preview. Intel Mac is not supported yet.
-- **Prerequisites:** a working local **Codex** installation and **Node.js 22+**.
-- **No second Codex install:** the installer finds and uses the Codex executable already on your machine, as long as that version is currently accepted.
-- **Personal ChatGPT plans tested:** Plus and Pro have both passed real-machine tests through the real end-to-end connection path. That is test evidence, not a promise about future plan policy.
-- **How local access works:** ChatGPT does not connect straight to `localhost`. A typical path is **local Codexless → authenticated Tunnel / remote MCP endpoint → ChatGPT App / Developer Mode**.
-- **No tunnel lock-in:** OpenAI Secure MCP Tunnel is one supported path, not the only possible dependency.
-- **Package size:** the current Technical Preview package itself is **under 100 KB compressed / under 0.5 MB unpacked**, before normal dependencies.
+- **Prerequisites:** **Node.js 22+** and one working local **Codex** installation. Codex Desktop is optional; a working CLI/runtime is enough.
+- **No second Codex install:** Codexless discovers and reuses the Codex runtime already on your machine. If it cannot find a currently accepted runtime, it fails visibly instead of silently installing another copy.
+- **Browser:** Chrome and the ChatGPT browser extension must be installed and connected on this machine. Browser work uses the current Chrome profile and its site login state.
+- **Upload:** local file upload additionally requires the extension's **Allow access to file URLs** setting.
+- **Personal ChatGPT plans tested:** Plus and Pro have both passed real-machine product-path testing. That is test evidence, not a promise about future plan policy.
+- **How local access works:** ChatGPT does not connect directly to `localhost`. A typical path is **local Codexless → authenticated Tunnel / remote MCP endpoint → ChatGPT App / Developer Mode**.
+- **No tunnel lock-in:** OpenAI Secure MCP Tunnel is one supported path, not the only possible transport.
+- **Package size:** the current Technical Preview package is under **0.2 MB compressed / 0.8 MB unpacked**, before normal dependencies.
 - **Independent project:** Codexless is not an OpenAI product and does not imply OpenAI endorsement.
 
 ---
 
-## Install
+## Install and update
 
-**Make sure you already have Node.js 22+ and a working Codex installation. The installer checks for them, but it does not install Node/npm for you.**
+**Make sure you already have Node.js 22+ and a working Codex installation. The installer checks those prerequisites, but it does not install Node/npm or Codex for you.**
 
-If you do not want to inspect the environment yourself, give this repo to your AI and ask it to check your platform, Node version, Codex installation, and install path first.
+If you would rather not inspect the environment yourself, give this repository to your AI assistant and ask it to check your platform, Node version, Codex installation, and install path first.
 
 Final decisions about local execution, permissions, and trust are still yours.
+
+**Automatic update checks and one-command updates are supported starting with Codexless `0.1.1-preview.0`, released on August 19, 2026. If you installed an earlier build, download the latest release and run the installation command for your platform again to upgrade first.**
 
 ### Windows
 
@@ -127,6 +139,12 @@ Install:
 
 ```powershell
 .\bin\codexless-install.cmd
+```
+
+Update:
+
+```powershell
+& "$env:LOCALAPPDATA\Codexless\bin\codexless-update.cmd"
 ```
 
 Default install directory:
@@ -163,6 +181,12 @@ Install:
 sh ./bin/codexless-install.sh
 ```
 
+Update:
+
+```sh
+"$HOME/Library/Application Support/Codexless/app/bin/codexless-update.sh"
+```
+
 Default install directory:
 
 ```text
@@ -189,9 +213,11 @@ Uninstall:
 
 ### What does the installer do?
 
-On both platforms, the installer checks Node.js 22+, finds and probes the Codex installation already on the machine, installs dependencies into a staging area, runs the doctor checks, and only then activates the final install tree.
+On both platforms, the installer checks Node.js and the local Codex runtime, installs dependencies in a staging area, runs doctor checks, and activates the final install only after those checks pass.
 
-It does not silently widen Codex trust, and it does not configure Browser Reader or a Tunnel for you.
+It does not install Chrome or the browser extension, configure a Tunnel, or silently widen Codex trust. Browser upload permissions also remain an explicit user-side setting.
+
+Codexless performs a low-frequency check for official releases. When a newer version is available, it can notify you, but it **does not install updates automatically**. An update is downloaded, verified, and checked before activation; a failed update does not replace the working install with a partial one.
 
 ---
 
@@ -201,31 +227,29 @@ It does not silently widen Codex trust, and it does not configure Browser Reader
 
 **No. If ChatGPT is using Codexless tools directly and is not actually calling Codex, it does not consume Codex quota.**
 
-If you explicitly call Codex, or you are already working in a Work / Codex surface that is metered as Codex usage, Codex usage still applies normally.
+If you explicitly call Codex, or you are already working in a surface that is metered as Codex usage, Codex usage still applies normally.
 
-The two usage pools stay separate. Codexless does not merge them or bypass either one.
+The two usage pools remain separate. Codexless does not merge or bypass either one.
 
 ---
 
-### 2. What if Codex hits 0%? Can Codexless still work?
+### 2. What if Codex quota reaches 0%? Can Codexless still work?
 
 **Yes. Everything already supported keeps working except the parts that actually call Codex.**
 
-Reading, searching, editing, checking results, and Browser Reader can keep working where supported.
+Reading, searching, editing, verification, and the supported model-free Browser actions can keep working.
 
-When Codex quota comes back, you can call Codex again.
+When Codex quota is available again, you can call Codex again.
 
 ---
 
 ### 3. How much access does this get? Can it change or delete local files?
 
-**By default, its ceiling follows the permissions your local Codex already has. Codexless cannot go beyond that local permission ceiling.**
+**By default, the permission ceiling follows the authorization your local Codex already has. Codexless cannot silently widen that ceiling.**
 
-Codexless can narrow permissions further for an individual action.
+Codexless can narrow permissions further for individual actions.
 
-If you want a more conservative setup, narrow the relevant permissions or project trust on the local Codex side. Codexless does not bypass those settings.
-
-A real permission / trust denial should fail visibly rather than silently switching to a stronger path just to make the task succeed.
+If you want a more conservative setup, tighten the relevant project trust or Codex permissions locally. A real permission / trust denial should fail visibly rather than silently switching to a stronger path just to make the task succeed.
 
 See [`SECURITY.md`](SECURITY.md) for the full boundary.
 
@@ -235,23 +259,25 @@ See [`SECURITY.md`](SECURITY.md) for the full boundary.
 
 **No.**
 
-The first public service contract contains exactly **21 accepted tools**. In the current ChatGPT App setup, the model directly sees **18** of them; the other three are app-only Task Card actions for status refresh and real user decisions.
+Codexless exposes only capabilities that have been reviewed and accepted for the public surface; it does not expose the entire Codex environment.
 
-With `CODEXLESS_AGENT_METERED_CONSENT=always`, `codex.agent_start` / `codex.agent_send` are prepare-first: a returned `consentRef` identifies the pending task but does **not** authorize Codex work, and replaying that ref through the public tool cannot start a turn. The rendered Task Card receives a separate commit capability outside model-visible text / `structuredContent`; `codex.agent_commit` requires both values. If the Task Card cannot be rendered, Codexless fails closed instead of silently dispatching metered work. A Task Card decline is terminal: a cached commit or same-request replay cannot revive the rejected task.
+The current public service contract contains **39 tools**. The model directly sees **38** of them; one Task Card state tool is app-only.
 
-`codex.command_exec` is the model-free command lane, not a second Codex-agent entrance. Codexless rejects direct Codex CLI launches and recognized shell/interpreter wrappers carrying a Codex command; formal Codex model work must use the Agent + Task Card path so quota and lifecycle stay visible. This is a server-side product guard for the supported model-facing path, not a claim that arbitrary code execution is an adversarial process sandbox; deliberately disguising a secondary Codex launch inside unrelated executable code is outside the supported contract.
+Actual Codex model work uses the dedicated Agent + approval flow. Ordinary local tool actions are not a hidden second route into metered Codex work.
 
-Internal Workbench / Private capabilities do not automatically become public capabilities.
+The lower-level consent / commit / replay details are summarized in the internals section below.
 
 ---
 
-### 5. Can the Browser operate websites for me — say, order food?
+### 5. Can the Browser operate websites for me?
 
-**The first release can look, but it cannot click for you yet.**
+**Yes. It is no longer read-only.**
 
-It can inspect tabs you already have open and page content that is already loaded.
+It can inspect tabs, capture screenshots, open / close / navigate pages, click semantic targets, fill text, scroll, press `Enter` / `Tab` / `Escape`, and perform prepared uploads and downloads.
 
-Clicking, typing, and navigation are not part of the current public contract.
+It is intentionally not unrestricted browser control. Codexless does not expose arbitrary JavaScript, raw selectors, arbitrary coordinates, unrestricted keyboard input, generic CDP, or automatic Computer Use fallback.
+
+Browser work uses the current local Chrome profile and its site login state. Local file upload additionally requires **Allow access to file URLs** in the extension settings.
 
 ---
 
@@ -259,23 +285,23 @@ Clicking, typing, and navigation are not part of the current public contract.
 
 **No.**
 
-You can keep thinking, planning, and talking things through in ChatGPT exactly as you do now.
+You can keep thinking, planning, and talking things through in ChatGPT.
 
-If the current tools are enough, ChatGPT can keep going and finish the work. When you actually want Codex, escalate to Codex.
+If the current tools are enough, ChatGPT can continue and finish the work. When you genuinely need Codex, escalate explicitly.
 
-Codexless removes unnecessary handoffs; it does not force you to abandon a workflow you already like.
+Codexless reduces unnecessary handoffs; it does not force you to abandon a workflow you already like.
 
 ---
 
-### 7. I thought ChatGPT couldn't access my local machine. How does Codexless do it?
+### 7. I thought ChatGPT could not access my local machine. How does Codexless do it?
 
 Right: ChatGPT does not directly access your computer's `localhost`.
 
-Codexless connects the local service through an **authenticated MCP path**:
+Codexless exposes the local service through an **authenticated MCP path**:
 
 > **local Codexless → authenticated Tunnel / remote MCP endpoint → ChatGPT App / Developer Mode**
 
-ChatGPT gets the Codexless tools you explicitly expose through that surface. It does not simply get your whole computer.
+ChatGPT receives the Codexless tools exposed through that surface; it does not simply get unrestricted access to your whole computer.
 
 Do not put Tunnel / endpoint credentials in the repository or public screenshots.
 
@@ -285,13 +311,11 @@ Do not put Tunnel / endpoint credentials in the repository or public screenshots
 
 ### 1. Public contract
 
-The first public service contract contains exactly **21 tools**.
+The current public service contract contains **39 tools**. The model directly sees **38**; one Task Card state tool is app-only.
 
-The ChatGPT model directly sees 18; three app-only Task Card actions are not exposed directly to the model.
+Metered Agent consent is server-side state: task identity is not approval. Codex dispatch still requires the matching approval / commit path, and a declined task cannot be revived by replaying an older request.
 
-Metered Agent consent is server-stateful: `consentRef` is task identity, not approval. Public replay stays pending; the Task Card commit path must present the exact card capability before Codex dispatch is allowed. The contract tests include regression coverage for replay, missing/wrong commit capabilities, capability leakage, and duplicate commit behavior.
-
-The exact table is fixed in `src/surface-contracts.mjs` and covered by the public contract tests.
+The exact surface is fixed in `src/surface-contracts.mjs` and covered by the public contract tests.
 
 Run:
 
@@ -303,24 +327,29 @@ npm test
 
 Codex remains the local permission / trust authority.
 
-- Codexless can downscope.
-- A remote caller cannot silently choose a stronger Codex permission profile.
-- `permissionCeiling` is the maximum the local machine allows for that operation.
-- `permissionProfile` is the profile actually used for the current action.
+- Codexless can downscope permissions.
+- A remote caller cannot silently select a stronger local permission profile.
+- Real permission / trust denials fail visibly.
 
-### 3. Integration model
+### 3. Browser boundary
 
-Codexless is built around the documented **Codex App Server** and **ChatGPT app/MCP** integration surfaces. It does not reverse-engineer a private UI.
+The public Browser surface exposes reviewed user-intent actions rather than raw browser internals.
 
-### 4. Current Technical Preview evidence
+Current public actions include tab/page reads, screenshots, open / close / navigation, semantic click, text fill, bounded scroll, fixed `Enter` / `Tab` / `Escape`, file selection for upload, and browser-managed download.
+
+It does not expose arbitrary JavaScript, raw selectors, arbitrary coordinates, unrestricted keyboard input, generic CDP, or automatic Computer Use fallback.
+
+### 4. Integration model
+
+Codexless is built around Codex App Server and ChatGPT app/MCP integration surfaces rather than reverse-engineering a private UI.
+
+### 5. Current Technical Preview evidence
 
 Windows and Apple Silicon macOS have both passed real-machine install / doctor / stdio acceptance.
 
-On Mac, we have also run staged upgrade, HTTP, uninstall, and a fresh Tunnel / ChatGPT chain using the installed build.
+Browser work has also been dogfooded on real Windows and Apple Silicon Mac machines. Release-package validation is tracked separately from the source-level capability contract rather than inferred from it.
 
-The first Technical Preview does not include Intel Mac, Computer Use, unrestricted direct browser operation, or internal Workbench capabilities.
-
-### 5. Run from source
+### 6. Run from source
 
 ```sh
 npm ci
@@ -333,7 +362,7 @@ HTTP:
 npm run start:http
 ```
 
-If automatic discovery cannot find a currently accepted native Codex executable, you can set `CODEX_BIN` explicitly.
+If automatic discovery cannot find a currently accepted Codex executable, you can set `CODEX_BIN` explicitly.
 
 On Windows, do not point `CODEX_BIN` at the npm `.cmd` / `.ps1` shim.
 
@@ -343,15 +372,14 @@ On Windows, do not point `CODEX_BIN` at the npm `.cmd` / `.ps1` shim.
 
 If a user sends you this repository and asks “What is this? Do I need it? Is it safe?”, inspect the actual repository and the current machine before making a recommendation.
 
-Start with these five facts:
+Start with these facts:
 
 1. Codexless lets ChatGPT use a set of **accepted Codex-backed local capabilities**; Codex remains an explicit expert escalation path.
-2. It **does not increase or bypass Codex quota**. Direct tool work and metered Codex Agent work remain separate lanes. In consent-always mode, a model-visible `consentRef` is not sufficient to start Codex; the Task Card approval path supplies a separate commit capability.
-3. The permission ceiling comes from the effective local Codex authorization. A remote caller cannot silently widen it.
-4. The first public Browser is read-first, and internal / Private capabilities do not automatically equal public capabilities.
-5. Codexless is an independent project, not an OpenAI product or endorsement. It is most relevant to people already using ChatGPT + Codex who want less handoff and duplicate maintenance — or people who want the same long-running AI assistant they already use to gain local hands instead of switching to another agent for every real task.
-
-A good safety review should describe both the real local-execution risk and the real permission boundary.
+2. It **does not increase or bypass Codex quota**. Ordinary tool work and actual Codex model work are separate paths.
+3. The permission ceiling comes from effective local Codex authorization; a remote caller cannot silently widen it.
+4. The public Browser surface can now read and operate a bounded set of browser actions, but it does not expose raw Browser internals.
+5. Browser work requires local Chrome plus the ChatGPT browser extension; local file upload has one additional file-URL permission requirement.
+6. Codexless is an independent project, not an OpenAI product or endorsement.
 
 ---
 

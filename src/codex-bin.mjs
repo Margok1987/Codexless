@@ -17,100 +17,42 @@ export class CodexExecutableResolutionError extends Error {
 }
 
 export async function resolveCodexExecutable({ env = process.env, acceptedVersions = null } = {}) {
-  if (process.platform !== "win32") {
-    const checked = [];
-    const explicit = env.CODEX_BIN?.trim();
-    if (explicit) {
-      checked.push("CODEX_BIN");
-      const resolved = await normalizeAcceptedPosixCandidate(explicit, { source: "CODEX_BIN", checked, acceptedVersions });
-      if (resolved) return resolved;
-      throw new CodexExecutableResolutionError(
-        "CODEX_BIN exists but does not resolve to an executable accepted Codex build.",
-        { checked }
-      );
-    }
-
-    if (process.platform === "darwin") {
-      const bundledCandidates = [
-        { path: "/Applications/ChatGPT.app/Contents/Resources/codex", source: "chatgpt-app-bundled", label: "ChatGPT.app:bundled-codex" },
-      ];
-      for (const candidate of bundledCandidates) {
-        checked.push(candidate.label);
-        const resolved = await normalizeAcceptedPosixCandidate(candidate.path, { source: candidate.source, checked, acceptedVersions });
-        if (resolved) return resolved;
-      }
-    }
-
-    const found = whichFirst("codex");
-    if (found) {
-      checked.push("PATH:codex");
-      const resolved = await normalizeAcceptedPosixCandidate(found, { source: "PATH", checked, acceptedVersions });
-      if (resolved) return resolved;
-    }
-    const acceptedHint = Array.isArray(acceptedVersions) && acceptedVersions.length
-      ? ` No discovered executable matched the currently accepted Codex CLI builds: ${acceptedVersions.join(", ")}.`
-      : "";
-    throw new CodexExecutableResolutionError(
-      `An executable accepted Codex build could not be resolved.${acceptedHint} Set CODEX_BIN when auto-detection cannot resolve it.`,
-      { checked }
-    );
-  }
-
   const checked = [];
   const explicit = env.CODEX_BIN?.trim();
   if (explicit) {
     checked.push("CODEX_BIN");
-    const resolved = await normalizeAcceptedWindowsCandidate(explicit, { source: "CODEX_BIN", checked, acceptedVersions });
+    const resolved = process.platform === "win32"
+      ? await normalizeAcceptedWindowsCandidate(explicit, { source: "CODEX_BIN", checked, acceptedVersions })
+      : await normalizeAcceptedPosixCandidate(explicit, { source: "CODEX_BIN", checked, acceptedVersions });
     if (resolved) return resolved;
     throw new CodexExecutableResolutionError(
-      "CODEX_BIN exists but does not resolve to a directly launchable accepted native Codex executable. Point CODEX_BIN at an accepted codex.exe rather than an npm .cmd/.ps1 shim.",
+      process.platform === "win32"
+        ? "CODEX_BIN does not resolve to a directly launchable accepted native Codex executable. Point CODEX_BIN at an accepted codex.exe rather than an npm shim."
+        : "CODEX_BIN does not resolve to an executable accepted Codex build.",
       { checked }
     );
   }
 
-  const desktopCliPath = env.CODEX_CLI_PATH?.trim();
-  if (desktopCliPath) {
-    checked.push("CODEX_CLI_PATH");
-    const resolved = await normalizeAcceptedWindowsCandidate(desktopCliPath, { source: "CODEX_CLI_PATH", checked, acceptedVersions });
-    if (resolved) return resolved;
+  const candidates = process.platform === "win32"
+    ? await windowsCodexCandidates(env)
+    : await posixCodexCandidates(env);
+  const newest = await newestInstalledCodexCandidate(candidates, checked);
+  if (!newest) {
+    throw new CodexExecutableResolutionError(
+      "No usable Codex CLI/runtime could be resolved. Codexless requires a working Codex CLI/runtime with App Server; Codex Desktop is optional. Automatic discovery checks known standalone/current installs, Codex Desktop/ChatGPT bundled runtimes when present, native Codex on PATH, and npm-installed Codex. Set CODEX_BIN only when you intentionally want to override automatic selection.",
+      { checked }
+    );
   }
 
-  for (const candidate of windowsDesktopCandidates(env)) {
-    checked.push(candidate.label);
-    const resolved = await normalizeAcceptedWindowsCandidate(candidate.path, { source: candidate.source, checked, acceptedVersions });
-    if (resolved) return resolved;
+  if (Array.isArray(acceptedVersions) && acceptedVersions.length && !acceptedVersions.includes(newest.version)) {
+    checked.push(`${newest.source}:newest-unsupported:${newest.version}`);
+    throw new CodexExecutableResolutionError(
+      `The newest installed Codex runtime is ${newest.version} (${newest.source}), but this Codexless build has not accepted it yet. ` +
+      `Accepted Codex CLI builds: ${acceptedVersions.join(", ")}. Update Codexless or set CODEX_BIN explicitly to a separately accepted native Codex executable if you intentionally need that older build.`,
+      { checked }
+    );
   }
-
-  for (const candidate of whereAll("codex.exe")) {
-    checked.push("PATH:codex.exe");
-    const resolved = await normalizeAcceptedWindowsCandidate(candidate, { source: "PATH", checked, acceptedVersions });
-    if (resolved) return resolved;
-  }
-
-  for (const candidate of whereAll("codex")) {
-    checked.push(`PATH:${path.extname(candidate).toLowerCase() || "bare"}`);
-    const resolved = await normalizeAcceptedWindowsCandidate(candidate, { source: "PATH", checked, acceptedVersions });
-    if (resolved) return resolved;
-  }
-
-  const appData = env.APPDATA?.trim();
-  if (appData) {
-    const npmPackageRoot = path.join(appData, "npm", "node_modules", "@openai", "codex");
-    checked.push("APPDATA:npm-package");
-    const native = await findNativeCodexUnderPackage(npmPackageRoot);
-    if (native) {
-      const resolved = await normalizeAcceptedWindowsCandidate(native, { source: "npm-global-package", checked, acceptedVersions });
-      if (resolved) return resolved;
-    }
-  }
-
-  const acceptedHint = Array.isArray(acceptedVersions) && acceptedVersions.length
-    ? ` No discovered executable matched the currently accepted Codex CLI builds: ${acceptedVersions.join(", ")}.`
-    : "";
-  throw new CodexExecutableResolutionError(
-    `A directly launchable accepted Codex executable could not be resolved.${acceptedHint} Codexless supports accepted Codex Desktop/runtime executables, native codex.exe on PATH, or npm-installed Codex with its native Windows package present. Set CODEX_BIN to a native codex.exe when auto-detection cannot resolve it.`,
-    { checked }
-  );
+  return newest;
 }
 
 export async function probeCodexExecutable(target, { cwd = process.cwd(), timeoutMs = 10_000 } = {}) {
@@ -146,15 +88,20 @@ export function redactHomePath(value) {
 }
 
 async function normalizeAcceptedPosixCandidate(candidate, { source, checked, acceptedVersions }) {
+  const normalized = await normalizePosixCandidate(candidate, { source });
+  if (!normalized || !Array.isArray(acceptedVersions) || !acceptedVersions.length) return normalized;
+  const probe = await probeCodexExecutable(normalized.path).catch(() => null);
+  const version = parseCodexVersion(probe?.versionText);
+  if (probe?.ok && version && acceptedVersions.includes(version)) return { ...normalized, version };
+  checked.push(`${source}:unsupported:${version ?? "unknown"}`);
+  return null;
+}
+
+async function normalizePosixCandidate(candidate, { source }) {
   if (typeof candidate !== "string" || !candidate.trim()) return null;
   const resolved = path.resolve(candidate.trim());
   if (!(await isExecutable(resolved))) return null;
-  if (!Array.isArray(acceptedVersions) || !acceptedVersions.length) return { path: resolved, source };
-  const probe = await probeCodexExecutable(resolved).catch(() => null);
-  const version = parseCodexVersion(probe?.versionText);
-  if (probe?.ok && version && acceptedVersions.includes(version)) return { path: resolved, source, version };
-  checked.push(`${source}:unsupported:${version ?? "unknown"}`);
-  return null;
+  return { path: resolved, source };
 }
 
 async function normalizeAcceptedWindowsCandidate(candidate, { source, checked, acceptedVersions }) {
@@ -234,57 +181,153 @@ function buildDirectNpmNativeCandidates(packageRoot) {
   return candidates;
 }
 
-function windowsDesktopCandidates(env) {
-  const rows = [];
+async function windowsCodexCandidates(env) {
+  const candidates = [];
+  const desktopCliPath = env.CODEX_CLI_PATH?.trim();
   const localAppData = env.LOCALAPPDATA?.trim();
   const userProfile = env.USERPROFILE?.trim();
+  const appData = env.APPDATA?.trim();
+
+  if (desktopCliPath) candidates.push({ path: desktopCliPath, source: "CODEX_CLI_PATH", label: "CODEX_CLI_PATH" });
   if (localAppData) {
-    rows.push(
-      {
-        path: path.join(localAppData, "Programs", "OpenAI", "Codex", "bin", "codex.exe"),
-        source: "codex-desktop-programs",
-        label: "LOCALAPPDATA:Programs/OpenAI/Codex",
-      },
-      {
-        path: path.join(localAppData, "OpenAI", "Codex", "bin"),
-        source: "codex-desktop-runtime-cache",
-        label: "LOCALAPPDATA:OpenAI/Codex/bin",
-        searchDirectory: true,
-      }
-    );
+    candidates.push({
+      path: path.join(localAppData, "Programs", "OpenAI", "Codex", "bin", "codex.exe"),
+      source: "codex-desktop-programs",
+      label: "LOCALAPPDATA:Programs/OpenAI/Codex",
+    });
+    const runtimeRoot = path.join(localAppData, "OpenAI", "Codex", "bin");
+    for (const candidate of await childCodexExecutables(runtimeRoot)) {
+      candidates.push({ path: candidate, source: "codex-desktop-runtime-cache", label: "LOCALAPPDATA:OpenAI/Codex/bin" });
+    }
+    candidates.push({
+      path: path.join(runtimeRoot, "codex.exe"),
+      source: "codex-desktop-runtime-cache",
+      label: "LOCALAPPDATA:OpenAI/Codex/bin",
+    });
   }
   if (userProfile) {
-    rows.push({
+    candidates.push({
       path: path.join(userProfile, ".codex", "packages", "standalone", "current", "bin", "codex.exe"),
       source: "codex-standalone-current",
       label: "USERPROFILE:.codex/standalone/current",
     });
   }
-  return rows.flatMap((row) => row.searchDirectory ? findDesktopRuntimeCandidatesSync(row) : [row]);
+  for (const candidate of whereAll("codex.exe")) {
+    candidates.push({ path: candidate, source: "PATH", label: "PATH:codex.exe" });
+  }
+  for (const candidate of whereAll("codex")) {
+    candidates.push({ path: candidate, source: "PATH", label: `PATH:${path.extname(candidate).toLowerCase() || "bare"}` });
+  }
+  if (appData) {
+    const npmPackageRoot = path.join(appData, "npm", "node_modules", "@openai", "codex");
+    const native = await findNativeCodexUnderPackage(npmPackageRoot);
+    if (native) candidates.push({ path: native, source: "npm-global-package", label: "APPDATA:npm-package" });
+  }
+  return candidates;
 }
 
-function findDesktopRuntimeCandidatesSync(row) {
+async function posixCodexCandidates(env) {
+  const candidates = [];
+  const cliPath = env.CODEX_CLI_PATH?.trim();
+  if (cliPath) candidates.push({ path: cliPath, source: "CODEX_CLI_PATH", label: "CODEX_CLI_PATH" });
+
+  const home = env.HOME?.trim() || os.homedir();
+  if (home) {
+    candidates.push({
+      path: path.join(home, ".codex", "packages", "standalone", "current", "bin", "codex"),
+      source: "codex-standalone-current",
+      label: "HOME:.codex/standalone/current",
+    });
+  }
+  if (process.platform === "darwin") {
+    candidates.push({
+      path: "/Applications/ChatGPT.app/Contents/Resources/codex",
+      source: "chatgpt-app-bundled",
+      label: "ChatGPT.app:bundled-codex",
+    });
+  }
+  const found = whichFirst("codex");
+  if (found) candidates.push({ path: found, source: "PATH", label: "PATH:codex" });
+  return candidates;
+}
+
+async function childCodexExecutables(root) {
   try {
-    const { readdirSync, statSync } = requireNodeFs();
-    if (!statSync(row.path).isDirectory()) return [];
-    const children = readdirSync(row.path, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => path.join(row.path, entry.name, "codex.exe"));
-    const direct = path.join(row.path, "codex.exe");
-    return [direct, ...children].map((candidate) => ({ path: candidate, source: row.source, label: row.label }));
+    const entries = await readdir(root, { withFileTypes: true });
+    return entries.filter((entry) => entry.isDirectory()).map((entry) => path.join(root, entry.name, "codex.exe"));
   } catch {
     return [];
   }
 }
 
-function requireNodeFs() {
-  // Kept as a tiny lazy CommonJS bridge so the normal resolver path does not need another top-level import.
-  return process.getBuiltinModule("node:fs");
-}
-
 function parseCodexVersion(text) {
   const match = String(text ?? "").match(/codex-cli\s+([^\s]+)/i);
   return match?.[1] ?? null;
+}
+
+export function compareCodexVersions(left, right) {
+  const a = parseComparableVersion(left);
+  const b = parseComparableVersion(right);
+  for (let index = 0; index < 3; index += 1) {
+    if (a.core[index] !== b.core[index]) return a.core[index] - b.core[index];
+  }
+  if (!a.pre.length && b.pre.length) return 1;
+  if (a.pre.length && !b.pre.length) return -1;
+  const length = Math.max(a.pre.length, b.pre.length);
+  for (let index = 0; index < length; index += 1) {
+    if (index >= a.pre.length) return -1;
+    if (index >= b.pre.length) return 1;
+    const av = a.pre[index];
+    const bv = b.pre[index];
+    if (av === bv) continue;
+    const an = /^\d+$/.test(av) ? Number(av) : null;
+    const bn = /^\d+$/.test(bv) ? Number(bv) : null;
+    if (an !== null && bn !== null) return an - bn;
+    if (an !== null) return -1;
+    if (bn !== null) return 1;
+    return av.localeCompare(bv);
+  }
+  return 0;
+}
+
+export function selectNewestVersionedCandidate(candidates) {
+  if (!Array.isArray(candidates) || !candidates.length) return null;
+  return [...candidates].sort((left, right) => compareCodexVersions(right.version, left.version))[0] ?? null;
+}
+
+async function newestInstalledCodexCandidate(candidates, checked) {
+  const versioned = [];
+  const seen = new Set();
+  for (const candidate of candidates) {
+    checked.push(candidate.label);
+    const normalized = process.platform === "win32"
+      ? await normalizeWindowsCandidate(candidate.path, { source: candidate.source, checked })
+      : await normalizePosixCandidate(candidate.path, { source: candidate.source });
+    if (!normalized) continue;
+
+    const comparablePath = process.platform === "win32"
+      ? path.resolve(normalized.path).toLowerCase()
+      : path.resolve(normalized.path);
+    if (seen.has(comparablePath)) continue;
+    seen.add(comparablePath);
+
+    const probe = await probeCodexExecutable(normalized.path).catch(() => null);
+    const version = parseCodexVersion(probe?.versionText);
+    if (!probe?.ok || !version) {
+      checked.push(`${candidate.source}:unprobeable`);
+      continue;
+    }
+    versioned.push({ ...normalized, version });
+  }
+  return selectNewestVersionedCandidate(versioned);
+}
+
+function parseComparableVersion(version) {
+  const [coreText, ...rest] = String(version ?? "0.0.0").split("-");
+  const core = coreText.split(".").slice(0, 3).map((part) => Number.parseInt(part, 10) || 0);
+  while (core.length < 3) core.push(0);
+  const pre = rest.join("-").split(".").filter(Boolean);
+  return { core, pre };
 }
 
 function whereAll(name) {

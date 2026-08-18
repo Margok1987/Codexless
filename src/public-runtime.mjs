@@ -4,12 +4,15 @@ import { createAgentPreviewState } from "./agent-tools.mjs";
 import { CodexAgentExecutor } from "./codex-agent-executor.mjs";
 import { ACCEPTED_CODEX_VERSIONS, CodexAuthorityExecutor } from "./codex-authority-executor.mjs";
 import { CodexBrowserReaderExecutor } from "./browser-reader-executor.mjs";
+import { CodexBrowserOperatorExecutor } from "./browser-operator-executor.mjs";
 import { resolveCodexExecutable } from "./codex-bin.mjs";
 import { readCodexQuotaSnapshot } from "./codex-quota-snapshot.mjs";
 import { createPreviewTelemetryClient } from "./codex-preview-account-preflight.mjs";
 import { readJsonFile } from "./json-file.mjs";
 import { CodexPublicContextExecutor } from "./public-context-executor.mjs";
 import { createPublicServerFactory } from "./public-server-factory.mjs";
+import { createRecentCallDiagnostics, recentCallOptionsFromEnv } from "./recent-call-diagnostics.mjs";
+import { STOCK_RUNTIME_KIND } from "./stock-prompt-input-skill-routing.mjs";
 import { PUBLIC_SERVER_VERSION, PUBLIC_SURFACE_VERSION, PUBLIC_TOOL_NAMES } from "./surface-contracts.mjs";
 
 function envString(env, name, fallback = null) {
@@ -51,6 +54,7 @@ export async function createPublicRuntime({ env = process.env } = {}) {
     "CODEXLESS_AGENT_TASK_STATE_FILE",
     path.join(os.homedir(), ".config", "codexless", "agent-task-cards.json")
   );
+  const recentCallDiagnostics = createRecentCallDiagnostics(recentCallOptionsFromEnv(env));
 
   let publicContext = null;
   let agentExecutor = null;
@@ -69,7 +73,12 @@ export async function createPublicRuntime({ env = process.env } = {}) {
     });
     const authorityValidation = await authorityExecutor.validate();
 
-    publicContext = new CodexPublicContextExecutor({ codexBin, defaultCwd, configOverrides });
+    publicContext = new CodexPublicContextExecutor({
+      codexBin,
+      defaultCwd,
+      configOverrides,
+      runtimeKind: STOCK_RUNTIME_KIND,
+    });
     await publicContext.start();
 
     const resourceSnapshotProvider = async () => {
@@ -103,15 +112,22 @@ export async function createPublicRuntime({ env = process.env } = {}) {
     });
 
     const browserReader = new CodexBrowserReaderExecutor({ context: publicContext, defaultCwd });
+    const browserOperator = new CodexBrowserOperatorExecutor({
+      reader: browserReader,
+      authorityExecutor,
+      defaultCwd,
+    });
     const createServer = createPublicServerFactory({
       executor: authorityExecutor,
       authorityExecutor,
       publicContext,
       browserReader,
+      browserOperator,
       agentExecutor,
       meteredConsentMode,
       meteredQuotaProvider: resourceSnapshotProvider,
       agentPreviewState,
+      recentCallDiagnostics,
       maxConcurrent: 1,
     });
 
@@ -134,6 +150,7 @@ export async function createPublicRuntime({ env = process.env } = {}) {
       defaultCwd,
       meteredConsentMode,
       authorityValidation,
+      recentCallDiagnostics,
     };
   } catch (error) {
     try {

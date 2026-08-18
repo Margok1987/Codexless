@@ -126,4 +126,49 @@ assert.equal(replayAfterNo.structuredContent.status, "rejected");
 assert.equal(replayAfterNo.structuredContent.terminal, true);
 assert.equal(starts, 1, "same requestId replay after No must stay rejected and start nothing");
 
-console.log("agent Task Card capability + decline hardening PASS");
+const portablePrepared = await start({ prompt: "portable fallback approval", requestId: "portable-request-1" });
+assert.equal(portablePrepared.isError, false);
+assert.equal(portablePrepared.structuredContent.status, "consent_required");
+const portableConsentRef = portablePrepared.structuredContent.meteredConsent.consentRef;
+const portableCard = await render({ consentRef: portableConsentRef });
+assert.equal(portableCard.isError, false);
+assert.match(portableCard.content?.[0]?.text ?? "", /^┌[─]+┐/);
+assert.match(portableCard.content?.[0]?.text ?? "", /Yes/);
+assert.match(portableCard.content?.[0]?.text ?? "", /No/);
+assert.match(portableCard.content?.[0]?.text ?? "", /reply|回复|返信/i);
+const portableTaskId = portableCard.structuredContent.manualFallback?.taskId;
+assert.match(portableTaskId ?? "", /^C-[A-F0-9]{10}$/);
+assert.equal((portableCard.content?.[0]?.text ?? "").includes(portableTaskId), false, "short task id stays in structured content, not the user-facing frame");
+assert.equal(portableCard.structuredContent.manualFallback?.decision?.approveTool, "codex.agent_commit");
+assert.equal(portableCard.structuredContent.manualFallback?.decision?.declineTool, "codex.agent_decline");
+assert.equal(tools.get("codex.agent_commit").definition._meta?.ui?.visibility, undefined, "commit must remain model-callable for Portable Card fallback");
+assert.equal(tools.get("codex.agent_decline").definition._meta?.ui?.visibility, undefined, "decline must remain model-callable for Portable Card fallback");
+assert.equal(tools.get("codex.agent_commit").definition.inputSchema.safeParse({ taskId: portableTaskId, prompt: "override" }).success, false);
+
+const wrongPortable = await commit({ taskId: "C-0000000000" });
+assert.equal(wrongPortable.isError, true);
+assert.equal(starts, 1, "wrong Portable Card task id must fail closed");
+
+const portableAccepted = await commit({ taskId: portableTaskId });
+assert.equal(portableAccepted.isError, false);
+assert.equal(starts, 2, "explicit Portable Card commit starts exactly one logical turn");
+const portableDuplicate = await commit({ taskId: portableTaskId });
+assert.equal(portableDuplicate.isError, false);
+assert.equal(portableDuplicate.structuredContent.duplicate, true);
+assert.equal(starts, 2);
+
+const portableDeclinePrepared = await start({ prompt: "portable fallback decline", requestId: "portable-request-decline" });
+const portableDeclineCard = await render({ consentRef: portableDeclinePrepared.structuredContent.meteredConsent.consentRef });
+const portableDeclineTaskId = portableDeclineCard.structuredContent.manualFallback?.taskId;
+assert.match(portableDeclineTaskId ?? "", /^C-[A-F0-9]{10}$/);
+const portableDeclined = await decline({ taskId: portableDeclineTaskId });
+assert.equal(portableDeclined.isError, false);
+assert.equal(portableDeclined.structuredContent.status, "rejected");
+assert.equal(starts, 2, "Portable Card decline must never start Codex");
+const portableRevive = await commit({ taskId: portableDeclineTaskId });
+assert.equal(portableRevive.isError, false);
+assert.equal(portableRevive.structuredContent.status, "rejected");
+assert.equal(portableRevive.structuredContent.duplicate, true);
+assert.equal(starts, 2, "Portable Card No stays terminal and cannot be revived by later Yes");
+
+console.log("agent Rich Card + Portable Card fallback hardening PASS");
