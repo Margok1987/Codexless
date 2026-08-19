@@ -63,9 +63,9 @@ const AGENT_TASK_CARD_HTML = String.raw`
   let locale = (window.openai && window.openai.locale) || navigator.language || "en";
 
   const I18N = {
-    en: { call: "Call Codex?", task: "Task", quota: "Codex quota", before: "Before call", after: "After observed", unavailable: "not provided", left: "left", reset: "reset", approve: "Codex approval", request: "Request", starting: "Starting Codex…", submitting: "Submitting…", running: "Codex running", done: "Codex completed", failed: "Codex failed", stopped: "Codex stopped", uncertain: "Codex state uncertain", result: "Result", turn: "This turn", tokens: "tokens", stop: "Stop", rejected: "Declined", model: "Model", requested: "requested", elapsed: "Elapsed", duration: "Duration", ended: "Ended" },
-    zh: { call: "调用 Codex？", task: "任务", quota: "Codex 额度", before: "调用前", after: "调用后观测", unavailable: "当前未提供", left: "剩余", reset: "重置", approve: "Codex 请求审批", request: "请求", starting: "正在启动 Codex…", submitting: "正在提交…", running: "Codex 运行中", done: "Codex 施工完成", failed: "Codex 执行失败", stopped: "Codex 已停止", uncertain: "Codex 状态不确定", result: "结果", turn: "本次", tokens: "tokens", stop: "停止", rejected: "已拒绝", model: "模型", requested: "请求", elapsed: "已运行", duration: "耗时", ended: "结束" },
-    ja: { call: "Codexを呼び出しますか？", task: "タスク", quota: "Codex 利用枠", before: "呼び出し前", after: "呼び出し後の観測", unavailable: "現在は提供なし", left: "残り", reset: "リセット", approve: "Codex 承認リクエスト", request: "内容", starting: "Codexを起動しています…", submitting: "送信しています…", running: "Codex 実行中", done: "Codex 完了", failed: "Codex 失敗", stopped: "Codex 停止", uncertain: "Codex 状態不明", result: "結果", turn: "今回", tokens: "tokens", stop: "停止", rejected: "拒否済み", model: "モデル", requested: "指定", elapsed: "実行時間", duration: "所要時間", ended: "終了" }
+    en: { call: "Call Codex?", task: "Task", quota: "Codex quota", before: "Before call", after: "After observed", unavailable: "not provided", left: "left", reset: "reset", approve: "Codex approval", request: "Request", starting: "Starting Codex…", submitting: "Submitting…", running: "Codex running", done: "Codex completed", failed: "Codex failed", stopped: "Codex stopped", uncertain: "Codex state uncertain", result: "Result", turn: "This turn", tokens: "tokens", stop: "Stop", rejected: "Declined", model: "Model", reasoning: "Reasoning effort", requested: "requested", elapsed: "Elapsed", duration: "Duration", ended: "Ended" },
+    zh: { call: "调用 Codex？", task: "任务", quota: "Codex 额度", before: "调用前", after: "调用后观测", unavailable: "当前未提供", left: "剩余", reset: "重置", approve: "Codex 请求审批", request: "请求", starting: "正在启动 Codex…", submitting: "正在提交…", running: "Codex 运行中", done: "Codex 施工完成", failed: "Codex 执行失败", stopped: "Codex 已停止", uncertain: "Codex 状态不确定", result: "结果", turn: "本次", tokens: "tokens", stop: "停止", rejected: "已拒绝", model: "模型", reasoning: "推理强度", requested: "请求", elapsed: "已运行", duration: "耗时", ended: "结束" },
+    ja: { call: "Codexを呼び出しますか？", task: "タスク", quota: "Codex 利用枠", before: "呼び出し前", after: "呼び出し後の観測", unavailable: "現在は提供なし", left: "残り", reset: "リセット", approve: "Codex 承認リクエスト", request: "内容", starting: "Codexを起動しています…", submitting: "送信しています…", running: "Codex 実行中", done: "Codex 完了", failed: "Codex 失敗", stopped: "Codex 停止", uncertain: "Codex 状態不明", result: "結果", turn: "今回", tokens: "tokens", stop: "停止", rejected: "拒否済み", model: "モデル", reasoning: "推論強度", requested: "指定", elapsed: "実行時間", duration: "所要時間", ended: "終了" }
   };
 
   function langKey() {
@@ -158,6 +158,8 @@ const AGENT_TASK_CARD_HTML = String.raw`
     const execution = state.execution || {}, timing = state.timing || {}, lines = [];
     if (execution.resolvedModel) lines.push(t("model") + "：" + execution.resolvedModel);
     else if (execution.requestedModel) lines.push(t("model") + "：" + execution.requestedModel + " (" + t("requested") + ")");
+    if (execution.reasoningEffort) lines.push(t("reasoning") + "：" + execution.reasoningEffort);
+    else if (execution.requestedReasoningEffort) lines.push(t("reasoning") + "：" + execution.requestedReasoningEffort + " (" + t("requested") + ")");
     const terminal = isTerminalState(state);
     if (terminal && Number.isFinite(timing.durationMs)) lines.push(t("duration") + "：" + durationText(timing.durationMs));
     else if (!terminal && Number.isFinite(timing.startedAt)) lines.push(t("elapsed") + "：" + durationText(Date.now() - timing.startedAt));

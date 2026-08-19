@@ -2,8 +2,9 @@ import os from "node:os";
 import path from "node:path";
 import { createAgentPreviewState } from "./agent-tools.mjs";
 import { CodexAgentExecutor } from "./codex-agent-executor.mjs";
-import { ACCEPTED_CODEX_VERSIONS, CodexAuthorityExecutor } from "./codex-authority-executor.mjs";
+import { CodexAuthorityExecutor } from "./codex-authority-executor.mjs";
 import { CodexBrowserExecutor } from "./codex-browser-executor.mjs";
+import { resolveBrowserRuntimeCompatibility } from "./browser-runtime-compat.mjs";
 import { CodexPublicBrowserWorkbenchAdapter } from "./public-browser-workbench-adapter.mjs";
 import { resolveCodexExecutable } from "./codex-bin.mjs";
 import { readCodexQuotaSnapshot } from "./codex-quota-snapshot.mjs";
@@ -20,19 +21,61 @@ function envString(env, name, fallback = null) {
   return typeof value === "string" && value.length ? value : fallback;
 }
 
+function tomlKey(value) {
+  const text = String(value);
+  return /^[A-Za-z0-9_-]+$/.test(text) ? text : JSON.stringify(text);
+}
+
+function tomlValue(value) {
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (Array.isArray(value)) return `[${value.map(tomlValue).join(", ")}]`;
+  if (value && typeof value === "object") {
+    const fields = Object.entries(value)
+      .filter(([, child]) => child !== null && child !== undefined)
+      .map(([key, child]) => `${tomlKey(key)} = ${tomlValue(child)}`);
+    return `{ ${fields.join(", ")} }`;
+  }
+  throw new Error(`unsupported Browser MCP config value type: ${typeof value}`);
+}
+
+export function browserMcpIsolationOverride(nodeReplConfig) {
+  const isolated = nodeReplConfig && typeof nodeReplConfig === "object" && !Array.isArray(nodeReplConfig)
+    ? { node_repl: nodeReplConfig }
+    : {};
+  return `mcp_servers=${tomlValue(isolated)}`;
+}
+
+export function browserMcpDisableOverrides(serverNames = [], { keep = null } = {}) {
+  const unique = [...new Set(serverNames.filter((name) => typeof name === "string" && name))];
+  return unique
+    .filter((name) => name !== keep)
+    .map((name) => `mcp_servers.${tomlKey(name)}.enabled=false`);
+}
+
+export function buildBrowserConfigOverrides({
+  configOverrides = [],
+  compatibilityOverrides = [],
+  nodeReplConfig = null,
+  configuredMcpServerNames = [],
+  browserAvailable = true,
+} = {}) {
+  return [
+    ...configOverrides,
+    browserMcpIsolationOverride(browserAvailable ? nodeReplConfig : null),
+    ...browserMcpDisableOverrides(configuredMcpServerNames, { keep: browserAvailable ? "node_repl" : null }),
+    ...(browserAvailable ? compatibilityOverrides : []),
+  ];
+}
+
 export async function createPublicRuntime({ env = process.env } = {}) {
   const supportedPlatform = process.platform === "win32" || (process.platform === "darwin" && process.arch === "arm64");
   if (!supportedPlatform && env.CODEXLESS_ALLOW_NONWINDOWS_PROBE !== "1") {
     throw new Error("Codexless Technical Preview currently supports Windows and Apple Silicon macOS only");
   }
 
-  const probeVersion = !supportedPlatform && env.CODEXLESS_ALLOW_NONWINDOWS_PROBE === "1"
-    ? envString(env, "CODEXLESS_PROBE_CODEX_VERSION", null)
-    : null;
-  const acceptedCodexVersions = probeVersion
-    ? [...new Set([...ACCEPTED_CODEX_VERSIONS, probeVersion])]
-    : ACCEPTED_CODEX_VERSIONS;
-  const codexResolution = await resolveCodexExecutable({ env, acceptedVersions: acceptedCodexVersions });
+  const codexResolution = await resolveCodexExecutable({ env });
   const codexBin = codexResolution.path;
 
   const defaultCwd = envString(env, "CODEXLESS_DEFAULT_CWD", process.cwd());
@@ -44,7 +87,6 @@ export async function createPublicRuntime({ env = process.env } = {}) {
   if (!Array.isArray(configOverrides) || !configOverrides.every((value) => typeof value === "string" && value.trim())) {
     throw new Error("CODEXLESS_CONFIG_OVERRIDES_FILE must contain { overrides: [\"key=value\", ...] }");
   }
-
   const meteredConsentMode = envString(env, "CODEXLESS_AGENT_METERED_CONSENT", "always");
   if (!["off", "always"].includes(meteredConsentMode)) {
     throw new Error("CODEXLESS_AGENT_METERED_CONSENT must be off or always");
@@ -57,6 +99,7 @@ export async function createPublicRuntime({ env = process.env } = {}) {
   const recentCallDiagnostics = createRecentCallDiagnostics(recentCallOptionsFromEnv(env));
 
   let publicContext = null;
+  let browserContext = null;
   let agentExecutor = null;
   let closed = false;
 
@@ -69,7 +112,7 @@ export async function createPublicRuntime({ env = process.env } = {}) {
       maxTimeoutMs: 30_000,
       watchdogGraceMs: 5_000,
       outputBytesCap: 32_768,
-      acceptedCodexVersions,
+      acceptedCodexVersions: null,
     });
     const authorityValidation = await authorityExecutor.validate();
 
@@ -80,6 +123,25 @@ export async function createPublicRuntime({ env = process.env } = {}) {
       runtimeKind: STOCK_RUNTIME_KIND,
     });
     await publicContext.start();
+    const [nodeReplConfig, configuredMcpServerNames, currentChromeSkill] = await Promise.all([
+      publicContext.configuredMcpServer({ name: "node_repl", cwd: defaultCwd }).catch(() => null),
+      publicContext.configuredMcpServerNames({ cwd: defaultCwd }).catch(() => []),
+      publicContext.currentChromeSkill({ cwd: defaultCwd }).catch(() => null),
+    ]);
+    const browserCompatibility = await resolveBrowserRuntimeCompatibility({
+      codexBin,
+      chromeSkillPath: currentChromeSkill?.path ?? null,
+      env,
+    });
+    const browserRuntimeCwd = browserCompatibility.browserRuntimeCwd;
+    const browserAvailable = browserCompatibility.status === "ok" && nodeReplConfig !== null;
+    const browserConfigOverrides = buildBrowserConfigOverrides({
+      configOverrides,
+      compatibilityOverrides: browserCompatibility.overrides,
+      nodeReplConfig,
+      configuredMcpServerNames,
+      browserAvailable,
+    });
 
     const resourceSnapshotProvider = async () => {
       const telemetry = createPreviewTelemetryClient({
@@ -111,8 +173,14 @@ export async function createPublicRuntime({ env = process.env } = {}) {
       taskStateFile: agentTaskStateFile,
     });
 
+    browserContext = new CodexPublicContextExecutor({
+      codexBin,
+      defaultCwd: browserRuntimeCwd,
+      configOverrides: browserConfigOverrides,
+      runtimeKind: STOCK_RUNTIME_KIND,
+    });
     const browser = new CodexBrowserExecutor({
-      workbench: new CodexPublicBrowserWorkbenchAdapter({ context: publicContext }),
+      workbench: new CodexPublicBrowserWorkbenchAdapter({ context: browserContext, runtimeCwd: browserRuntimeCwd }),
       authorityExecutor,
       defaultCwd,
     });
@@ -135,7 +203,11 @@ export async function createPublicRuntime({ env = process.env } = {}) {
       try {
         await agentExecutor?.close();
       } finally {
-        await publicContext?.close();
+        try {
+          await browserContext?.close();
+        } finally {
+          await publicContext?.close();
+        }
       }
     }
 

@@ -5,7 +5,6 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
-import { ACCEPTED_CODEX_VERSIONS } from "../src/codex-authority-executor.mjs";
 import { resolveCodexExecutable } from "../src/codex-bin.mjs";
 import { PUBLIC_SURFACE_VERSION, PUBLIC_TOOL_NAMES } from "../src/surface-contracts.mjs";
 import { AGENT_TASK_CARD_URI } from "../src/agent-card-ui.mjs";
@@ -15,7 +14,7 @@ const { Client, StreamableHTTPClientTransport } = require("@modelcontextprotocol
 const { StdioClientTransport } = require("@modelcontextprotocol/client/stdio");
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
-const codexBin = (await resolveCodexExecutable({ acceptedVersions: ACCEPTED_CODEX_VERSIONS })).path;
+const codexBin = (await resolveCodexExecutable()).path;
 const testCwd = process.env.CODEXLESS_TEST_CWD;
 const contractStateRoot = mkdtempSync(path.join(os.tmpdir(), "codexless-public-contract-"));
 const recentCallStateFile = path.join(contractStateRoot, "recent-calls.json");
@@ -44,6 +43,17 @@ function createIsolatedPublicTestEnv(extra = {}) {
 
 assert.equal(PUBLIC_SURFACE_VERSION, "codexless-public-preview-v1");
 assert.equal(PUBLIC_TOOL_NAMES.length, 39);
+for (const relative of [
+  "src/browser-tools.mjs",
+  "src/codex-browser-executor.mjs",
+  "src/construction-tools.mjs",
+  "src/agent-tools.mjs",
+  "src/public-context-tools.mjs",
+  "src/public-server-factory.mjs",
+]) {
+  const text = readFileSync(path.join(projectRoot, relative), "utf8");
+  assert.doesNotMatch(text, /Toolwire/, `public/model-facing source must not expose the internal Toolwire brand: ${relative}`);
+}
 
 const forbiddenNames = [
   "codex.fs_read",
@@ -123,6 +133,11 @@ try {
   assert.match(sendTool?.description ?? "", /consentRef identifies.*never proof of approval/i);
   assert.match(startTool?.inputSchema?.properties?.consentRef?.description ?? "", /never authorizes/i);
   assert.match(sendTool?.inputSchema?.properties?.consentRef?.description ?? "", /never authorizes/i);
+  assert.match(startTool?.inputSchema?.properties?.reasoningEffort?.description ?? "", /model_list|per-model/i);
+  assert.match(sendTool?.inputSchema?.properties?.reasoningEffort?.description ?? "", /model_list|per-model/i);
+  assert.equal(startTool?.inputSchema?.properties?.reasoningEffort?.maxLength, 128);
+  assert.equal(sendTool?.inputSchema?.properties?.reasoningEffort?.maxLength, 128);
+  assert.match(taskCardResource.contents?.[0]?.text ?? "", /requestedReasoningEffort/);
 
   const requestId = `contract-consent-${randomUUID()}`;
   const prompt = "Codexless contract probe: prepare only; do not start Codex.";
@@ -163,10 +178,34 @@ try {
   assert.match(commitToken ?? "", /^commit_/);
   assert.equal(JSON.stringify(rendered.structuredContent).includes(commitToken), false, "commit capability must not leak into model-visible structuredContent");
   assert.equal((rendered.content?.[0]?.text ?? "").includes(commitToken), false, "commit capability must not leak into model-visible text content");
-  assert.match(rendered.content?.[0]?.text ?? "", /^┌[─]+┐/);
+  assert.doesNotMatch(rendered.content?.[0]?.text ?? "", /[┌┐└┘│─]/, "Portable Card fallback should be plain text so the host can provide visual framing");
+  assert.match(rendered.content?.[0]?.text ?? "", /Call Codex\?|调用 Codex？|Codexを呼び出しますか？/i);
   assert.match(rendered.content?.[0]?.text ?? "", /Yes/);
   assert.match(rendered.content?.[0]?.text ?? "", /No/);
   assert.equal((rendered.content?.[0]?.text ?? "").includes(rendered.structuredContent?.manualFallback?.taskId ?? ""), false, "Portable Card short task ID stays hidden in structured content");
+
+  const effortRequestId = `contract-effort-${randomUUID()}`;
+  const effortPrepared = await client.callTool({
+    name: "codex.agent_start",
+    arguments: { prompt: "Codexless contract probe: display requested reasoning effort only.", requestId: effortRequestId, reasoningEffort: "ultra" },
+  });
+  assert.equal(effortPrepared.isError, false);
+  assert.equal(effortPrepared.structuredContent?.status, "consent_required");
+  assert.equal(effortPrepared.structuredContent?.taskCard?.requestedReasoningEffort, "ultra");
+  assert.equal(effortPrepared.structuredContent?.execution?.requestedReasoningEffort, "ultra");
+  const effortConsentRef = effortPrepared.structuredContent?.meteredConsent?.consentRef;
+  const effortRendered = await client.callTool({
+    name: "codex.agent_card_render",
+    arguments: { consentRef: effortConsentRef },
+  });
+  assert.match(effortRendered.content?.[0]?.text ?? "", /Reasoning effort|推理强度|推論強度/i);
+  assert.match(effortRendered.content?.[0]?.text ?? "", /ultra/i);
+  const effortDeclined = await client.callTool({
+    name: "codex.agent_decline",
+    arguments: { consentRef: effortConsentRef },
+  });
+  assert.equal(effortDeclined.isError, false);
+  assert.equal(effortDeclined.structuredContent?.status, "rejected");
 
   const missingCapability = await client.callTool({
     name: "codex.agent_commit",

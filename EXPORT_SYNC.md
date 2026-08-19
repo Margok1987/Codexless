@@ -76,7 +76,7 @@ For each upstream-to-public sync:
 1. Identify the upstream commit/version being considered.
 2. Identify the exact accepted public capability/change. Do not export unrelated upstream churn.
 3. For Browser, copy the canonical household executor/registrar/construction helper and the copied household Browser regression as an atomic mirror; do not hand-port individual Browser methods or maintain a held-back action list. Copy other public files only through their accepted release path.
-4. Run the household `npm run test:public-browser-export-parity -- <candidate-root>` gate. It must prove canonical hashes, exact 21 Browser tools, no private/CUA leakage, no retired duplicate Browser implementation, correct public adapter wiring, and 55/55 copied Browser regressions before the candidate can advance.
+4. Run the household `npm run test:public-browser-export-parity -- <candidate-root>` gate. It must prove canonical hashes, exact 21 Browser tools, no private/CUA leakage, no retired duplicate Browser implementation, correct public adapter wiring, and 60/60 copied Browser regressions before the candidate can advance.
 5. Review imports from every changed public file. Any new dependency or new internal module is a separate review item.
 6. Confirm `src/surface-contracts.mjs` still contains the intended exact public tool list, then run `npm run test:public-registration`; runtime must expose exactly that list while strict mode rejects an unknown tool.
 7. Install/freeze dependencies in the public tree itself and keep the release lockfile. Do not rely on a parent/global `NODE_PATH`; verify required packages resolve from this repository's own `node_modules`.

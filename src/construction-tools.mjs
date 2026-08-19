@@ -37,7 +37,7 @@ export function registerConstructionTools(server, { authorityExecutor }) {
     {
       title: "Guarded Precise Project Edit",
       description:
-        "Apply one guarded exact-text edit to an existing UTF-8 project file without shell quoting. Toolwire first resolves Codex authority for cwd, requires the file's real path to stay inside that trusted root, optionally checks the current SHA-256, requires expectedText to occur exactly expectedOccurrences times, rechecks the source hash immediately before writing, and then replaces only those exact occurrences. previewOnly validates and previews without writing. Any drift or mismatch fails closed.",
+        "Apply one guarded exact-text edit to an existing UTF-8 project file without shell quoting. The service first resolves Codex authority for cwd, requires the file's real path to stay inside that trusted root, optionally checks the current SHA-256, requires expectedText to occur exactly expectedOccurrences times, rechecks the source hash immediately before writing, and then replaces only those exact occurrences. previewOnly validates and previews without writing. Any drift or mismatch fails closed.",
       inputSchema: z.object({
         path: z.string().min(1).max(32_768),
         expectedText: z.string().min(1).max(200_000),

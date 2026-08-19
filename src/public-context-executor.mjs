@@ -158,6 +158,34 @@ export class CodexPublicContextExecutor {
     return (result?.data ?? []).flatMap((row) => row?.skills ?? []);
   }
 
+  async configuredMcpServerNames({ cwd = this.#defaultCwd } = {}) {
+    const effectiveCwd = path.resolve(cwd);
+    const configRead = await this.#request("config/read", { cwd: effectiveCwd, includeLayers: false });
+    const config = configRead?.config ?? {};
+    const servers = config?.mcp_servers ?? config?.mcpServers ?? {};
+    return Object.keys(servers).filter((name) => typeof name === "string" && name);
+  }
+
+  async configuredMcpServer({ name, cwd = this.#defaultCwd } = {}) {
+    if (typeof name !== "string" || !name) throw new Error("configuredMcpServer requires a non-empty name");
+    const effectiveCwd = path.resolve(cwd);
+    const configRead = await this.#request("config/read", { cwd: effectiveCwd, includeLayers: false });
+    const config = configRead?.config ?? {};
+    const servers = config?.mcp_servers ?? config?.mcpServers ?? {};
+    const value = servers?.[name];
+    return value && typeof value === "object" && !Array.isArray(value) ? structuredClone(value) : null;
+  }
+
+  async currentChromeSkill({ cwd = this.#defaultCwd } = {}) {
+    const effectiveCwd = path.resolve(cwd);
+    const skillsResult = await this.#request("skills/list", { cwds: [effectiveCwd], forceReload: false });
+    const skills = (skillsResult?.data ?? []).flatMap((row) => row?.skills ?? []);
+    const chromeSkill = skills.find((skill) => skill?.name === CHROME_SKILL_NAME && skill?.enabled !== false);
+    return chromeSkill?.path
+      ? { name: CHROME_SKILL_NAME, path: chromeSkill.path }
+      : null;
+  }
+
   async browserPrerequisites({ cwd = this.#defaultCwd } = {}) {
     const effectiveCwd = path.resolve(cwd);
     const skillsResult = await this.#request("skills/list", { cwds: [effectiveCwd], forceReload: false });

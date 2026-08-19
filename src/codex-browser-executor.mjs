@@ -149,11 +149,12 @@ const CONTENTEDITABLE_PARAGRAPH_CANONICALIZER_SOURCE = canonicalizeContentEditab
 const BOUND_CONTENTEDITABLE_PARAGRAPH_RESOLVER_SOURCE = resolveBoundContentEditableParagraphText.toString();
 
 export class BrowserPreviewError extends Error {
-  constructor(code, message, nextActions = []) {
+  constructor(code, message, nextActions = [], diagnostic = null) {
     super(message);
     this.name = "BrowserPreviewError";
     this.code = code;
     this.nextActions = nextActions;
+    this.diagnostic = diagnostic;
   }
 }
 
@@ -223,7 +224,7 @@ export class CodexBrowserExecutor {
         chrome: sanitizeBackend(chrome),
         connectedBrowsers: backends.map(sanitizeBackend),
         authState: "site_specific_unknown",
-        note: "Browser connectivity is healthy. Website login state is site-specific and is verified by reading the actual tab URL/page; Toolwire does not infer authentication from extension connectivity alone.",
+        note: "Browser connectivity is healthy. Website login state is site-specific and is verified by reading the actual tab URL/page; the Browser runtime does not infer authentication from extension connectivity alone.",
       };
     } catch (error) {
       return browserUnavailable(error);
@@ -366,7 +367,7 @@ try {
     snapshot: __twSnapshot,
   };
 } finally {
-  if (__twTab) await __twBrowser.tabs.finalize({ keep: [] });
+  if (__twTab) if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
 }
 nodeRepl.write(JSON.stringify(__twPayload));
 `, "Read existing Chrome tab DOM", { expectedGeneration: state.workbenchGeneration });
@@ -392,7 +393,7 @@ nodeRepl.write(JSON.stringify(__twPayload));
       snapshotChars: snapshot.length,
       snapshotTruncated: truncated,
       authState: "site_specific_unknown",
-      note: "This is a read-only snapshot of the existing tab. Toolwire did not navigate, click, submit, or change page state. If the site redirected to a login page, inspect the returned current URL/snapshot instead of assuming authentication.",
+      note: "This is a read-only snapshot of the existing tab. The Browser runtime did not navigate, click, submit, or change page state. If the site redirected to a login page, inspect the returned current URL/snapshot instead of assuming authentication.",
     };
   }
 
@@ -431,7 +432,7 @@ try {
     dataBase64: Buffer.from(__twBytes).toString("base64"),
   };
 } finally {
-  if (__twTab) await __twBrowser.tabs.finalize({ keep: [] });
+  if (__twTab) if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
 }
 nodeRepl.write(JSON.stringify(__twPayload));
 `, "Capture existing Chrome tab screenshot", { expectedGeneration: state.workbenchGeneration });
@@ -450,14 +451,14 @@ nodeRepl.write(JSON.stringify(__twPayload));
     if (!image) {
       throw new BrowserPreviewError(
         "BROWSER_SCREENSHOT_FORMAT_UNSUPPORTED",
-        "Chrome screenshot returned an unsupported image format; Toolwire currently accepts the JPEG/PNG formats observed from the official tab.screenshot() API"
+        "Chrome screenshot returned an unsupported image format; the Browser runtime currently accepts the JPEG/PNG formats observed from the official tab.screenshot() API"
       );
     }
     if (bytes.length > MAX_SCREENSHOT_BYTES) {
       throw new BrowserPreviewError(
         "BROWSER_SCREENSHOT_TOO_LARGE",
-        `Chrome viewport screenshot is ${bytes.length} bytes, above Toolwire's ${MAX_SCREENSHOT_BYTES}-byte return limit`,
-        ["Reduce the browser viewport or inspect the page in smaller visual sections; Toolwire does not auto-downsample or silently truncate screenshots."]
+        `Chrome viewport screenshot is ${bytes.length} bytes, above the Browser runtime's ${MAX_SCREENSHOT_BYTES}-byte return limit`,
+        ["Reduce the browser viewport or inspect the page in smaller visual sections; the Browser runtime does not auto-downsample or silently truncate screenshots."]
       );
     }
     if (Number.isInteger(result?.byteLength) && result.byteLength !== bytes.length) {
@@ -482,7 +483,7 @@ nodeRepl.write(JSON.stringify(__twPayload));
       height,
       fullPage: false,
       dataBase64,
-      note: "This is a read-only screenshot of the current visible viewport from the existing tab. Toolwire did not navigate, click, type, submit, scroll, or expose raw provider tab IDs. The image is returned as MCP image content rather than embedded inside structured JSON.",
+      note: "This is a read-only screenshot of the current visible viewport from the existing tab. The Browser runtime did not navigate, click, type, submit, scroll, or expose raw provider tab IDs. The image is returned as MCP image content rather than embedded inside structured JSON.",
     };
   }
 
@@ -518,7 +519,7 @@ nodeRepl.write(JSON.stringify({
     if (currentUrl === null) {
       throw new BrowserPreviewError(
         "BROWSER_CLOSE_URL_UNAVAILABLE",
-        "The current Chrome tab did not expose a URL, so Toolwire cannot safely bind and revalidate this close action",
+        "The current Chrome tab did not expose a URL, so the Browser runtime cannot safely bind and revalidate this close action",
         ["Call codex.browser_tabs again after the tab has a stable visible URL; do not close it through an unbound raw provider id."]
       );
     }
@@ -587,7 +588,7 @@ nodeRepl.write(JSON.stringify({
     if (!state || state.providerTabId !== prepared.providerTabId) {
       throw new BrowserPreviewError(
         "BROWSER_ACTION_TAB_STALE",
-        "The prepared tab close no longer matches a current Toolwire browser tab",
+        "The prepared tab close no longer matches a current Browser runtime tab",
         ["Call codex.browser_tabs and prepare a fresh close only for the exact current tab that still needs closing."]
       );
     }
@@ -619,7 +620,7 @@ try {
 } finally {
   if (__twTab && !__twDispatchAttempted) {
     try {
-      await __twBrowser.tabs.finalize({ keep: [] });
+      if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
     } catch (__twError) {
       __twReleaseError = __twError;
     }
@@ -654,7 +655,7 @@ nodeRepl.write(JSON.stringify(__twPayload));
         url: prepared.expectedUrl,
       }),
       beforeUrl: stringOrNull(result?.beforeUrl) ?? prepared.expectedUrl,
-      note: "Exactly one previously prepared existing Chrome tab was closed through the official Tab.close() primitive after Toolwire consumed the single-use ref and revalidated the same Workbench generation, provider identity, and current URL. Toolwire removed its local tabRef/provider mapping after the confirmed close. It did not close a window, batch-close tabs, navigate, reload, go back, focus another tab, or retry the close.",
+      note: "Exactly one previously prepared existing Chrome tab was closed through the official Tab.close() primitive after the Browser runtime consumed the single-use ref and revalidated the same Workbench generation, provider identity, and current URL. The Browser runtime removed its local tabRef/provider mapping after the confirmed close. It did not close a window, batch-close tabs, navigate, reload, go back, focus another tab, or retry the close.",
     };
   }
 
@@ -740,7 +741,13 @@ try {
 } finally {
   if (__twTab) {
     try {
-      await __twBrowser.tabs.finalize({ keep: [{ tab: __twTab, status: "deliverable" }] });
+      if (typeof __twBrowser.tabs?.finalize === "function") {
+        await __twBrowser.tabs.finalize({ keep: [{ tab: __twTab, status: "deliverable" }] });
+      } else if (typeof __twTab.markDeliverable === "function") {
+        await __twTab.markDeliverable();
+      } else {
+        throw new Error("TOOLWIRE_BROWSER_DELIVERABLE_API_UNAVAILABLE");
+      }
     } catch (__twError) {
       __twFinalizeError = __twError;
     }
@@ -844,7 +851,7 @@ try {
 } finally {
   if (__twTab) {
     try {
-      await __twBrowser.tabs.finalize({ keep: [] });
+      if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
     } catch (__twError) {
       __twFinalizeError = __twError;
     }
@@ -903,8 +910,8 @@ nodeRepl.write(JSON.stringify(__twPayload));
       snapshotChars: Number.isInteger(readback?.snapshotChars) ? readback.snapshotChars : snapshot.length,
       snapshotTruncated: readback?.snapshotTruncated === true,
       note: readback
-        ? "One bounded page scroll returned successfully through an official Chrome Playwright keypress targeted at the fixed document body, then Toolwire performed a separate read-only DOM readback. Page-sized scroll uses PageDown/PageUp; small scroll uses a bounded ArrowDown/ArrowUp sequence. This avoids the Chrome Input.synthesizeScrollGesture timeout observed on Reddit while keeping caller coordinates/selectors unavailable. The scroll receipt is independent from readback, so a later read failure cannot turn an already-confirmed scroll into an uncertain mutation."
-        : "One bounded page scroll returned successfully through an official Chrome Playwright keypress targeted at the fixed document body. The separate read-only DOM readback failed, but Toolwire does not mark the confirmed scroll uncertain and does not repeat the scroll automatically; re-read the tab if page content is still needed.",
+        ? "One bounded page scroll returned successfully through an official Chrome Playwright keypress targeted at the fixed document body, then the Browser runtime performed a separate read-only DOM readback. Page-sized scroll uses PageDown/PageUp; small scroll uses a bounded ArrowDown/ArrowUp sequence. This avoids the Chrome Input.synthesizeScrollGesture timeout observed on Reddit while keeping caller coordinates/selectors unavailable. The scroll receipt is independent from readback, so a later read failure cannot turn an already-confirmed scroll into an uncertain mutation."
+        : "One bounded page scroll returned successfully through an official Chrome Playwright keypress targeted at the fixed document body. The separate read-only DOM readback failed, but the Browser runtime does not mark the confirmed scroll uncertain and does not repeat the scroll automatically; re-read the tab if page content is still needed.",
     };
   }
 
@@ -969,7 +976,7 @@ try {
 } finally {
   if (__twTab) {
     try {
-      await __twBrowser.tabs.finalize({ keep: [] });
+      if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
     } catch (__twError) {
       __twFinalizeError = __twError;
     }
@@ -1032,8 +1039,8 @@ nodeRepl.write(JSON.stringify(__twPayload));
       snapshotChars: Number.isInteger(readback?.snapshotChars) ? readback.snapshotChars : snapshot.length,
       snapshotTruncated: readback?.snapshotTruncated === true,
       note: readback
-        ? "Exactly one fixed Enter/Tab/Escape keypress returned successfully through the official Chrome DOM CUA keypress API at the page's currently focused element, then Toolwire performed a separate read-only DOM readback. Callers cannot supply arbitrary keys, modifiers, text, selectors, coordinates, repeats, or JavaScript. Enter may submit or activate the focused control, so apply the current Codex Browser confirmation policy and task context before calling when that representational/external side effect is possible. A later readback failure cannot turn a confirmed keypress uncertain and Toolwire never repeats it automatically."
-        : "Exactly one fixed Enter/Tab/Escape keypress returned successfully through the official Chrome DOM CUA keypress API at the page's currently focused element. The separate read-only DOM readback failed, but Toolwire does not mark the confirmed keypress uncertain and does not repeat it automatically; re-read the tab if page content is still needed.",
+        ? "Exactly one fixed Enter/Tab/Escape keypress returned successfully through the official Chrome DOM CUA keypress API at the page's currently focused element, then the Browser runtime performed a separate read-only DOM readback. Callers cannot supply arbitrary keys, modifiers, text, selectors, coordinates, repeats, or JavaScript. Enter may submit or activate the focused control, so apply the current Codex Browser confirmation policy and task context before calling when that representational/external side effect is possible. A later readback failure cannot turn a confirmed keypress uncertain and the Browser runtime never repeats it automatically."
+        : "Exactly one fixed Enter/Tab/Escape keypress returned successfully through the official Chrome DOM CUA keypress API at the page's currently focused element. The separate read-only DOM readback failed, but the Browser runtime does not mark the confirmed keypress uncertain and does not repeat it automatically; re-read the tab if page content is still needed.",
     };
   }
 
@@ -1138,7 +1145,7 @@ nodeRepl.write(JSON.stringify({
     if (!state || state.providerTabId !== prepared.providerTabId) {
       throw new BrowserPreviewError(
         "BROWSER_ACTION_TAB_STALE",
-        "The prepared navigation no longer matches a current Toolwire browser tab",
+        "The prepared navigation no longer matches a current Browser runtime tab",
         ["Call codex.browser_tabs and prepare the navigation again from current page state."]
       );
     }
@@ -1178,7 +1185,7 @@ try {
 } finally {
   if (__twTab) {
     try {
-      await __twBrowser.tabs.finalize({ keep: [] });
+      if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
     } catch (__twError) {
       __twFinalizeError = __twError;
     }
@@ -1221,7 +1228,7 @@ nodeRepl.write(JSON.stringify(__twPayload));
       postSnapshot: snapshotTruncated ? snapshot.slice(0, BROWSER_POST_ACTION_MAX_CHARS) : snapshot,
       postSnapshotChars: snapshot.length,
       postSnapshotTruncated: snapshotTruncated,
-      note: "Exactly one previously prepared existing-tab navigation was dispatched after the caller applied the current Browser confirmation policy and task context. The legacy actionApprovalRef is only an exact-action binding, not proof of user approval. Toolwire revalidated the same starting tab URL, used the official Chrome tab.goto() for the bound http(s) destination, read back the resulting page state, released the claimed user tab, and did not click, fill, submit, or open a new tab.",
+      note: "Exactly one previously prepared existing-tab navigation was dispatched after the caller applied the current Browser confirmation policy and task context. The legacy actionApprovalRef is only an exact-action binding, not proof of user approval. The Browser runtime revalidated the same starting tab URL, used the official Chrome tab.goto() for the bound http(s) destination, read back the resulting page state, released the claimed user tab, and did not click, fill, submit, or open a new tab.",
     };
   }
 
@@ -1305,7 +1312,7 @@ try {
     resolvedClickBinding: __twResolvedClickBinding,
   };
 } finally {
-  if (__twTab) await __twBrowser.tabs.finalize({ keep: [] });
+  if (__twTab) if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
 }
 nodeRepl.write(JSON.stringify(__twPayload));
 `, "Prepare exact Chrome click", { expectedGeneration: state.workbenchGeneration });
@@ -1383,7 +1390,7 @@ nodeRepl.write(JSON.stringify(__twPayload));
     if (!state || state.providerTabId !== prepared.providerTabId) {
       throw new BrowserPreviewError(
         "BROWSER_ACTION_TAB_STALE",
-        "The prepared click no longer matches a current Toolwire browser tab",
+        "The prepared click no longer matches a current Browser runtime tab",
         ["Call codex.browser_tabs and prepare the click again from current page state."]
       );
     }
@@ -1469,7 +1476,7 @@ try {
 } finally {
   if (__twTab) {
     try {
-      await __twBrowser.tabs.finalize({ keep: [] });
+      if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
     } catch (__twError) {
       __twFinalizeError = __twError;
     }
@@ -1518,7 +1525,7 @@ nodeRepl.write(JSON.stringify(__twPayload));
       postSnapshot: snapshotTruncated ? snapshot.slice(0, BROWSER_POST_ACTION_MAX_CHARS) : snapshot,
       postSnapshotChars: snapshot.length,
       postSnapshotTruncated: snapshotTruncated,
-      note: "Exactly one previously prepared click was dispatched after the caller applied the current Browser confirmation policy and task context. The legacy actionApprovalRef is only an exact-action binding, not proof of user approval. Toolwire revalidated the tab URL and the same unique visible enabled exact target immediately before dispatch, then read back current page state and released the claimed user tab.",
+      note: "Exactly one previously prepared click was dispatched after the caller applied the current Browser confirmation policy and task context. The legacy actionApprovalRef is only an exact-action binding, not proof of user approval. The Browser runtime revalidated the tab URL and the same unique visible enabled exact target immediately before dispatch, then read back current page state and released the claimed user tab.",
     };
   }
 
@@ -1572,7 +1579,7 @@ nodeRepl.write(JSON.stringify(__twPayload));
     if (!state || state.providerTabId !== prepared.providerTabId) {
       throw new BrowserPreviewError(
         "BROWSER_ACTION_TAB_STALE",
-        "The prepared download no longer matches a current Toolwire browser tab",
+        "The prepared download no longer matches a current Browser runtime tab",
         ["Call codex.browser_tabs and prepare the download again from current page state."]
       );
     }
@@ -1649,7 +1656,7 @@ try {
 } finally {
   if (__twTab) {
     try {
-      await __twBrowser.tabs.finalize({ keep: [] });
+      if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
     } catch (__twError) {
       __twFinalizeError = __twError;
     }
@@ -1711,8 +1718,8 @@ nodeRepl.write(JSON.stringify(__twPayload));
       postSnapshotChars: snapshot.length,
       postSnapshotTruncated: snapshotTruncated,
       note: downloadPath
-        ? "Exactly one prepared semantic target produced a confirmed Chrome download event. Toolwire returns the browser-managed local download path but does not open, parse, execute, upload, or trust the downloaded file; downloaded content remains untrusted. A later page-read or cleanup failure never causes an automatic repeat download."
-        : "Exactly one prepared semantic target produced a confirmed Chrome download event, but this Chrome runtime did not expose a usable download path. Toolwire does not repeat the download automatically because the file may already exist in the browser's configured download location.",
+        ? "Exactly one prepared semantic target produced a confirmed Chrome download event. The Browser runtime returns the browser-managed local download path but does not open, parse, execute, upload, or trust the downloaded file; downloaded content remains untrusted. A later page-read or cleanup failure never causes an automatic repeat download."
+        : "Exactly one prepared semantic target produced a confirmed Chrome download event, but this Chrome runtime did not expose a usable download path. The Browser runtime does not repeat the download automatically because the file may already exist in the browser's configured download location.",
     };
   }
 
@@ -1720,7 +1727,7 @@ nodeRepl.write(JSON.stringify(__twPayload));
     if (!this.#authorityExecutor) {
       throw new BrowserPreviewError(
         "BROWSER_UPLOAD_AUTHORITY_UNAVAILABLE",
-        "Browser upload requires Toolwire's Codex authority resolver so local file paths cannot bypass project trust boundaries"
+        "Browser upload requires the local Codex authority resolver so local file paths cannot bypass project trust boundaries"
       );
     }
     if (typeof filePath !== "string" || !filePath.trim()) {
@@ -1825,7 +1832,7 @@ nodeRepl.write(JSON.stringify(__twPayload));
     if (!state || state.providerTabId !== prepared.providerTabId) {
       throw new BrowserPreviewError(
         "BROWSER_ACTION_TAB_STALE",
-        "The prepared upload no longer matches a current Toolwire browser tab",
+        "The prepared upload no longer matches a current Browser runtime tab",
         ["Call codex.browser_tabs and prepare the upload again from current page state."]
       );
     }
@@ -1893,7 +1900,7 @@ try {
 } finally {
   if (__twTab) {
     try {
-      await __twBrowser.tabs.finalize({ keep: [] });
+      if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
     } catch (__twError) {
       __twFinalizeError = __twError;
     }
@@ -1940,7 +1947,7 @@ nodeRepl.write(JSON.stringify(__twPayload));
     ) {
       throw new BrowserPreviewError(
         "BROWSER_UPLOAD_SOURCE_CHANGED_AFTER_DISPATCH",
-        "Upload source changed during the dispatch window; Toolwire cannot prove which version the page observed",
+        "Upload source changed during the dispatch window; the Browser runtime cannot prove which version the page observed",
         ["Do not retry automatically. Inspect page state and the current local file; prepare a new upload only after the desired content is stable and clearly authorized."]
       );
     }
@@ -1984,7 +1991,7 @@ nodeRepl.write(JSON.stringify(__twPayload));
       postSnapshot: snapshotTruncated ? snapshot.slice(0, BROWSER_POST_ACTION_MAX_CHARS) : snapshot,
       postSnapshotChars: snapshot.length,
       postSnapshotTruncated: snapshotTruncated,
-      note: "Exactly one authority-bounded existing local file from the current Codex trusted authority root was handed to the webpage through the official Chrome filechooser/setFiles flow after revalidating the exact prepared semantic target. Toolwire binds canonical path + byte length + SHA-256 at prepare time, revalidates the same fingerprint immediately before Browser dispatch, and checks it again after setFiles returns. This catches ordinary source-file drift but is not represented as an operating-system write lock against a hostile concurrent writer in the narrow dispatch window. setFiles returning confirms browser-side file selection/change delivery, not necessarily remote server acceptance; use page state for any stronger upload-complete claim. Toolwire never retries an uncertain upload automatically.",
+      note: "Exactly one authority-bounded existing local file from the current Codex trusted authority root was handed to the webpage through the official Chrome filechooser/setFiles flow after revalidating the exact prepared semantic target. The Browser runtime binds canonical path + byte length + SHA-256 at prepare time, revalidates the same fingerprint immediately before Browser dispatch, and checks it again after setFiles returns. This catches ordinary source-file drift but is not represented as an operating-system write lock against a hostile concurrent writer in the narrow dispatch window. setFiles returning confirms browser-side file selection/change delivery, not necessarily remote server acceptance; use page state for any stronger upload-complete claim. The Browser runtime never retries an uncertain upload automatically.",
     };
   }
 
@@ -2131,7 +2138,7 @@ try {
     targetStructure: __twTargetStructure,
   };
 } finally {
-  if (__twTab) await __twBrowser.tabs.finalize({ keep: [] });
+  if (__twTab) if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
 }
 nodeRepl.write(JSON.stringify(__twPayload));
 `, "Prepare exact Chrome fill", { expectedGeneration: state.workbenchGeneration });
@@ -2212,7 +2219,7 @@ nodeRepl.write(JSON.stringify(__twPayload));
     if (!state || state.providerTabId !== prepared.providerTabId) {
       throw new BrowserPreviewError(
         "BROWSER_ACTION_TAB_STALE",
-        "The prepared fill no longer matches a current Toolwire browser tab",
+        "The prepared fill no longer matches a current Browser runtime tab",
         ["Call codex.browser_tabs and prepare the fill again from current page state."]
       );
     }
@@ -2465,7 +2472,7 @@ try {
 } finally {
   if (__twTab) {
     try {
-      await __twBrowser.tabs.finalize({ keep: [] });
+      if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
     } catch (__twError) {
       __twFinalizeError = __twError;
     }
@@ -2674,7 +2681,7 @@ try {
 } finally {
   if (__twTab) {
     try {
-      await __twBrowser.tabs.finalize({ keep: [] });
+      if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
     } catch (__twError) {
       __twFinalizeError = __twError;
     }
@@ -2751,7 +2758,7 @@ nodeRepl.write(JSON.stringify(__twPayload));
       postSnapshot: snapshotTruncated ? snapshot.slice(0, BROWSER_POST_ACTION_MAX_CHARS) : snapshot,
       postSnapshotChars: snapshot.length,
       postSnapshotTruncated: snapshotTruncated,
-      note: "Exactly one previously prepared fill was dispatched after the caller applied the current Browser confirmation policy and task context. The legacy actionApprovalRef is only an exact-action binding, not proof of user approval. Toolwire revalidated the same tab URL and unique visible enabled exact role/name or role+placeholder target, verified the resulting field value equals the bound text, read back current page state, and released the claimed user tab. It did not click, press Enter, navigate, or submit the page.",
+      note: "Exactly one previously prepared fill was dispatched after the caller applied the current Browser confirmation policy and task context. The legacy actionApprovalRef is only an exact-action binding, not proof of user approval. The Browser runtime revalidated the same tab URL and unique visible enabled exact role/name or role+placeholder target, verified the resulting field value equals the bound text, read back current page state, and released the claimed user tab. It did not click, press Enter, navigate, or submit the page.",
     };
   }
 
@@ -3705,14 +3712,70 @@ function browserMutationResultUncertain(kind, message) {
   );
 }
 
+function extractBrowserPermissionScope(message) {
+  const match = String(message).match(/(?:^|[\s,{])["']?scope["']?\s*[:=]\s*["']?(conversation|global)\b/i);
+  return match?.[1]?.toLowerCase() ?? null;
+}
+
+function extractBrowserPermissionOrigin(message) {
+  const text = String(message);
+  const candidates = [];
+  const accessMatch = text.match(/\bcannot\s+access\s+(https?:\/\/\S+?)\s+because\b/i);
+  if (accessMatch?.[1]) candidates.push(accessMatch[1]);
+  const structuredMatch = text.match(/["']origin["']\s*:\s*["'](https?:\/\/[^"']+)["']/i);
+  if (structuredMatch?.[1]) candidates.push(structuredMatch[1]);
+  for (const candidate of candidates) {
+    try {
+      return new URL(candidate).origin;
+    } catch {}
+  }
+  return null;
+}
+
+function browserPermissionDiagnostic(message, source) {
+  const scope = extractBrowserPermissionScope(message);
+  const origin = extractBrowserPermissionOrigin(message);
+  return {
+    source,
+    ...(scope ? { scope } : {}),
+    ...(origin ? { origin } : {}),
+  };
+}
+
 function classifyBrowserError(error) {
   if (error instanceof BrowserPreviewError) return error;
   const message = error instanceof Error ? error.message : String(error);
+  const savedPermissionDenied = /\bbrowser-use-persisted-state\b/i.test(message)
+    || /\bpersisted_user_denied\b/i.test(message)
+    || /the user has a saved preference that blocks it\.?/i.test(message);
+  if (savedPermissionDenied) {
+    const diagnostic = browserPermissionDiagnostic(message, "browser-use-persisted-state");
+    const target = diagnostic.origin ?? "this website";
+    return new BrowserPreviewError(
+      "BROWSER_ORIGIN_SAVED_PERMISSION_DENIED",
+      `Browser is connected, but Browser use for ${target} is blocked by a saved website permission.`,
+      [`Open the Browser/Computer use website-permission settings, remove the saved block or allow ${target}, then retry the Browser action.`],
+      diagnostic
+    );
+  }
+  const networkPolicyDenied = /\bcodex-network-policy(?!-unavailable)\b/i.test(message)
+    || /\benterprise_policy_blocked\b/i.test(message)
+    || /the admin-enforced policy blocks it\.?/i.test(message);
+  if (networkPolicyDenied) {
+    const diagnostic = browserPermissionDiagnostic(message, "codex-network-policy");
+    const target = diagnostic.origin ?? "this website";
+    return new BrowserPreviewError(
+      "BROWSER_ORIGIN_NETWORK_POLICY_DENIED",
+      `Browser is connected, but access to ${target} is blocked by Codex/workspace network policy.`,
+      ["Use a destination allowed by the current policy, or ask the workspace/organization administrator to change that policy if this site should be allowed."],
+      diagnostic
+    );
+  }
   if (/Missing required Codex turn metadata/i.test(message)) {
     return new BrowserPreviewError(
       "BROWSER_TURN_METADATA_REJECTED",
-      "The Codex Browser runtime rejected Toolwire turn metadata",
-      ["Refresh/reload Toolwire to a Browser surface that injects x-codex-turn-metadata automatically."]
+      "The Codex Browser runtime rejected the supplied turn metadata",
+      ["Refresh/reload the Browser surface so it injects x-codex-turn-metadata automatically."]
     );
   }
   if (/TOOLWIRE_BROWSER_NAVIGATE_RESULT_UNCERTAIN/i.test(message)) {
@@ -3844,7 +3907,7 @@ function classifyBrowserError(error) {
     const match = message.match(/TOOLWIRE_BROWSER_TEXT_SEMANTIC_COUNT:(\d+)/i);
     return new BrowserPreviewError(
       "BROWSER_TEXT_TARGET_NOT_SEMANTICALLY_CLICKABLE",
-      `The exact visible text resolved to ${match?.[1] ?? "an unexpected number of"} stable semantic click targets; Toolwire requires exactly one link, button, bounded onclick-property ancestor, or server-recognized data-thread-id card binding`,
+      `The exact visible text resolved to ${match?.[1] ?? "an unexpected number of"} stable semantic click targets; the Browser runtime requires exactly one link, button, bounded onclick-property ancestor, or server-recognized data-thread-id card binding`,
       ["Use exact role/name when the page exposes a semantic control, or handle this target manually until the page provides one stable bounded click binding."]
     );
   }
@@ -3855,7 +3918,7 @@ function classifyBrowserError(error) {
       count === 0 ? "BROWSER_ACTION_SCOPE_NOT_FOUND" : "BROWSER_ACTION_SCOPE_AMBIGUOUS",
       count === 0
         ? "The exact Browser scopeUrl did not match any visible link on the current page"
-        : `The exact Browser scopeUrl matched ${count} visible links; Toolwire requires exactly one local anchor`,
+        : `The exact Browser scopeUrl matched ${count} visible links; the Browser runtime requires exactly one local anchor`,
       ["Re-read the current page and use one exact visible link URL from the intended local item; do not guess a CSS selector, node id, or item index."]
     );
   }
@@ -3867,7 +3930,7 @@ function classifyBrowserError(error) {
       count === 0 ? "BROWSER_ACTION_TARGET_NOT_FOUND_IN_SCOPE" : "BROWSER_ACTION_TARGET_AMBIGUOUS",
       count === 0
         ? "The exact role/name target was not found within the bounded ancestor scope of the visible scopeUrl link"
-        : `The scoped Browser target matched ${count} controls at ancestor depth ${depth}; Toolwire refuses to guess among repeated local actions`,
+        : `The scoped Browser target matched ${count} controls at ancestor depth ${depth}; the Browser runtime refuses to guess among repeated local actions`,
       ["Re-read the current item and prepare again only when one exact role/name control is locally identifiable from that scopeUrl."]
     );
   }
@@ -3883,7 +3946,7 @@ function classifyBrowserError(error) {
     }).join("; ");
     return new BrowserPreviewError(
       "BROWSER_ACTION_TARGET_AMBIGUOUS",
-      `The exact Browser placeholder target matched ${candidateCount} visible elements; Toolwire requires exactly one.${summary ? ` Candidate diagnostics: ${summary}` : ""}`,
+      `The exact Browser placeholder target matched ${candidateCount} visible elements; the Browser runtime requires exactly one.${summary ? ` Candidate diagnostics: ${summary}` : ""}`,
       ["Read the current tab again and choose a more specific exact role/name target, or leave this page fail-closed until the duplicate controls can be distinguished safely."]
     );
   }
@@ -3891,7 +3954,7 @@ function classifyBrowserError(error) {
     const match = message.match(/TOOLWIRE_BROWSER_LOCATOR_COUNT:(\d+)/i);
     return new BrowserPreviewError(
       "BROWSER_ACTION_TARGET_AMBIGUOUS",
-      `The exact Browser target matched ${match?.[1] ?? "an unexpected number of"} elements; Toolwire requires exactly one`,
+      `The exact Browser target matched ${match?.[1] ?? "an unexpected number of"} elements; the Browser runtime requires exactly one`,
       ["Read the current tab again and choose a more specific exact role/name or visible-text target."]
     );
   }

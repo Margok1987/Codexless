@@ -9,7 +9,7 @@ import { ToolwirePermissionError } from "./codex-permission-executor.mjs";
 
 const execFileAsync = promisify(execFile);
 const SUPPORTED_ACCESS = new Set(["inherit", "readOnly"]);
-const WINDOWS_ACCEPTED_CODEX_VERSIONS = Object.freeze(["0.147.0", "0.147.0-alpha.6.6", "0.148.0-alpha.9"]);
+const WINDOWS_ACCEPTED_CODEX_VERSIONS = Object.freeze(["0.147.0", "0.147.0-alpha.6.6", "0.148.0-alpha.9", "0.148.0-alpha.15"]);
 const MAC_ACCEPTED_CODEX_VERSIONS = Object.freeze(["0.148.0-alpha.9"]);
 export function acceptedCodexVersionsFor({ platform = process.platform, arch = process.arch } = {}) {
   if (platform === "win32") return WINDOWS_ACCEPTED_CODEX_VERSIONS;
@@ -168,7 +168,7 @@ export class CodexAuthorityExecutor {
     maxTimeoutMs = 30_000,
     watchdogGraceMs = 5_000,
     outputBytesCap = 32_768,
-    acceptedCodexVersions = ACCEPTED_CODEX_VERSIONS,
+    acceptedCodexVersions = null,
   }) {
     if (!codexBin) throw new Error("CodexAuthorityExecutor requires codexBin");
     if (defaultCwd !== null && (typeof defaultCwd !== "string" || !defaultCwd.trim())) throw new Error("defaultCwd must be a non-empty string when provided");
@@ -176,7 +176,7 @@ export class CodexAuthorityExecutor {
     if (!Array.isArray(configOverrides) || !configOverrides.every((value) => typeof value === "string" && value.trim())) throw new Error("configOverrides must be an array of non-empty Codex -c key=value strings");
     if (!Number.isInteger(maxTimeoutMs) || maxTimeoutMs <= 0) throw new Error("maxTimeoutMs must be a positive integer");
     if (!Number.isInteger(outputBytesCap) || outputBytesCap <= 0) throw new Error("outputBytesCap must be a positive integer");
-    if (!Array.isArray(acceptedCodexVersions) || !acceptedCodexVersions.length || !acceptedCodexVersions.every((value) => typeof value === "string" && value)) throw new Error("acceptedCodexVersions must be a non-empty string array");
+    if (acceptedCodexVersions !== null && (!Array.isArray(acceptedCodexVersions) || !acceptedCodexVersions.length || !acceptedCodexVersions.every((value) => typeof value === "string" && value))) throw new Error("acceptedCodexVersions must be null or a non-empty string array");
 
     this.#codexBin = codexBin;
     this.#defaultCwd = defaultCwd ? path.resolve(defaultCwd) : null;
@@ -185,7 +185,7 @@ export class CodexAuthorityExecutor {
     this.#maxTimeoutMs = maxTimeoutMs;
     this.#watchdogGraceMs = watchdogGraceMs;
     this.#outputBytesCap = outputBytesCap;
-    this.#acceptedCodexVersions = new Set(acceptedCodexVersions);
+    this.#acceptedCodexVersions = acceptedCodexVersions === null ? null : new Set(acceptedCodexVersions);
   }
 
   get codexVersion() { return this.#codexVersion; }
@@ -203,11 +203,11 @@ export class CodexAuthorityExecutor {
     const match = String(stdout).match(/codex-cli\s+([^\s]+)/i);
     if (!match) throw new Error(`unable to parse Codex CLI version from: ${String(stdout).trim()}`);
     this.#codexVersion = match[1];
-    if (!this.#acceptedCodexVersions.has(this.#codexVersion)) {
+    if (this.#acceptedCodexVersions && !this.#acceptedCodexVersions.has(this.#codexVersion)) {
       throw new Error(
         `unsupported Codex CLI version for Codexless direct-profile authority: ${this.#codexVersion}. ` +
         `Accepted versions: ${[...this.#acceptedCodexVersions].join(", ")}. ` +
-        "This path depends on the experimental command/exec.permissionProfile capability and must be re-accepted before upgrade."
+        "This explicit compatibility allowlist is narrower than the detected Codex build."
       );
     }
 

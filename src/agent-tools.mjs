@@ -44,7 +44,6 @@ function quotaWindows(quota) {
 function quotaWindowDurationLabel(window) {
   const mins = window?.windowDurationMins;
   if (!Number.isInteger(mins) || mins <= 0) return null;
-  if (mins % 10_080 === 0) return `${mins / 10_080}w`;
   if (mins % 1_440 === 0) return `${mins / 1_440}d`;
   if (mins % 60 === 0) return `${mins / 60}h`;
   return `${mins}m`;
@@ -103,18 +102,56 @@ function portableLocale() {
 function portableStrings(locale = portableLocale()) {
   const value = String(locale || "en").toLowerCase();
   if (value.startsWith("zh")) {
-    return { call: "调用 Codex？", task: "任务", model: "模型", quota: "Codex 额度", left: "剩余", reset: "重置", unavailable: "当前未提供", reply: "请回复「Yes」或「No」。" };
+    return {
+      call: "调用 Codex？", task: "任务", model: "模型", reasoning: "推理强度",
+      quota: "Codex 额度", left: "剩余", reset: "重置", unavailable: "当前未提供", reply: "请回复「Yes」或「No」。",
+    };
   }
   if (value.startsWith("ja")) {
-    return { call: "Codexを呼び出しますか？", task: "タスク", model: "モデル", quota: "Codex 利用枠", left: "残り", reset: "リセット", unavailable: "現在は提供なし", reply: "「Yes」または「No」と返信してください。" };
+    return {
+      call: "Codexを呼び出しますか？", task: "タスク", model: "モデル", reasoning: "推論強度",
+      quota: "Codex 利用枠", left: "残り", reset: "リセット", unavailable: "現在は提供なし", reply: "「Yes」または「No」と返信してください。",
+    };
   }
-  return { call: "Call Codex?", task: "Task", model: "Model", quota: "Codex quota", left: "left", reset: "reset", unavailable: "not provided", reply: "Please reply \"Yes\" or \"No\"." };
+  return {
+    call: "Call Codex?", task: "Task", model: "Model", reasoning: "Reasoning effort",
+    quota: "Codex quota", left: "left", reset: "reset", unavailable: "not provided", reply: "Please reply \"Yes\" or \"No\".",
+  };
+}
+
+function agentModelIdentity(entry) {
+  if (typeof entry?.model === "string" && entry.model) return entry.model;
+  if (typeof entry?.id === "string" && entry.id) return entry.id;
+  return null;
+}
+
+function portableModelOption(entry) {
+  const model = agentModelIdentity(entry);
+  if (!model) return null;
+  return {
+    model,
+    displayName: typeof entry?.displayName === "string" && entry.displayName ? entry.displayName : null,
+    isDefault: entry?.isDefault === true,
+    defaultReasoningEffort: typeof entry?.defaultReasoningEffort === "string" && entry.defaultReasoningEffort ? entry.defaultReasoningEffort : null,
+    supportedReasoningEfforts: Array.isArray(entry?.supportedReasoningEfforts)
+      ? entry.supportedReasoningEfforts.map((option) => typeof option?.reasoningEffort === "string" ? option.reasoningEffort : null).filter(Boolean)
+      : [],
+  };
+}
+
+function portableModelLabel(option) {
+  if (!option) return null;
+  return option.displayName && option.displayName !== option.model
+    ? option.displayName
+    : option.model;
 }
 
 function portableResetText(unixSeconds, locale = portableLocale()) {
   if (!Number.isInteger(unixSeconds)) return "";
   try {
-    return new Intl.DateTimeFormat(locale || undefined, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(unixSeconds * 1000));
+    return new Intl.DateTimeFormat(locale || undefined, {
+      year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", timeZoneName: "short",
+    }).format(new Date(unixSeconds * 1000));
   } catch {
     return new Date(unixSeconds * 1000).toLocaleString();
   }
@@ -125,65 +162,89 @@ function portableQuotaText(window, index, locale = portableLocale()) {
   const label = quotaWindowLabel(window, index);
   const remaining = Number.isInteger(window?.remainingPercent) ? `${window.remainingPercent}% ${strings.left}` : strings.unavailable;
   const reset = portableResetText(window?.resetsAt, locale);
-  return `${label}：${remaining}${reset ? ` · ${reset} ${strings.reset}` : ""}`;
+  return `${label}：${remaining} · ${strings.reset} ${reset || strings.unavailable}`;
 }
 
-function portableDisplayWidth(value) {
-  let width = 0;
-  for (const char of String(value ?? "")) {
-    const code = char.codePointAt(0) ?? 0;
-    const wide = code >= 0x1100 && (
-      code <= 0x115f
-      || code === 0x2329 || code === 0x232a
-      || (code >= 0x2e80 && code <= 0xa4cf)
-      || (code >= 0xac00 && code <= 0xd7a3)
-      || (code >= 0xf900 && code <= 0xfaff)
-      || (code >= 0xfe10 && code <= 0xfe19)
-      || (code >= 0xfe30 && code <= 0xfe6f)
-      || (code >= 0xff01 && code <= 0xff60)
-      || (code >= 0xffe0 && code <= 0xffe6)
-      || (code >= 0x1f300 && code <= 0x1faff)
-    );
-    width += wide ? 2 : 1;
-  }
-  return width;
-}
-
-function portableWrap(value, maxWidth = 44) {
-  const lines = [];
-  let line = "";
-  let width = 0;
-  for (const char of String(value ?? "")) {
-    const charWidth = portableDisplayWidth(char);
-    if (line && width + charWidth > maxWidth) {
-      lines.push(line);
-      line = "";
-      width = 0;
-    }
-    line += char;
-    width += charWidth;
-  }
-  if (line || !lines.length) lines.push(line);
-  return lines;
-}
-
-function portableFrame(lines, width = 44) {
-  const framed = [`┌${"─".repeat(width + 2)}┐`];
-  for (const raw of lines) {
-    for (const line of portableWrap(raw, width)) {
-      const padding = " ".repeat(Math.max(0, width - portableDisplayWidth(line)));
-      framed.push(`│ ${line}${padding} │`);
-    }
-  }
-  framed.push(`└${"─".repeat(width + 2)}┘`);
-  return framed;
+function portableQuotaGroup(label, quota, locale = portableLocale()) {
+  const strings = portableStrings(locale);
+  const windows = quotaWindows(quota);
+  return [label, ...(windows.length ? windows.map((window, index) => portableQuotaText(window, index, locale)) : [strings.unavailable])];
 }
 
 function manualFallback(payload) {
   const status = payload?.status ?? "unknown";
-  const quota = payload?.meteredConsent?.quota ?? payload?.taskCard?.quota ?? payload?.resourceReceipt?.accountQuota ?? null;
+  const locale = portableLocale();
+  const strings = portableStrings(locale);
+  const beforeQuota = payload?.meteredConsent?.quota ?? payload?.taskCard?.quota ?? null;
+  const afterQuota = payload?.resourceReceipt?.accountQuota ?? null;
+  const quota = beforeQuota ?? afterQuota;
   const windows = quotaWindows(quota);
   const quotaLines = windows.length ? windows.map((window, index) => quotaFallbackText(window, index)) : ["Codex quota: unavailable"];
+  const taskRef = payload?.taskRef ?? payload?.taskId ?? payload?.taskCard?.taskRef ?? null;
+
+  if (taskRef) {
+    const taskId = portableShortTaskId(taskRef);
+    const task = compactOneLine(payload?.taskCard?.summary ?? "Codex task");
+    const selection = payload?.taskCard?.modelSelection && typeof payload.taskCard.modelSelection === "object" ? payload.taskCard.modelSelection : null;
+    const selectedModelOption = selection?.models?.find((option) => option?.model === selection?.selectedModel) ?? null;
+    const requestedModel = payload?.execution?.requestedModel ?? payload?.taskCard?.requestedModel ?? selection?.selectedModel ?? null;
+    const resolvedModel = payload?.execution?.resolvedModel ?? null;
+    const model = status === "consent_required" && selection?.selectedModel
+      ? portableModelLabel(selectedModelOption ?? { model: selection.selectedModel, displayName: selection.selectedModelDisplayName ?? null })
+      : resolvedModel ?? requestedModel ?? null;
+    const requestedEffort = payload?.execution?.requestedReasoningEffort ?? payload?.taskCard?.requestedReasoningEffort ?? selection?.selectedReasoningEffort ?? null;
+    const resolvedEffort = payload?.execution?.reasoningEffort ?? null;
+    const effort = status === "consent_required" ? selection?.selectedReasoningEffort ?? requestedEffort ?? null : resolvedEffort ?? requestedEffort ?? null;
+    const portableStatus = status === "consent_required" ? "AWAITING DECISION" : status === "awaitingApproval" ? "CODEX APPROVAL REQUIRED" : status === "running" ? "RUNNING" : isTerminalStatus(status) ? terminalLabel(status) : String(status).toUpperCase();
+    let lines;
+    if (status === "consent_required") {
+      lines = [
+        strings.call, "",
+        `${strings.task}：${task}`,
+        `${strings.model}：${model ?? strings.unavailable}`,
+        `${strings.reasoning}：${effort ?? strings.unavailable}`,
+        "",
+        ...portableQuotaGroup(strings.quota, beforeQuota, locale), "",
+        strings.reply,
+      ];
+    } else {
+      lines = [`Codex · ${portableStatus}`, `${strings.task}：${task}`];
+      if (model) lines.push(`${strings.model}：${model}`);
+      if (effort) lines.push(`${strings.reasoning}：${effort}`);
+      if (status === "awaitingApproval" && payload?.pendingApproval) lines.push(`Pending Codex approval: ${approvalOneLine(payload.pendingApproval)}`);
+      if (isTerminalStatus(status)) {
+        const detail = compactOneLine(payload?.finalResult ?? payload?.latestError ?? "", 500);
+        const turnTokens = payload?.resourceReceipt?.tokenUsage?.turn?.totalTokens ?? null;
+        if (detail) lines.push(`Result: ${detail}`);
+        lines.push(Number.isInteger(turnTokens) ? `Usage: ${turnTokens.toLocaleString("en-US")} tokens this turn` : "Usage: tokens unavailable");
+        if (beforeQuota) lines.push("", ...portableQuotaGroup(`${strings.quota} · before`, beforeQuota, locale));
+        if (afterQuota) lines.push("", ...portableQuotaGroup(`${strings.quota} · after`, afterQuota, locale));
+        if (!beforeQuota && !afterQuota) lines.push("", strings.quota, strings.unavailable);
+      } else if (beforeQuota) lines.push("", ...portableQuotaGroup(strings.quota, beforeQuota, locale));
+    }
+    return {
+      kind: "portable_card",
+      portable: true,
+      taskId,
+      status: portableStatus,
+      task,
+      choices: status === "consent_required" ? ["Yes", "No"] : [],
+      requiresTaskCard: false,
+      nextAction: "codex.agent_card_render",
+      quota: { windows, before: { windows: quotaWindows(beforeQuota) }, after: { windows: quotaWindows(afterQuota) } },
+      ...(selection ? { modelSelection: structuredClone(selection) } : {}),
+      ...(status === "consent_required" ? {
+        rebind: {
+          mode: "natural_language_reprepare",
+          requiresNewRequestId: true,
+          instruction: "If the user changes model or reasoning effort before approval, do not commit this task. Prepare the same logical task again with the requested selection and a fresh requestId, present the new confirmation, and bind Yes only to the newly presented taskId.",
+        },
+        decision: { approveTool: "codex.agent_commit", declineTool: "codex.agent_decline", taskId },
+      } : {}),
+      lines,
+      text: lines.join("\n"),
+    };
+  }
 
   if (status === "consent_required") {
     const locale = portableLocale();
@@ -191,6 +252,8 @@ function manualFallback(payload) {
     const summary = compactOneLine(payload?.taskCard?.summary ?? "Codex task");
     const requestedModel = payload?.execution?.requestedModel ?? payload?.taskCard?.requestedModel ?? null;
     const model = requestedModel ? compactOneLine(requestedModel) : null;
+    const requestedEffort = payload?.execution?.requestedReasoningEffort ?? payload?.taskCard?.requestedReasoningEffort ?? null;
+    const effort = requestedEffort ? compactOneLine(requestedEffort) : null;
     const taskRef = payload?.taskRef ?? payload?.taskId ?? payload?.taskCard?.taskRef ?? null;
     const taskId = taskRef ? portableShortTaskId(taskRef) : null;
     const portableQuotaLines = windows.length
@@ -198,8 +261,9 @@ function manualFallback(payload) {
       : [strings.unavailable];
     const body = [strings.call, "", `${strings.task}：${summary}`];
     if (model) body.push(`${strings.model}：${model}`);
+    if (effort) body.push(`${strings.reasoning}：${effort}`);
     body.push("", strings.quota, ...portableQuotaLines, "", strings.reply);
-    const lines = portableFrame(body);
+    const lines = body;
     return {
       kind: "portable_card",
       choices: ["Yes", "No"],
@@ -427,17 +491,79 @@ export function registerAgentPreviewTools(server, {
     return firstLine.length > 72 ? firstLine.slice(0, 69) + "..." : firstLine;
   }
 
+  async function fullModelCatalog() {
+    const models = [];
+    let cursor = null;
+    const seenCursors = new Set();
+    for (let page = 0; page < 20; page += 1) {
+      const result = await agentExecutor.listModels({ cursor, limit: 200, includeHidden: false });
+      for (const entry of Array.isArray(result?.models) ? result.models : []) {
+        const option = portableModelOption(entry);
+        if (option && !models.some((item) => item.model === option.model)) models.push(option);
+      }
+      if (!result?.nextCursor) return models;
+      if (seenCursors.has(result.nextCursor)) throw new Error("codex.model_list returned a repeated cursor while preparing the Codex confirmation");
+      seenCursors.add(result.nextCursor);
+      cursor = result.nextCursor;
+    }
+    throw new Error("codex.model_list exceeded the bounded pagination limit while preparing the Codex confirmation");
+  }
+
+  async function resolvePreparedModelSelection({ requestedModel = null, requestedReasoningEffort = null, currentModel = null, currentReasoningEffort = null } = {}) {
+    const models = await fullModelCatalog();
+    if (!models.length) throw new Error("codex.model_list returned no selectable models for the Codex confirmation");
+    const requested = typeof requestedModel === "string" && requestedModel.trim() ? requestedModel.trim() : null;
+    const current = typeof currentModel === "string" && currentModel.trim() ? currentModel.trim() : null;
+    const entry = requested
+      ? models.find((item) => item.model === requested)
+      : current
+        ? models.find((item) => item.model === current) ?? models.find((item) => item.isDefault)
+        : models.find((item) => item.isDefault);
+    if (!entry) throw new Error(`codex.model_list could not resolve the selected model ${requested ?? current ?? "<default>"}`);
+    const supported = [...entry.supportedReasoningEfforts];
+    let effort = typeof requestedReasoningEffort === "string" && requestedReasoningEffort.trim() ? requestedReasoningEffort.trim() : null;
+    let effortSource = effort ? "explicit" : null;
+    if (effort && !supported.includes(effort)) {
+      throw new Error(`reasoningEffort validation failed for model "${entry.model}": requested effort "${effort}"; supported efforts: ${supported.length ? supported.join(", ") : "(none)"}`);
+    }
+    if (!effort && !requested && current === entry.model && typeof currentReasoningEffort === "string" && supported.includes(currentReasoningEffort)) {
+      effort = currentReasoningEffort;
+      effortSource = "current";
+    }
+    if (!effort && entry.defaultReasoningEffort) {
+      if (supported.length && !supported.includes(entry.defaultReasoningEffort)) {
+        throw new Error(`codex.model_list returned default reasoning effort "${entry.defaultReasoningEffort}" outside the supported efforts for model "${entry.model}"`);
+      }
+      effort = entry.defaultReasoningEffort;
+      effortSource = "default";
+    }
+    return {
+      source: "codex.model_list",
+      selectedModel: entry.model,
+      selectedModelDisplayName: entry.displayName,
+      modelSelectionSource: requested ? "explicit" : current === entry.model ? "current" : "default",
+      selectedReasoningEffort: effort,
+      reasoningEffortSelectionSource: effortSource ?? "unavailable",
+      supportedReasoningEfforts: supported,
+      models,
+    };
+  }
+
   function taskPayloadHash(action, payload, agentRef = null) {
-    const stable = JSON.stringify({
+    const hasCallerModel = Object.hasOwn(payload ?? {}, "callerModel");
+    const hasCallerEffort = Object.hasOwn(payload ?? {}, "callerReasoningEffort");
+    const bound = {
       action,
       agentRef,
       prompt: action === "start" ? payload?.prompt ?? null : null,
       message: action === "send" ? payload?.message ?? null : null,
       cwd: action === "start" ? payload?.cwd ?? null : null,
       permissionProfile: action === "start" ? payload?.permissionProfile ?? null : null,
-      model: payload?.model ?? null,
-    });
-    return createHash("sha256").update(stable, "utf8").digest("hex");
+      model: hasCallerModel ? payload?.callerModel ?? null : payload?.model ?? null,
+    };
+    if (hasCallerEffort) bound.reasoningEffort = payload?.callerReasoningEffort ?? null;
+    else if (!hasCallerModel && Object.hasOwn(payload ?? {}, "reasoningEffort")) bound.reasoningEffort = payload.reasoningEffort ?? null;
+    return createHash("sha256").update(JSON.stringify(bound), "utf8").digest("hex");
   }
 
   function taskCardFor({ taskRef, requestId, action, payload, cwd = null, permissionProfile = null, quota = null }) {
@@ -449,7 +575,13 @@ export function registerAgentPreviewTools(server, {
       action,
       title: titleFor(action, payload),
       summary: summaryFor(action, payload),
-      requestedModel: typeof payload?.model === "string" ? payload.model : null,
+      requestedModel: Object.hasOwn(payload ?? {}, "callerModel")
+        ? (typeof payload?.callerModel === "string" ? payload.callerModel : null)
+        : (typeof payload?.model === "string" ? payload.model : null),
+      ...(Object.hasOwn(payload ?? {}, "callerReasoningEffort")
+        ? (typeof payload?.callerReasoningEffort === "string" ? { requestedReasoningEffort: payload.callerReasoningEffort } : {})
+        : (typeof payload?.reasoningEffort === "string" ? { requestedReasoningEffort: payload.reasoningEffort } : {})),
+      ...(payload?.modelSelection && typeof payload.modelSelection === "object" ? { modelSelection: structuredClone(payload.modelSelection) } : {}),
       cwd,
       permissionProfile,
       quota,
@@ -525,7 +657,14 @@ export function registerAgentPreviewTools(server, {
       finalResult: null,
       resourceReceipt: null,
       timing: { startedAt: null, endedAt: now, durationMs: null },
-      execution: { requestedModel: persisted.taskCard?.requestedModel ?? null, resolvedModel: null, modelProvider: null, serviceTier: null, reasoningEffort: null },
+      execution: {
+        requestedModel: persisted.taskCard?.requestedModel ?? null,
+        ...(typeof persisted.taskCard?.requestedReasoningEffort === "string" ? { requestedReasoningEffort: persisted.taskCard.requestedReasoningEffort } : {}),
+        resolvedModel: null,
+        modelProvider: null,
+        serviceTier: null,
+        reasoningEffort: null,
+      },
       latestError: "Task control state was lost across Codexless restart. The original task will not be replayed.",
       terminal: true,
       terminalAt: now,
@@ -638,6 +777,7 @@ export function registerAgentPreviewTools(server, {
       timing: { startedAt: null, endedAt: Date.now(), durationMs: null },
       execution: {
         requestedModel: typeof record.payload?.model === "string" ? record.payload.model : null,
+        ...(typeof record.payload?.reasoningEffort === "string" ? { requestedReasoningEffort: record.payload.reasoningEffort } : {}),
         resolvedModel: null,
         modelProvider: null,
         serviceTier: null,
@@ -677,6 +817,7 @@ export function registerAgentPreviewTools(server, {
       pending.timing = { startedAt: null, endedAt: null, durationMs: null };
       pending.execution = {
         requestedModel: typeof record.payload?.model === "string" ? record.payload.model : null,
+        ...(typeof record.payload?.reasoningEffort === "string" ? { requestedReasoningEffort: record.payload.reasoningEffort } : {}),
         resolvedModel: null,
         modelProvider: null,
         serviceTier: null,
@@ -719,7 +860,14 @@ export function registerAgentPreviewTools(server, {
       finalResult: null,
       resourceReceipt: null,
       timing: { startedAt: null, endedAt: record.declinedAt, durationMs: 0 },
-      execution: { requestedModel: record.payload?.model ?? null, resolvedModel: null, modelProvider: null, serviceTier: null, reasoningEffort: null },
+      execution: {
+        requestedModel: record.payload?.model ?? null,
+        ...(typeof record.payload?.reasoningEffort === "string" ? { requestedReasoningEffort: record.payload.reasoningEffort } : {}),
+        resolvedModel: null,
+        modelProvider: null,
+        serviceTier: null,
+        reasoningEffort: null,
+      },
       latestError: null,
       events: [],
       nextSeq: 0,
@@ -766,13 +914,38 @@ export function registerAgentPreviewTools(server, {
     }
 
     if (record.action === "start") {
-      const snapshot = await agentExecutor.start({
-        cwd: record.cwd,
-        task: record.payload.prompt,
-        clientRequestId: record.consent.requestId,
-        permissionProfile: record.permissionProfile,
-        model: record.payload.model ?? null,
-      });
+      let snapshot;
+      try {
+        snapshot = await agentExecutor.start({
+          cwd: record.cwd,
+          task: record.payload.prompt,
+          clientRequestId: record.consent.requestId,
+          permissionProfile: record.permissionProfile,
+          model: record.payload.model ?? null,
+          reasoningEffort: record.payload.reasoningEffort ?? null,
+        });
+      } catch (error) {
+        return freezeRecord(record, {
+          agentRef: record.agentRef,
+          turnId: null,
+          status: "failed",
+          pendingApproval: null,
+          finalResult: null,
+          resourceReceipt: null,
+          timing: { startedAt: null, endedAt: Date.now(), durationMs: 0 },
+          execution: {
+            requestedModel: record.payload.model ?? null,
+            ...(typeof record.payload.reasoningEffort === "string" ? { requestedReasoningEffort: record.payload.reasoningEffort } : {}),
+            resolvedModel: null,
+            modelProvider: null,
+            serviceTier: null,
+            reasoningEffort: null,
+          },
+          latestError: error instanceof Error ? error.message : String(error),
+          events: [], nextSeq: 0,
+          meteredConsent: { status: "approved", quota: record.consent.quota },
+        });
+      }
       if (snapshot?.agentRef) {
         record.agentRef = snapshot.agentRef;
         record.turnId = snapshot.turnId ?? null;
@@ -790,12 +963,37 @@ export function registerAgentPreviewTools(server, {
     }
 
     await freezeCurrentTaskForAgent(record.agentRef);
-    const snapshot = await agentExecutor.send({
-      agentRef: record.agentRef,
-      message: record.payload.message,
-      clientRequestId: record.consent.requestId,
-      model: record.payload.model ?? null,
-    });
+    let snapshot;
+    try {
+      snapshot = await agentExecutor.send({
+        agentRef: record.agentRef,
+        message: record.payload.message,
+        clientRequestId: record.consent.requestId,
+        model: record.payload.model ?? null,
+        reasoningEffort: record.payload.reasoningEffort ?? null,
+      });
+    } catch (error) {
+      return freezeRecord(record, {
+        agentRef: record.agentRef,
+        turnId: null,
+        status: "failed",
+        pendingApproval: null,
+        finalResult: null,
+        resourceReceipt: null,
+        timing: { startedAt: null, endedAt: Date.now(), durationMs: 0 },
+        execution: {
+          requestedModel: record.payload.model ?? null,
+          ...(typeof record.payload.reasoningEffort === "string" ? { requestedReasoningEffort: record.payload.reasoningEffort } : {}),
+          resolvedModel: null,
+          modelProvider: null,
+          serviceTier: null,
+          reasoningEffort: null,
+        },
+        latestError: error instanceof Error ? error.message : String(error),
+        events: [], nextSeq: 0,
+        meteredConsent: { status: "approved", quota: record.consent.quota },
+      });
+    }
     record.turnId = snapshot.turnId ?? null;
     if (record.agentRef) agentCards.set(record.agentRef, record.taskCard);
     const payload = {
@@ -834,7 +1032,7 @@ export function registerAgentPreviewTools(server, {
     {
       title: "Start Codex Agent",
       description:
-        `Experimental Preview. Prepare one formal Codex agent thread/turn under Codexless's locally resolved Codex authority. Local metered consent mode is ${meteredConsent.mode}; when set to always, every unapproved logical start returns consent_required and quota context without starting a turn. requestId is a caller-stable idempotency key and MUST be reused if the same start is retried after an uncertain response. A returned consentRef identifies the prepared task but is never proof of approval: replaying it through this public tool cannot start Codex work. Approval normally occurs through the Rich Task Card; when the Host cannot render that UI, codex.agent_card_render returns a Portable Card and an explicit user Yes/No may be bound to that exact prepared task through codex.agent_commit / codex.agent_decline. model is optional; omit it to preserve Codex's current default routing. The caller cannot choose permission profile, sandbox, approval policy, roots, or network authority.`,
+        `Experimental Preview. Prepare one formal Codex agent thread/turn under Codexless's locally resolved Codex authority. Local metered consent mode is ${meteredConsent.mode}; when set to always, every unapproved logical start returns consent_required and quota context without starting a turn. requestId is a caller-stable idempotency key and MUST be reused if the same start is retried after an uncertain response. A returned consentRef identifies the prepared task but is never proof of approval: replaying it through this public tool cannot start Codex work. Approval normally occurs through the Rich Task Card; when the Host cannot render that UI, codex.agent_card_render returns a Portable Card and an explicit user Yes/No may be bound to that exact prepared task through codex.agent_commit / codex.agent_decline. model is optional; omit it to preserve Codex's current default routing. reasoningEffort is also optional and is validated against the current codex.model_list entry for the effective model rather than a hard-coded global enum. The caller cannot choose permission profile, sandbox, approval policy, roots, or network authority.`,
       inputSchema: z.object({
         prompt: z.string().min(1).max(200_000),
         requestId: z.string().min(1).max(512)
@@ -843,6 +1041,8 @@ export function registerAgentPreviewTools(server, {
           .describe("Optional execution-directory context. Codexless resolves authority locally for this cwd; cwd is not a permission selector."),
         model: z.string().min(1).max(512).optional()
           .describe("Optional exact model id from codex.model_list. Omit to use Codex's current default model routing."),
+        reasoningEffort: z.string().min(1).max(128).optional()
+          .describe("Optional reasoning effort supported by the effective model's current codex.model_list entry. Runtime validation is per-model; no global effort enum is hard-coded."),
         consentRef: z.string().min(1).max(512).optional()
           .describe("Legacy compatibility field. It identifies an already prepared task only; supplying or replaying it never authorizes metered Codex work. Approval must occur through the server-side Task Card commit path."),
       }).strict(),
@@ -852,17 +1052,29 @@ export function registerAgentPreviewTools(server, {
         "openai/toolInvocation/invoked": "Codex task ready.",
       },
     },
-    async ({ prompt, requestId, cwd, model, consentRef }) => structuredCard(async () => {
+    async ({ prompt, requestId, cwd, model, reasoningEffort, consentRef }) => structuredCard(async () => {
       const authority = await authorityExecutor.resolveAuthority({ cwd: cwd ?? null, access: "inherit" });
-      const payload = {
+      const callerPayload = {
         prompt,
         cwd: authority.effectiveCwd,
         model: model ?? null,
+        ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
         permissionProfile: authority.permissionProfile,
       };
-      const prior = await existingRequestState({ requestId, action: "start", payload, agentRef: null });
+      const prior = await existingRequestState({ requestId, action: "start", payload: callerPayload, agentRef: null });
       if (prior) return { ...prior, duplicate: true };
       if (consentRef) throw new Error("consentRef cannot authorize a Codex start through the public agent_start tool; render/approve the prepared Task Card instead");
+      const preparedSelection = meteredConsent.mode === "always"
+        ? await resolvePreparedModelSelection({ requestedModel: model ?? null, requestedReasoningEffort: reasoningEffort ?? null })
+        : null;
+      const payload = preparedSelection ? {
+        ...callerPayload,
+        callerModel: model ?? null,
+        ...(reasoningEffort !== undefined ? { callerReasoningEffort: reasoningEffort } : {}),
+        model: preparedSelection.selectedModel,
+        ...(typeof preparedSelection.selectedReasoningEffort === "string" ? { reasoningEffort: preparedSelection.selectedReasoningEffort } : {}),
+        modelSelection: preparedSelection,
+      } : callerPayload;
       const consent = await meteredConsent.authorize({ action: "start", requestId, payload });
       if (!consent.authorized) {
         const record = rememberPrepared({
@@ -878,7 +1090,14 @@ export function registerAgentPreviewTools(server, {
         pending.taskId = record.taskRef;
         pending.turnId = null;
         pending.timing = { startedAt: null, endedAt: null, durationMs: null };
-        pending.execution = { requestedModel: model ?? null, resolvedModel: null, modelProvider: null, serviceTier: null, reasoningEffort: null };
+        pending.execution = {
+          requestedModel: payload.model ?? null,
+          ...(typeof payload.reasoningEffort === "string" ? { requestedReasoningEffort: payload.reasoningEffort } : {}),
+          resolvedModel: null,
+          modelProvider: null,
+          serviceTier: null,
+          reasoningEffort: null,
+        };
         pending.manualFallback = manualFallback(pending);
         return pending;
       }
@@ -980,7 +1199,7 @@ export function registerAgentPreviewTools(server, {
     {
       title: "Continue Codex Agent",
       description:
-        `Experimental Preview. Prepare one exact Codexless-owned Codex agent follow-up by opaque agentRef. The caller must deliberately choose the target agentRef; Codexless has no implicit "most recent agent" routing. Local metered consent mode is ${meteredConsent.mode}; when set to always, every unapproved logical send returns consent_required and quota context without starting a turn. requestId is a caller-stable idempotency key and MUST be reused if the same send is retried after an uncertain response. A returned consentRef identifies the prepared follow-up but is never proof of approval: replaying it through this public tool cannot start Codex work. Approval normally occurs through the Rich Task Card; when the Host cannot render that UI, codex.agent_card_render returns a Portable Card and an explicit user Yes/No may be bound to that exact prepared follow-up through codex.agent_commit / codex.agent_decline. model is optional and may override the model for this turn and subsequent turns. Active turns, stale parent turns, and pending approvals fail visibly; Codexless never auto-replays an accepted or uncertain send.`,
+        `Experimental Preview. Prepare one exact Codexless-owned Codex agent follow-up by opaque agentRef. The caller must deliberately choose the target agentRef; Codexless has no implicit "most recent agent" routing. Local metered consent mode is ${meteredConsent.mode}; when set to always, every unapproved logical send returns consent_required and quota context without starting a turn. requestId is a caller-stable idempotency key and MUST be reused if the same send is retried after an uncertain response. A returned consentRef identifies the prepared follow-up but is never proof of approval: replaying it through this public tool cannot start Codex work. Approval normally occurs through the Rich Task Card; when the Host cannot render that UI, codex.agent_card_render returns a Portable Card and an explicit user Yes/No may be bound to that exact prepared follow-up through codex.agent_commit / codex.agent_decline. model is optional and may override the model for this turn and subsequent turns. reasoningEffort is an optional per-turn override validated against the current codex.model_list entry for the effective model. Active turns, stale parent turns, and pending approvals fail visibly; Codexless never auto-replays an accepted or uncertain send.`,
       inputSchema: z.object({
         agentRef: z.string().min(1).max(512),
         message: z.string().min(1).max(200_000),
@@ -988,6 +1207,8 @@ export function registerAgentPreviewTools(server, {
           .describe("Stable caller-generated idempotency key. Reuse this exact value for retries of the same logical send."),
         model: z.string().min(1).max(512).optional()
           .describe("Optional exact model id from codex.model_list. Omit to keep the current Codex thread model."),
+        reasoningEffort: z.string().min(1).max(128).optional()
+          .describe("Optional per-turn reasoning effort supported by the effective model's current codex.model_list entry. Runtime validation is per-model; no global effort enum is hard-coded."),
         consentRef: z.string().min(1).max(512).optional()
           .describe("Legacy compatibility field. It identifies an already prepared follow-up only; supplying or replaying it never authorizes metered Codex work. Approval must occur through the server-side Task Card commit path."),
       }).strict(),
@@ -997,11 +1218,16 @@ export function registerAgentPreviewTools(server, {
         "openai/toolInvocation/invoked": "Codex follow-up ready.",
       },
     },
-    async ({ agentRef, message, requestId, model, consentRef }) => structuredCard(async () => {
+    async ({ agentRef, message, requestId, model, reasoningEffort, consentRef }) => structuredCard(async () => {
+      const requestPayload = {
+        message,
+        model: model ?? null,
+        ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      };
       const prior = await existingRequestState({
         requestId,
         action: "send",
-        payload: { message, model: model ?? null },
+        payload: requestPayload,
         agentRef,
       });
       if (prior) return { ...prior, duplicate: true };
@@ -1010,7 +1236,7 @@ export function registerAgentPreviewTools(server, {
         const parentCard = cardForAgent(agentRef);
         return dispatchPrepared(directRecord({
           action: "send",
-          payload: { message, model: model ?? null, parentTurnId: null, permissionProfile: parentCard?.permissionProfile ?? null },
+          payload: { ...requestPayload, parentTurnId: null, permissionProfile: parentCard?.permissionProfile ?? null },
           cwd: parentCard?.cwd ?? null,
           permissionProfile: parentCard?.permissionProfile ?? null,
           agentRef,
@@ -1022,9 +1248,19 @@ export function registerAgentPreviewTools(server, {
         throw new Error(`agent ${agentRef} is not ready for a follow-up: ${current.status}`);
       }
       const parentCard = cardForAgent(agentRef);
+      const preparedSelection = await resolvePreparedModelSelection({
+        requestedModel: model ?? null,
+        requestedReasoningEffort: reasoningEffort ?? null,
+        currentModel: current.execution?.resolvedModel ?? null,
+        currentReasoningEffort: current.execution?.reasoningEffort ?? null,
+      });
       const payload = {
         message,
-        model: model ?? null,
+        callerModel: model ?? null,
+        ...(reasoningEffort !== undefined ? { callerReasoningEffort: reasoningEffort } : {}),
+        model: preparedSelection.selectedModel,
+        ...(typeof preparedSelection.selectedReasoningEffort === "string" ? { reasoningEffort: preparedSelection.selectedReasoningEffort } : {}),
+        modelSelection: preparedSelection,
         parentTurnId: current.turnId,
         permissionProfile: parentCard?.permissionProfile ?? null,
       };
@@ -1044,7 +1280,14 @@ export function registerAgentPreviewTools(server, {
         pending.taskId = record.taskRef;
         pending.turnId = null;
         pending.timing = { startedAt: null, endedAt: null, durationMs: null };
-        pending.execution = { requestedModel: model ?? null, resolvedModel: current.execution?.resolvedModel ?? null, modelProvider: current.execution?.modelProvider ?? null, serviceTier: current.execution?.serviceTier ?? null, reasoningEffort: current.execution?.reasoningEffort ?? null };
+        pending.execution = {
+          requestedModel: payload.model ?? null,
+          ...(typeof payload.reasoningEffort === "string" ? { requestedReasoningEffort: payload.reasoningEffort } : {}),
+          resolvedModel: current.execution?.resolvedModel ?? null,
+          modelProvider: current.execution?.modelProvider ?? null,
+          serviceTier: current.execution?.serviceTier ?? null,
+          reasoningEffort: current.execution?.reasoningEffort ?? null,
+        };
         pending.manualFallback = manualFallback(pending);
         return pending;
       }

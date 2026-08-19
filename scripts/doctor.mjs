@@ -4,8 +4,9 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { CodexAppServerClient } from "../src/codex-app-server-client.mjs";
 import { CodexBrowserExecutor } from "../src/codex-browser-executor.mjs";
+import { resolveBrowserRuntimeCompatibility } from "../src/browser-runtime-compat.mjs";
 import { CodexPublicBrowserWorkbenchAdapter } from "../src/public-browser-workbench-adapter.mjs";
-import { ACCEPTED_CODEX_VERSIONS, CodexAuthorityExecutor } from "../src/codex-authority-executor.mjs";
+import { CodexAuthorityExecutor } from "../src/codex-authority-executor.mjs";
 import { probeCodexExecutable, redactHomePath, resolveCodexExecutable } from "../src/codex-bin.mjs";
 import { buildDoctorHealth, legacyNodeReplView, normalizeBrowserReaderHealth } from "../src/doctor-health.mjs";
 import { readJsonFile } from "../src/json-file.mjs";
@@ -58,22 +59,33 @@ for (const spec of ["@modelcontextprotocol/node", "@modelcontextprotocol/server"
 }
 
 try {
-  codexResolution = await resolveCodexExecutable({ acceptedVersions: ACCEPTED_CODEX_VERSIONS });
+  codexResolution = await resolveCodexExecutable();
   codexProbe = await probeCodexExecutable(codexResolution.path, { cwd: runtimeCwd });
   record("codex-executable", codexProbe.ok, codexProbe.versionText ?? "Codex version probe failed", codexProbe.error);
   const parsedVersion = parseCodexVersion(codexProbe.versionText);
-  const versionAccepted = Boolean(parsedVersion && ACCEPTED_CODEX_VERSIONS.includes(parsedVersion));
   record(
-    "codex-version-gate",
-    versionAccepted,
+    "codex-version",
+    Boolean(parsedVersion),
     parsedVersion ? `Codex CLI ${parsedVersion}` : "Codex CLI version could not be parsed",
-    versionAccepted ? null : `This Technical Preview has accepted these Codex CLI builds only: ${ACCEPTED_CODEX_VERSIONS.join(", ")}. Re-validation is required before using another CLI build.`
+    parsedVersion ? null : "Codexless could not parse the detected Codex CLI version."
   );
 } catch (error) {
   record("codex-executable", false, "Codex executable resolution failed", error instanceof Error ? error.message : String(error));
 }
 
 if (codexResolution?.path && codexProbe?.ok) {
+  try {
+    const compatibilityAuthority = new CodexAuthorityExecutor({
+      codexBin: codexResolution.path,
+      defaultCwd: runtimeCwd,
+      acceptedCodexVersions: null,
+    });
+    const compatibility = await compatibilityAuthority.validate();
+    record("codex-contract-gate", true, `Codex App Server authority contract accepted ${compatibility.codexVersion ?? "current build"}`);
+  } catch (error) {
+    record("codex-contract-gate", false, "Codex App Server authority contract rejected the current build", error instanceof Error ? error.message : String(error));
+  }
+
   const stderrCapture = [];
   const client = new CodexAppServerClient({
     cwd: runtimeCwd,
@@ -105,7 +117,7 @@ if (codexResolution?.path && codexProbe?.ok) {
         const authority = new CodexAuthorityExecutor({
           codexBin: codexResolution.path,
           defaultCwd: requestedCwd,
-          acceptedCodexVersions: ACCEPTED_CODEX_VERSIONS,
+          acceptedCodexVersions: null,
         });
         await authority.validate();
         const resolved = await authority.resolveAuthority({ cwd: requestedCwd, access: "readOnly" });
@@ -125,17 +137,46 @@ if (codexResolution?.path && codexProbe?.ok) {
     }
 
     try {
-      const browserContext = new CodexPublicContextExecutor({
+      const sourceContext = new CodexPublicContextExecutor({
         codexBin: codexResolution.path,
         defaultCwd: runtimeCwd,
         clientFactory: () => client,
         runtimeKind: STOCK_RUNTIME_KIND,
       });
-      const browserExecutor = new CodexBrowserExecutor({
-        workbench: new CodexPublicBrowserWorkbenchAdapter({ context: browserContext }),
-        defaultCwd: runtimeCwd,
+      const [currentChromeSkill, configuredMcpServerNames] = await Promise.all([
+        sourceContext.currentChromeSkill({ cwd: runtimeCwd }),
+        sourceContext.configuredMcpServerNames({ cwd: runtimeCwd }).catch(() => []),
+      ]);
+      const browserCompatibility = await resolveBrowserRuntimeCompatibility({
+        codexBin: codexResolution.path,
+        chromeSkillPath: currentChromeSkill?.path ?? null,
       });
-      browser = normalizeBrowserReaderHealth(await browserExecutor.status({ cwd: runtimeCwd }));
+      if (browserCompatibility.status !== "ok") {
+        browser = normalizeBrowserReaderHealth({ status: "unavailable", reason: browserCompatibility.reason });
+      } else {
+        const browserIsolationOverrides = [...new Set(configuredMcpServerNames)]
+          .filter((name) => name !== "node_repl" && /^[A-Za-z0-9_-]+$/.test(name))
+          .map((name) => `mcp_servers.${name}.enabled=false`);
+        const browserContext = new CodexPublicContextExecutor({
+          codexBin: codexResolution.path,
+          defaultCwd: browserCompatibility.browserRuntimeCwd,
+          configOverrides: [...browserCompatibility.overrides, ...browserIsolationOverrides],
+          runtimeKind: STOCK_RUNTIME_KIND,
+        });
+        try {
+          await browserContext.start();
+          const browserExecutor = new CodexBrowserExecutor({
+            workbench: new CodexPublicBrowserWorkbenchAdapter({
+              context: browserContext,
+              runtimeCwd: browserCompatibility.browserRuntimeCwd,
+            }),
+            defaultCwd: runtimeCwd,
+          });
+          browser = normalizeBrowserReaderHealth(await browserExecutor.status({ cwd: runtimeCwd }));
+        } finally {
+          await browserContext.close().catch(() => {});
+        }
+      }
       nodeRepl = legacyNodeReplView(browser);
       if (browser.status !== "available") {
         warnings.push({ kind: "browser-reader", message: `Browser Reader is not currently available (${browser.reason ?? "unverified connection"}). Core Codexless can still be healthy.` });

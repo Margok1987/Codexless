@@ -120,7 +120,7 @@ Codexless 做的事很简单：**让你的 ChatGPT 套上 Codex 的工服，拎�
 - **个人套餐实测：** Plus 和 Pro 已在真实机器通过产品形态链路测试。这是实测证据，不是未来政策保证。
 - **本地怎么连：** ChatGPT 不会直接访问 `localhost`。典型链路是 **本机 Codexless → 已认证 Tunnel / remote MCP endpoint → ChatGPT App / Developer Mode**。
 - **Tunnel 不锁死：** OpenAI Secure MCP Tunnel 是已经支持的一条路，但不是唯一依赖。
-- **包体：** 当前 Technical Preview 包本体低于 **0.2 MB 压缩 / 0.9 MB 解压**，不含正常安装依赖。
+- **包体：** 当前 Technical Preview 包本体低于 **0.21 MB 压缩 / 0.9 MB 解压**，不含正常安装依赖。
 - **身份：** Codexless 是独立项目，不是 OpenAI 产品，也不代表 OpenAI 背书。
 
 ---
@@ -225,13 +225,10 @@ Codexless 会低频检查官方 Release。有新版时会提醒，但**不会自
 
 ## FAQ
 
-### 1. 我在普通 Chat 里用 Codexless 干活，会消耗 Codex 额度吗？
+### 1. 我用 Codexless 干活，会消耗 Codex 额度吗？
 
-**不会。只要 ChatGPT 是直接拿 Codexless 的工具干活，没有实际调用 Codex，就不会消耗 Codex 额度。**
-
-如果你明确调用 Codex，或者本来就在 Work / Codex 里干活，还是照常算 Codex 额度。
-
-两边的额度还是各算各的；Codexless 不会把它们合并，也不会绕过去。
+- **Codexless 可以帮 ChatGPT 干很多原本要找 Codex 干的活；只要没有真的调用 Codex，就不会消耗 Codex 额度。** 真正启动 Codex Agent 时才会消耗。
+- **Work 和 Codex 本来共用一套额度。** 所以在 Work 窗口里用 Codexless，并不能绕过 Work 自己需要消耗的额度；如果你的目标是尽量节省 Codex 额度，**推荐在普通 Chat 里使用 Codexless。**
 
 ---
 
@@ -287,7 +284,7 @@ Codexless 只公开已经验收过的能力，不是把整个 Codex 环境无条
 
 ### 6. Browser 能帮我操作网页吗？
 
-**能。现在已经不只是看网页。**
+**能。**
 
 可以看标签页、截图、打开、关闭和跳转页面、点击、填写文本、滚动、使用 `Enter` / `Tab` / `Escape`、上传和下载。
 

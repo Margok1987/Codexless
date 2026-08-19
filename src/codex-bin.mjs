@@ -36,7 +36,7 @@ export async function resolveCodexExecutable({ env = process.env, acceptedVersio
   const candidates = process.platform === "win32"
     ? await windowsCodexCandidates(env)
     : await posixCodexCandidates(env);
-  const newest = await newestInstalledCodexCandidate(candidates, checked);
+  const newest = await newestInstalledCodexCandidate(candidates, checked, { acceptedVersions });
   if (!newest) {
     throw new CodexExecutableResolutionError(
       "No usable Codex CLI/runtime could be resolved. Codexless requires a working Codex CLI/runtime with App Server; Codex Desktop is optional. Automatic discovery checks known standalone/current installs, Codex Desktop/ChatGPT bundled runtimes when present, native Codex on PATH, and npm-installed Codex. Set CODEX_BIN only when you intentionally want to override automatic selection.",
@@ -295,7 +295,13 @@ export function selectNewestVersionedCandidate(candidates) {
   return [...candidates].sort((left, right) => compareCodexVersions(right.version, left.version))[0] ?? null;
 }
 
-async function newestInstalledCodexCandidate(candidates, checked) {
+export function selectNewestAcceptedVersionedCandidate(candidates, acceptedVersions) {
+  if (!Array.isArray(acceptedVersions) || !acceptedVersions.length) return selectNewestVersionedCandidate(candidates);
+  const accepted = new Set(acceptedVersions);
+  return selectNewestVersionedCandidate((candidates ?? []).filter((candidate) => accepted.has(candidate?.version)));
+}
+
+async function newestInstalledCodexCandidate(candidates, checked, { acceptedVersions = null } = {}) {
   const versioned = [];
   const seen = new Set();
   for (const candidate of candidates) {
@@ -319,7 +325,7 @@ async function newestInstalledCodexCandidate(candidates, checked) {
     }
     versioned.push({ ...normalized, version });
   }
-  return selectNewestVersionedCandidate(versioned);
+  return selectNewestAcceptedVersionedCandidate(versioned, acceptedVersions) ?? selectNewestVersionedCandidate(versioned);
 }
 
 function parseComparableVersion(version) {

@@ -118,7 +118,7 @@ For local file upload, the extension also needs **Allow access to file URLs** en
 - **Personal ChatGPT plans tested:** Plus and Pro have both passed real-machine product-path testing. That is test evidence, not a promise about future plan policy.
 - **How local access works:** ChatGPT does not connect directly to `localhost`. A typical path is **local Codexless → authenticated Tunnel / remote MCP endpoint → ChatGPT App / Developer Mode**.
 - **No tunnel lock-in:** OpenAI Secure MCP Tunnel is one supported path, not the only possible transport.
-- **Package size:** the current Technical Preview package is under **0.2 MB compressed / 0.9 MB unpacked**, before normal dependencies.
+- **Package size:** the current Technical Preview package is under **0.21 MB compressed / 0.9 MB unpacked**, before normal dependencies.
 - **Independent project:** Codexless is not an OpenAI product and does not imply OpenAI endorsement.
 
 ---
@@ -223,13 +223,10 @@ Codexless performs a low-frequency check for official releases. When a newer ver
 
 ## FAQ
 
-### 1. If I use Codexless from a normal ChatGPT chat, does it use my Codex quota?
+### 1. Does using Codexless consume Codex quota?
 
-**No. If ChatGPT is using Codexless tools directly and is not actually calling Codex, it does not consume Codex quota.**
-
-If you explicitly call Codex, or you are already working in a surface that is metered as Codex usage, Codex usage still applies normally.
-
-The two usage pools remain separate. Codexless does not merge or bypass either one.
+- **Codexless can let ChatGPT do many tasks that would otherwise need Codex. If Codex is not actually called, no Codex quota is used.** Codex quota is used only when you actually start Codex Agent work.
+- **Work and Codex share the same quota pool.** Using Codexless inside a Work window does not bypass the usage that Work itself consumes. If your goal is to save Codex quota, **we recommend using Codexless from a normal Chat.**
 
 ---
 
@@ -283,7 +280,7 @@ The lower-level consent / commit / replay details are summarized in the internal
 
 ### 6. Can the Browser operate websites for me?
 
-**Yes. It is no longer read-only.**
+**Yes.**
 
 It can inspect tabs, capture screenshots, open / close / navigate pages, click semantic targets, fill text, scroll, press `Enter` / `Tab` / `Escape`, and perform prepared uploads and downloads.
 

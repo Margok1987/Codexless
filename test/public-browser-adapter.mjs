@@ -5,8 +5,9 @@ import { CodexPublicBrowserWorkbenchAdapter } from "../src/public-browser-workbe
 
 const cwd = path.resolve("C:/codexless-public-browser-adapter-fixture");
 class FakePublicContext {
-  constructor() { this.generation = 1; this.calls = []; }
-  async browserPrerequisites() {
+  constructor() { this.generation = 1; this.calls = []; this.prerequisiteCalls = []; }
+  async browserPrerequisites(request = {}) {
+    this.prerequisiteCalls.push(structuredClone(request));
     return { status: "ok", chromeSkillPath: path.join(cwd, "skills", "chrome", "SKILL.md"), nodeRepl: true, nodeReplError: null };
   }
   async nodeReplCall(request) {
@@ -22,13 +23,18 @@ class FakePublicContext {
 }
 const ok = (value) => ({ isError: false, text: JSON.stringify(value) });
 const context = new FakePublicContext();
-const adapter = new CodexPublicBrowserWorkbenchAdapter({ context });
+const neutralRuntimeCwd = path.resolve("C:/codexless-browser-runtime-neutral");
+const adapter = new CodexPublicBrowserWorkbenchAdapter({ context, runtimeCwd: neutralRuntimeCwd });
 assert.equal(adapter.generation, 1);
 assert.deepEqual(await adapter.catalog({ kind: "skills", cwd }), { skills: [{ name: "chrome:control-chrome", path: path.join(cwd, "skills", "chrome", "SKILL.md"), enabled: true }] });
 assert.deepEqual(await adapter.catalog({ kind: "mcp", cwd }), { servers: [{ name: "node_repl", tools: [{ name: "js" }], error: null }] });
+assert.equal(context.prerequisiteCalls.at(-1)?.cwd, cwd, "tool/thread cwd must survive a neutral Browser process cwd");
 await assert.rejects(() => adapter.mcpCall({ server: "other", tool: "js", cwd }), /only exposes node_repl.*js/i);
 const passthrough = await adapter.mcpCall({ server: "node_repl", tool: "js", cwd, arguments: { title: "Adapter passthrough probe", code: "x" }, expectedGeneration: 1 });
 assert.deepEqual(passthrough, { isError: true, text: "generic downstream error" });
+assert.equal(context.calls.at(-1)?.cwd, cwd, "node_repl thread/tool call must keep the caller cwd");
+await adapter.mcpCall({ server: "node_repl", tool: "js", arguments: { title: "Adapter passthrough probe", code: "x" }, expectedGeneration: 1 });
+assert.equal(context.calls.at(-1)?.cwd, neutralRuntimeCwd, "neutral cwd is only the fallback when the Browser tool has no cwd");
 
 const browser = new CodexBrowserExecutor({ workbench: adapter, defaultCwd: cwd });
 const first = await browser.listTabs({ cwd });

@@ -7,14 +7,42 @@ const TERMINAL_TURN_STATUSES = new Set(["completed", "failed", "interrupted"]);
 const DEFAULT_MAX_EVENTS = 128;
 const MAX_EVENT_TEXT_CHARS = 2_048;
 
-function hashRequest(cwd, task, model = null) {
-  return createHash("sha256").update(`${cwd}\0${task}\0${model ?? ""}`, "utf8").digest("hex");
+function hashRequest(cwd, task, model = null, reasoningEffort = null) {
+  const base = `${cwd}\0${task}\0${model ?? ""}`;
+  const material = reasoningEffort === null ? base : `${base}\0reasoningEffort=${reasoningEffort}`;
+  return createHash("sha256").update(material, "utf8").digest("hex");
 }
 
 function normalizeModel(model) {
   if (model === null || model === undefined) return null;
   if (typeof model !== "string" || !model.trim()) throw new Error("model must be a non-empty string when provided");
   return model.trim();
+}
+
+function normalizeReasoningEffort(reasoningEffort) {
+  if (reasoningEffort === null || reasoningEffort === undefined) return null;
+  if (typeof reasoningEffort !== "string" || !reasoningEffort.trim()) {
+    throw new Error("reasoningEffort must be a non-empty string when provided");
+  }
+  const normalized = reasoningEffort.trim();
+  if (normalized.length > 128) throw new Error("reasoningEffort must be at most 128 characters");
+  return normalized;
+}
+
+function modelIdentity(entry) {
+  return typeof entry?.model === "string" && entry.model
+    ? entry.model
+    : typeof entry?.id === "string" && entry.id
+      ? entry.id
+      : null;
+}
+
+function supportedReasoningEfforts(entry) {
+  return Array.isArray(entry?.supportedReasoningEfforts)
+    ? entry.supportedReasoningEfforts
+        .map((option) => typeof option?.reasoningEffort === "string" ? option.reasoningEffort : null)
+        .filter(Boolean)
+    : [];
 }
 
 function projectModel(entry) {
@@ -278,7 +306,7 @@ export class CodexAgentExecutor {
     };
   }
 
-  async start({ cwd = this.#defaultCwd, task, clientRequestId = null, permissionProfile = null, model = null }) {
+  async start({ cwd = this.#defaultCwd, task, clientRequestId = null, permissionProfile = null, model = null, reasoningEffort = null }) {
     this.#assertOpen();
     if (typeof task !== "string" || !task.trim()) throw new Error("task must be a non-empty string");
     if (clientRequestId !== null && (typeof clientRequestId !== "string" || !clientRequestId.trim())) {
@@ -288,9 +316,10 @@ export class CodexAgentExecutor {
       throw new Error("permissionProfile must be a non-empty string when provided");
     }
     const requestedModel = normalizeModel(model);
+    const requestedReasoningEffort = normalizeReasoningEffort(reasoningEffort);
 
     const effectiveCwd = path.resolve(cwd);
-    const requestHash = hashRequest(effectiveCwd, task, requestedModel);
+    const requestHash = hashRequest(effectiveCwd, task, requestedModel, requestedReasoningEffort);
     if (clientRequestId) {
       const prior = this.#clientRequestIds.get(clientRequestId);
       if (prior) {
@@ -299,6 +328,16 @@ export class CodexAgentExecutor {
         if (!state) return this.#unknown(prior.agentRef, "accepted start mapping is no longer available");
         return { ...this.#snapshot(state, 0), duplicate: true };
       }
+    }
+
+    let validatedReasoningModel = null;
+    if (requestedReasoningEffort) {
+      const validation = await this.#validateReasoningEffort({
+        requestedModel,
+        currentModel: null,
+        requestedReasoningEffort,
+      });
+      validatedReasoningModel = validation.effectiveModel;
     }
 
     const agentRef = `agent_${randomUUID()}`;
@@ -326,6 +365,7 @@ export class CodexAgentExecutor {
       lastCompletedTurnId: null,
       permissionProfile,
       requestedModel,
+      requestedReasoningEffort,
       resolvedModel: null,
       modelProvider: null,
       serviceTier: null,
@@ -338,7 +378,8 @@ export class CodexAgentExecutor {
     try {
       const threadParams = { cwd: effectiveCwd, ephemeral: false };
       if (permissionProfile) threadParams.permissions = permissionProfile;
-      if (requestedModel) threadParams.model = requestedModel;
+      if (requestedModel || validatedReasoningModel) threadParams.model = requestedModel ?? validatedReasoningModel;
+      if (requestedReasoningEffort) threadParams.config = { model_reasoning_effort: requestedReasoningEffort };
       const started = await this.#client.request("thread/start", threadParams);
       const threadId = started?.thread?.id;
       if (typeof threadId !== "string" || !threadId) throw new Error("thread/start returned no formal thread id");
@@ -346,12 +387,21 @@ export class CodexAgentExecutor {
         const activeProfile = started?.activePermissionProfile?.id;
         if (activeProfile !== permissionProfile) throw new Error(`thread/start authority mismatch: expected ${permissionProfile}, got ${String(activeProfile ?? "missing")}`);
       }
+      const expectedModel = requestedModel ?? validatedReasoningModel;
+      const acceptedModel = typeof started?.model === "string" ? started.model : null;
+      if (expectedModel && acceptedModel !== expectedModel) {
+        throw new Error(`CODEX_AGENT_SELECTION_MISMATCH: prepared model "${expectedModel}" was not honored by thread/start (observed ${acceptedModel ?? "missing"}); no Codex turn was started`);
+      }
+      const acceptedReasoningEffort = typeof started?.reasoningEffort === "string" ? started.reasoningEffort : null;
+      if (requestedReasoningEffort && acceptedReasoningEffort !== requestedReasoningEffort) {
+        throw new Error(`CODEX_AGENT_SELECTION_MISMATCH: prepared reasoning effort "${requestedReasoningEffort}" was not honored by thread/start (observed ${acceptedReasoningEffort ?? "missing"}); no Codex turn was started`);
+      }
       state.threadId = threadId;
       state.status = "idle";
-      state.resolvedModel = typeof started?.model === "string" ? started.model : requestedModel;
+      state.resolvedModel = acceptedModel ?? requestedModel;
       state.modelProvider = typeof started?.modelProvider === "string" ? started.modelProvider : null;
       state.serviceTier = typeof started?.serviceTier === "string" ? started.serviceTier : null;
-      state.reasoningEffort = typeof started?.reasoningEffort === "string" ? started.reasoningEffort : null;
+      state.reasoningEffort = acceptedReasoningEffort;
       state.updatedAt = Date.now();
       this.#appendEvent(state, { type: "thread/accepted", threadId, model: state.resolvedModel, at: Date.now() });
     } catch (error) {
@@ -368,6 +418,7 @@ export class CodexAgentExecutor {
         threadId: state.threadId,
         clientUserMessageId: clientRequestId ?? agentRef,
         input: [{ type: "text", text: task }],
+        ...(requestedReasoningEffort ? { effort: requestedReasoningEffort } : {}),
       });
       const turn = turnStarted?.turn;
       if (typeof turn?.id !== "string" || !turn.id) throw new Error("turn/start returned no turn id");
@@ -515,12 +566,17 @@ export class CodexAgentExecutor {
     }
   }
 
-  async send({ agentRef, message, clientRequestId = null, model = null }) {
+  async send({ agentRef, message, clientRequestId = null, model = null, reasoningEffort = null }) {
     this.#assertOpen();
     if (typeof message !== "string" || !message.trim()) throw new Error("message must be a non-empty string");
     if (clientRequestId !== null && (typeof clientRequestId !== "string" || !clientRequestId.trim())) throw new Error("clientRequestId must be a non-empty string when provided");
     const requestedModel = normalizeModel(model);
-    const requestHash = createHash("sha256").update(`${agentRef}\0${message}\0${requestedModel ?? ""}`, "utf8").digest("hex");
+    const requestedReasoningEffort = normalizeReasoningEffort(reasoningEffort);
+    const sendHashBase = `${agentRef}\0${message}\0${requestedModel ?? ""}`;
+    const sendHashMaterial = requestedReasoningEffort === null
+      ? sendHashBase
+      : `${sendHashBase}\0reasoningEffort=${requestedReasoningEffort}`;
+    const requestHash = createHash("sha256").update(sendHashMaterial, "utf8").digest("hex");
     if (clientRequestId) {
       const prior = this.#sendRequestIds.get(clientRequestId);
       if (prior) {
@@ -543,6 +599,15 @@ export class CodexAgentExecutor {
     if (typeof resumed?.modelProvider === "string") state.modelProvider = resumed.modelProvider;
     state.serviceTier = typeof resumed?.serviceTier === "string" ? resumed.serviceTier : state.serviceTier;
     state.reasoningEffort = typeof resumed?.reasoningEffort === "string" ? resumed.reasoningEffort : state.reasoningEffort;
+
+    if (requestedReasoningEffort) {
+      await this.#validateReasoningEffort({
+        requestedModel,
+        currentModel: typeof resumed?.model === "string" ? resumed.model : state.resolvedModel,
+        requestedReasoningEffort,
+      });
+    }
+
     if (clientRequestId) this.#sendRequestIds.set(clientRequestId, { agentRef, requestHash });
 
     state.currentTurnId = null;
@@ -555,6 +620,7 @@ export class CodexAgentExecutor {
     state.latestError = null;
     state.status = "running";
     state.requestedModel = requestedModel;
+    state.requestedReasoningEffort = requestedReasoningEffort;
     state.turnStartedAt = Date.now();
     state.turnEndedAt = null;
     state.turnDurationMs = null;
@@ -566,6 +632,7 @@ export class CodexAgentExecutor {
         clientUserMessageId: clientRequestId ?? `${agentRef}_${randomUUID()}`,
         input: [{ type: "text", text: message }],
         ...(requestedModel ? { model: requestedModel } : {}),
+        ...(requestedReasoningEffort ? { effort: requestedReasoningEffort } : {}),
       });
       const turn = turnStarted?.turn;
       if (typeof turn?.id !== "string" || !turn.id) throw new Error("turn/start returned no turn id");
@@ -590,6 +657,58 @@ export class CodexAgentExecutor {
       this.#appendEvent(state, { type: "turn/acceptance-unknown", text: state.latestError, at: Date.now() });
       return { ...this.#snapshot(state, 0), duplicate: false };
     }
+  }
+
+  async #currentModelCatalog() {
+    const models = [];
+    const seenCursors = new Set();
+    let cursor = null;
+    for (let page = 0; page < 10; page += 1) {
+      const result = await this.listModels({ cursor, limit: 200, includeHidden: true });
+      models.push(...result.models);
+      if (!result.nextCursor) return models;
+      if (seenCursors.has(result.nextCursor)) throw new Error("Codex model catalog pagination repeated a cursor");
+      seenCursors.add(result.nextCursor);
+      cursor = result.nextCursor;
+    }
+    throw new Error("Codex model catalog exceeded the bounded pagination limit");
+  }
+
+  async #validateReasoningEffort({ requestedModel, currentModel, requestedReasoningEffort }) {
+    let catalog;
+    try {
+      catalog = await this.#currentModelCatalog();
+    } catch (error) {
+      const modelLabel = requestedModel ?? currentModel ?? "<unresolved>";
+      throw new Error(
+        `reasoningEffort validation failed for model "${modelLabel}": requested effort "${requestedReasoningEffort}"; supported efforts unknown; current model catalog unavailable: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+
+    let effectiveModel = requestedModel ?? currentModel ?? null;
+    if (!effectiveModel) {
+      const defaults = catalog.filter((entry) => entry?.isDefault === true && modelIdentity(entry));
+      if (defaults.length === 1) effectiveModel = modelIdentity(defaults[0]);
+    }
+    if (!effectiveModel) {
+      throw new Error(
+        `reasoningEffort validation failed for model "<unresolved>": requested effort "${requestedReasoningEffort}"; supported efforts unknown; current/default model could not be resolved from the current Codex model catalog`
+      );
+    }
+
+    const entry = catalog.find((candidate) => candidate?.model === effectiveModel || candidate?.id === effectiveModel) ?? null;
+    if (!entry) {
+      throw new Error(
+        `reasoningEffort validation failed for model "${effectiveModel}": requested effort "${requestedReasoningEffort}"; supported efforts unknown; model is not present in the current Codex model catalog`
+      );
+    }
+    const supported = supportedReasoningEfforts(entry);
+    if (!supported.includes(requestedReasoningEffort)) {
+      throw new Error(
+        `reasoningEffort validation failed for model "${effectiveModel}": requested effort "${requestedReasoningEffort}"; supported efforts: ${supported.length ? supported.join(", ") : "(none)"}`
+      );
+    }
+    return { effectiveModel, supportedReasoningEfforts: supported };
   }
 
   async #refreshFromOfficial(state) {
@@ -808,6 +927,7 @@ export class CodexAgentExecutor {
       timing: { startedAt: state.turnStartedAt, endedAt: state.turnEndedAt, durationMs: state.turnDurationMs },
       execution: {
         requestedModel: state.requestedModel,
+        ...(state.requestedReasoningEffort ? { requestedReasoningEffort: state.requestedReasoningEffort } : {}),
         resolvedModel: state.resolvedModel,
         modelProvider: state.modelProvider,
         serviceTier: state.serviceTier,

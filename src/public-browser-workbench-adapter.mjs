@@ -4,10 +4,19 @@ const NODE_REPL_TOOL = "js";
 
 export class CodexPublicBrowserWorkbenchAdapter {
   #context;
+  #runtimeCwd;
 
-  constructor({ context }) {
+  constructor({ context, runtimeCwd = null }) {
     if (!context) throw new Error("CodexPublicBrowserWorkbenchAdapter requires public context");
+    if (runtimeCwd !== null && (typeof runtimeCwd !== "string" || !runtimeCwd.trim())) {
+      throw new Error("runtimeCwd must be null or a non-empty string");
+    }
     this.#context = context;
+    this.#runtimeCwd = runtimeCwd;
+  }
+
+  #cwd(requestedCwd) {
+    return requestedCwd ?? this.#runtimeCwd;
   }
 
   get generation() {
@@ -15,7 +24,7 @@ export class CodexPublicBrowserWorkbenchAdapter {
   }
 
   async catalog({ kind, cwd }) {
-    const prerequisite = await this.#context.browserPrerequisites({ cwd });
+    const prerequisite = await this.#context.browserPrerequisites({ cwd: this.#cwd(cwd) });
     if (kind === "skills") {
       return {
         skills: prerequisite.chromeSkillPath
@@ -40,7 +49,7 @@ export class CodexPublicBrowserWorkbenchAdapter {
       throw new Error("Codexless Browser adapter only exposes node_repl/js to the accepted Browser implementation");
     }
     try {
-      return await this.#context.nodeReplCall({ cwd, arguments: args, meta, expectedGeneration });
+      return await this.#context.nodeReplCall({ cwd: this.#cwd(cwd), arguments: args, meta, expectedGeneration });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (/PUBLIC_CONTEXT_GENERATION_STALE/i.test(message)) {

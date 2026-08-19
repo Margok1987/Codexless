@@ -157,6 +157,7 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
       lastOpened: "2026-08-13T00:00:00.000Z",
     }],
     stale: false,
+    openTabsErrorText: null,
     locatorCount: 1,
     locatorVisible: true,
     locatorEnabled: true,
@@ -380,7 +381,10 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
       if (title === "Execute prepared Chrome new tab") {
         assert.match(code, /\.tabs\.new\(\)/);
         assert.match(code, /\.goto\(/);
+        assert.match(code, /typeof __twBrowser\.tabs\?\.finalize === "function"/);
         assert.match(code, /status: "deliverable"/);
+        assert.match(code, /__twTab\.markDeliverable\(\)/, "new Chrome runtimes without tabs.finalize must keep the exact created tab through Tab.markDeliverable()");
+        assert.match(code, /TOOLWIRE_BROWSER_DELIVERABLE_API_UNAVAILABLE/, "unknown cleanup APIs must fail visibly after dispatch rather than guessing");
         assert.match(code, /TOOLWIRE_BROWSER_OPEN_TAB_RESULT_UNCERTAIN/);
         const targetMatch = code.match(/\.goto\(("(?:[^"\\]|\\.)*")\)/);
         assert.ok(targetMatch, "new-tab body must bind a JSON URL literal");
@@ -908,12 +912,106 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
         };
       }
       if (code.includes("user.openTabs")) {
+        if (typeof state.openTabsErrorText === "string") {
+          return { isError: true, text: state.openTabsErrorText };
+        }
         return { isError: false, text: JSON.stringify(state.tabs) };
       }
       throw new Error("unexpected node_repl code");
     },
   };
 }
+
+test("Browser origin permission diagnosis separates saved deny, network policy, generic permission, transport, and success", async () => {
+  const workbench = makeWorkbench();
+  const browser = new CodexBrowserExecutor({ workbench, defaultCwd: "C:\\workspace" });
+
+  workbench.state.openTabsErrorText = "persisted_user_denied source=browser-use-persisted-state scope=conversation Browser use cannot access https://gaim1.xyz/private/path?token=secret#frag because the user has a saved preference that blocks it.";
+  await assert.rejects(() => browser.listTabs({}), (error) => {
+    assert.equal(error.code, "BROWSER_ORIGIN_SAVED_PERMISSION_DENIED");
+    assert.deepEqual(error.diagnostic, {
+      source: "browser-use-persisted-state",
+      scope: "conversation",
+      origin: "https://gaim1.xyz",
+    });
+    assert.match(error.message, /Browser is connected/i);
+    assert.match(error.message, /saved website permission/i);
+    assert.doesNotMatch(`${error.message} ${(error.nextActions ?? []).join(" ")}`, /extension|restart|side.?bar|reinstall/i);
+    assert.doesNotMatch(`${error.message} ${(error.nextActions ?? []).join(" ")}`, /private\/path|token=secret|#frag/i);
+    return true;
+  });
+
+  workbench.state.openTabsErrorText = "browser-use-persisted-state scope=global Browser use cannot access https://global.example.test/account?private=1 because the user has a saved preference that blocks it.";
+  await assert.rejects(() => browser.listTabs({}), (error) => {
+    assert.equal(error.code, "BROWSER_ORIGIN_SAVED_PERMISSION_DENIED");
+    assert.equal(error.diagnostic?.scope, "global");
+    assert.equal(error.diagnostic?.origin, "https://global.example.test");
+    return true;
+  });
+
+  workbench.state.openTabsErrorText = "enterprise_policy_blocked source=codex-network-policy Browser use cannot access https://policy.example.test/secret?scope=global because the admin-enforced policy blocks it.";
+  await assert.rejects(() => browser.listTabs({}), (error) => {
+    assert.equal(error.code, "BROWSER_ORIGIN_NETWORK_POLICY_DENIED");
+    assert.deepEqual(error.diagnostic, {
+      source: "codex-network-policy",
+      origin: "https://policy.example.test",
+    });
+    assert.match(error.message, /Codex\/workspace network policy/i);
+    assert.doesNotMatch(`${error.message} ${(error.nextActions ?? []).join(" ")}`, /extension|restart|side.?bar|reinstall/i);
+    assert.doesNotMatch(`${error.message} ${(error.nextActions ?? []).join(" ")}`, /\/secret|scope=global/i);
+    return true;
+  });
+
+  workbench.state.openTabsErrorText = "permission denied while reading browser state";
+  await assert.rejects(() => browser.listTabs({}), (error) => {
+    assert.equal(error.code, "BROWSER_RUNTIME_ERROR");
+    assert.equal(error.diagnostic, null);
+    return true;
+  });
+
+  workbench.state.openTabsErrorText = "Chrome extension is not connected";
+  await assert.rejects(() => browser.listTabs({}), (error) => {
+    assert.equal(error.code, "BROWSER_CHROME_NOT_CONNECTED");
+    assert.match((error.nextActions ?? []).join(" "), /Chrome extension\/backend/i);
+    return true;
+  });
+
+  workbench.state.openTabsErrorText = null;
+  const listed = await browser.listTabs({});
+  assert.equal(listed.tabs.length, 1);
+  assert.equal(listed.tabs[0].url, "https://mail.example.test/inbox");
+});
+
+test("Browser tool errors surface only bounded permission diagnostics", async () => {
+  const registered = new Map();
+  const server = {
+    registerTool(name, definition, handler) {
+      registered.set(name, { definition, handler });
+    },
+  };
+  const browser = {
+    async listTabs() {
+      const error = new Error("Browser is connected, but Browser use for https://gaim1.xyz is blocked by a saved website permission.");
+      error.code = "BROWSER_ORIGIN_SAVED_PERMISSION_DENIED";
+      error.nextActions = ["Change the saved website permission, then retry."];
+      error.diagnostic = {
+        source: "browser-use-persisted-state",
+        scope: "conversation",
+        origin: "https://gaim1.xyz",
+      };
+      throw error;
+    },
+  };
+  registerBrowserPreviewTools(server, browser);
+  const result = await registered.get("codex.browser_tabs").handler({});
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent?.errorCode, "BROWSER_ORIGIN_SAVED_PERMISSION_DENIED");
+  assert.deepEqual(result.structuredContent?.diagnostic, {
+    source: "browser-use-persisted-state",
+    scope: "conversation",
+    origin: "https://gaim1.xyz",
+  });
+});
 
 test("Browser prepare-click schema exposes only narrow role/name or exact-text targets", () => {
   const registered = new Map();
