@@ -1,0 +1,9 @@
+# Keep release bytes deterministic across Windows and macOS checkouts.
+*.sh text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.ps1 text eol=lf
+*.cmd text eol=crlf
+LICENSE text eol=lf
+.gitignore text eol=lf
