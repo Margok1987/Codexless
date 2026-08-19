@@ -78,7 +78,7 @@ origin = `http://127.0.0.1:${server.address().port}`;
 
 try {
   await mkdir(fakeTools, { recursive: true });
-  await writeFile(path.join(fakeTools, "npm.cmd"), "@echo off\r\nexit /b 0\r\n", "utf8");
+  await writeFile(path.join(fakeTools, "npm.cmd"), "@echo off\r\necho added noisy npm fixture output\r\nexit /b 0\r\n", "utf8");
   await mkdir(stateRoot, { recursive: true });
   await mkdir(tempRoot, { recursive: true });
   await mkdir(stagingRoot, { recursive: true });

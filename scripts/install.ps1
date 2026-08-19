@@ -37,6 +37,17 @@ function Invoke-Checked {
     [Parameter(Mandatory=$true)][string]$Command,
     [Parameter(ValueFromRemainingArguments=$true)][string[]]$Arguments
   )
+
+  if ($Json) {
+    $captured = (& $Command @Arguments 2>&1 | Out-String).Trim()
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+      $detail = if ($captured) { "`n$captured" } else { "" }
+      throw "Command failed ($exitCode): $Command $($Arguments -join ' ')$detail"
+    }
+    return
+  }
+
   & $Command @Arguments
   if ($LASTEXITCODE -ne 0) {
     throw "Command failed ($LASTEXITCODE): $Command $($Arguments -join ' ')"

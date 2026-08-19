@@ -1,7 +1,7 @@
 {
   "manifestVersion": 1,
   "productId": "codexless",
-  "version": "0.1.1-preview.1",
+  "version": "0.1.1-preview.2",
   "buildIdAlgorithm": "sha256-release-identity-v1",
   "fileHashAlgorithm": "sha256-raw-file-v1",
   "sourceRevision": null,
@@ -17,7 +17,7 @@
       }
     }
   },
-  "buildId": "ef95a4e3b6fc971a6111bcd853d805cabfdfc7ed8a8595fcc95b644e2aeab636",
+  "buildId": "ae0ee0af68651029d8611589067cf325b4410c46e73586694a2ad271e58c850e",
   "files": [
     { "path": "EXPORT_SYNC.md", "sha256": "e7e6e381fff06682c54c7e66a1378dc09d4499230c88c6fe6143fc6b0fe83290" },
     { "path": "LICENSE", "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4" },
@@ -38,15 +38,15 @@
     { "path": "bin/codexless-update.cmd", "sha256": "1b6afd6382cf63d9f38cd5b7da00ebaa9801b24c29a615647f56266245f2466a" },
     { "path": "bin/codexless-update.sh", "sha256": "74c3b79327a5d16b40cf1b121240524cb324c0576430a76dd5a5863994e69806" },
     { "path": "config/toolbox-method-registry.json", "sha256": "eeba1d576db50f629116c308deafe6584ee2bfd25a91e53c273b6fe4f234a916" },
-    { "path": "npm-shrinkwrap.json", "sha256": "f6ee34cb38b23bf9ad5fa6a12dfa96241fbd68915c09a0cabaca5ebc9b7df0fd" },
-    { "path": "package.json", "sha256": "e7243d044a331e9501a440e5a2065fac2562b4c25a99dd0126c00b33b5ec6f41" },
+    { "path": "npm-shrinkwrap.json", "sha256": "7d28f281ea7d01b517ca1b0a41ddc481f9a954e72e4a888a48ad8e35d2289a3e" },
+    { "path": "package.json", "sha256": "1d8e3dea19c6412d2a8a508617203d10da74035dfd8bd33879f1f80966a89930" },
     { "path": "scripts/bootstrap-archive.ps1", "sha256": "c972086d15333bb5a4f14ddeb814500bc25440f77ee13a03c6e3fccca07c59a5" },
     { "path": "scripts/bootstrap-archive.sh", "sha256": "b557b54e58097829ff67527cccbd2c4f327c56e0445561b0286b72cd39380ab2" },
     { "path": "scripts/bootstrap.mjs", "sha256": "0cb1a5152f3ed9e7c18ad37e77300560fd0bd57e22dc5c5f20d0a8baafe817e2" },
     { "path": "scripts/check-release.mjs", "sha256": "2aa874631c81910a03ea2485da7412f9591828449a87d5daa162bb324a767b19" },
     { "path": "scripts/doctor.mjs", "sha256": "4c31808b5507ce473f8ea0b5edfadebfdc2cb448316e4a7117e5e1e72098022e" },
     { "path": "scripts/generate-release-manifest.mjs", "sha256": "77b380ff6c29ff0900f452ad26536869ab4a81fe22bc198d78a0d36abd715aaa" },
-    { "path": "scripts/install.ps1", "sha256": "0aab80e6094758172bf1c94b199a8bd2b36c0382b064e30e68b3dedad262db4a" },
+    { "path": "scripts/install.ps1", "sha256": "a2bba0a0baafb612ab436f8d50d1c11726bd79b508f49bd3744e0f10c775b68b" },
     { "path": "scripts/install.sh", "sha256": "d04f7a78055a29104976940ec156065a0eee1dd5b6a8b8643d462b9cba64ac1d" },
     { "path": "scripts/launch.mjs", "sha256": "f0c6a0a224f89b24cb657b33c0963f22b480d6e43f3ab9d6cfca12687b1b19f7" },
     { "path": "scripts/lifecycle.mjs", "sha256": "d291ae9db7d78a235076883507c795cba796cb37d5043a5b08e9268c2b7288cb" },
@@ -88,7 +88,7 @@
     { "path": "src/release-discovery.mjs", "sha256": "1fd79c80f8ad3754be45c9de83a3dfe2d15de9c18ea02b29540f4856a8165fc6" },
     { "path": "src/release-identity.mjs", "sha256": "755153385461df4b118c953d7da153cdff6689e021a6ac987055034a1b80bd84" },
     { "path": "src/stock-prompt-input-skill-routing.mjs", "sha256": "8ea8d34d6e3f37b764d144cab9c1f557212274a805f39265afb4938889f687d4" },
-    { "path": "src/surface-contracts.mjs", "sha256": "8b35f81fddd76133ff66452695e3bdfe2c7fed4378e04da6fc302577b380472b" },
+    { "path": "src/surface-contracts.mjs", "sha256": "8062f1a528f7ed872323cb63ba63cb9b964f483c876f3932b93b18ce36bcebae" },
     { "path": "src/toolbox-method-registry.mjs", "sha256": "54222f39b6109ba9b28625f9869b5abfcb5beee1c8820f26dc578495e543b5ef" }
   ]
 }
