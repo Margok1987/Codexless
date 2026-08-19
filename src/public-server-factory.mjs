@@ -1,11 +1,10 @@
 import { createRequire } from "node:module";
 import { registerAgentPreviewTools } from "./agent-tools.mjs";
-import { registerBrowserReaderTools } from "./browser-reader-tools.mjs";
-import { registerBrowserOperatorTools } from "./browser-operator-tools.mjs";
+import { registerBrowserPreviewTools } from "./browser-tools.mjs";
 import { registerConstructionTools } from "./construction-tools.mjs";
 import { registerPublicContextTools } from "./public-context-tools.mjs";
 import { installRecentCallToolInstrumentation } from "./recent-call-diagnostics.mjs";
-import { PUBLIC_SERVER_VERSION, PUBLIC_SURFACE_VERSION } from "./surface-contracts.mjs";
+import { PUBLIC_SERVER_VERSION, PUBLIC_SURFACE_VERSION, PUBLIC_TOOL_NAMES } from "./surface-contracts.mjs";
 
 const require = createRequire(import.meta.url);
 const { McpServer } = require("@modelcontextprotocol/server");
@@ -19,12 +18,59 @@ export const PUBLIC_SKILL_ROUTING_INSTRUCTIONS =
 
 export const PUBLIC_SERVER_INSTRUCTIONS = `${PUBLIC_BASE_INSTRUCTIONS} ${PUBLIC_SKILL_ROUTING_INSTRUCTIONS}`;
 
+export function createPublicToolRegistrationGate(server, {
+  allowedToolNames = PUBLIC_TOOL_NAMES,
+  strictUnknown = false,
+} = {}) {
+  if (!server || typeof server.registerTool !== "function") throw new Error("public tool registration gate requires an MCP server");
+  const expected = [...allowedToolNames];
+  const allowed = new Set(expected);
+  if (allowed.size !== expected.length) throw new Error("PUBLIC_TOOL_ALLOWLIST_DUPLICATE");
+  const counts = new Map(expected.map((name) => [name, 0]));
+  const skipped = [];
+
+  const registrationServer = new Proxy(server, {
+    get(target, property) {
+      if (property === "registerTool") {
+        return (name, ...args) => {
+          if (!allowed.has(name)) {
+            skipped.push(String(name));
+            if (strictUnknown) throw new Error(`PUBLIC_TOOL_REGISTRATION_FORBIDDEN:${String(name)}`);
+            return undefined;
+          }
+          const nextCount = (counts.get(name) ?? 0) + 1;
+          counts.set(name, nextCount);
+          if (nextCount > 1) throw new Error(`PUBLIC_TOOL_REGISTRATION_DUPLICATE:${name}`);
+          return Reflect.apply(target.registerTool, target, [name, ...args]);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+
+  function assertComplete() {
+    const missing = expected.filter((name) => counts.get(name) !== 1);
+    if (missing.length) throw new Error(`PUBLIC_TOOL_REGISTRATION_INCOMPLETE:${missing.join(",")}`);
+    return {
+      expectedCount: expected.length,
+      registeredCount: expected.length,
+      skippedToolNames: [...skipped],
+    };
+  }
+
+  return {
+    server: registrationServer,
+    assertComplete,
+    skippedToolNames: skipped,
+  };
+}
+
 export function createPublicServerFactory({
   executor,
   authorityExecutor,
   publicContext,
-  browserReader,
-  browserOperator,
+  browser,
   agentExecutor,
   meteredConsentMode = "off",
   meteredQuotaProvider = null,
@@ -35,8 +81,7 @@ export function createPublicServerFactory({
   if (!executor) throw new Error("Codexless public server requires an authority executor");
   if (!authorityExecutor) throw new Error("Codexless public server requires authorityExecutor");
   if (!publicContext) throw new Error("Codexless public server requires publicContext");
-  if (!browserReader) throw new Error("Codexless public server requires browserReader");
-  if (!browserOperator) throw new Error("Codexless public server requires browserOperator");
+  if (!browser) throw new Error("Codexless public server requires the accepted Browser executor");
   if (!agentExecutor) throw new Error("Codexless public server requires agentExecutor");
   if (!recentCallDiagnostics) throw new Error("Codexless public server requires recentCallDiagnostics");
   if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1 || maxConcurrent > 4) {
@@ -67,8 +112,10 @@ export function createPublicServerFactory({
       }
     );
     installRecentCallToolInstrumentation(server, recentCallDiagnostics);
+    const publicRegistration = createPublicToolRegistrationGate(server);
+    const publicServer = publicRegistration.server;
 
-    server.registerTool(
+    publicServer.registerTool(
       "codex.command_exec",
       {
         title: "Codex Model-Free Command",
@@ -114,17 +161,17 @@ export function createPublicServerFactory({
       }
     );
 
-    registerPublicContextTools(server, publicContext);
-    registerConstructionTools(server, { authorityExecutor });
-    registerBrowserReaderTools(server, browserReader);
-    registerBrowserOperatorTools(server, browserOperator);
-    registerAgentPreviewTools(server, {
+    registerPublicContextTools(publicServer, publicContext);
+    registerConstructionTools(publicServer, { authorityExecutor });
+    registerBrowserPreviewTools(publicServer, browser);
+    registerAgentPreviewTools(publicServer, {
       agentExecutor,
       authorityExecutor,
       meteredConsentMode,
       meteredQuotaProvider,
       agentPreviewState,
     });
+    publicRegistration.assertComplete();
     return server;
   };
 }

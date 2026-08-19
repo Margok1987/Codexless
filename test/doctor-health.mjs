@@ -1,14 +1,12 @@
 import assert from "node:assert/strict";
 import path from "node:path";
-import { CodexBrowserReaderExecutor } from "../src/browser-reader-executor.mjs";
+import { CodexBrowserExecutor } from "../src/codex-browser-executor.mjs";
+import { CodexPublicBrowserWorkbenchAdapter } from "../src/public-browser-workbench-adapter.mjs";
 import { buildDoctorHealth, normalizeBrowserReaderHealth } from "../src/doctor-health.mjs";
 
 const cwd = path.resolve("C:\\codexless-doctor-health-fixture");
 
-const disconnectedReader = new CodexBrowserReaderExecutor({
-  context: fakeContext({ backends: [] }),
-  defaultCwd: cwd,
-});
+const disconnectedReader = publicBrowser(fakeContext({ backends: [] }));
 const disconnectedRaw = await disconnectedReader.status({ cwd });
 assert.equal(disconnectedRaw.status, "unavailable");
 assert.equal(disconnectedRaw.reason, "chrome_not_connected");
@@ -19,10 +17,7 @@ assert.equal(disconnected.prerequisites.nodeRepl, "ok");
 assert.equal(disconnected.backend.status, "disconnected");
 assert.equal(disconnected.connection.verified, false);
 
-const connectedReader = new CodexBrowserReaderExecutor({
-  context: fakeContext({ backends: [{ name: "Chrome", family: "chrome", type: "extension" }] }),
-  defaultCwd: cwd,
-});
+const connectedReader = publicBrowser(fakeContext({ backends: [{ name: "Chrome", family: "chrome", type: "extension" }] }));
 const connected = normalizeBrowserReaderHealth(await connectedReader.status({ cwd }));
 assert.equal(connected.status, "available", "Browser Reader must report green only after real backend connectivity succeeds");
 assert.equal(connected.connection.status, "connected");
@@ -30,10 +25,7 @@ assert.equal(connected.connection.verified, true);
 assert.equal(connected.backend.family, "chrome");
 assert.equal(connected.backend.type, "extension");
 
-const missingSkillReader = new CodexBrowserReaderExecutor({
-  context: fakeContext({ prerequisite: { status: "unavailable", reason: "chrome_skill_unavailable", chromeSkillPath: null, nodeRepl: false } }),
-  defaultCwd: cwd,
-});
+const missingSkillReader = publicBrowser(fakeContext({ prerequisite: { status: "unavailable", reason: "chrome_skill_unavailable", chromeSkillPath: null, nodeRepl: false } }));
 const missingSkill = normalizeBrowserReaderHealth(await missingSkillReader.status({ cwd }));
 assert.equal(missingSkill.status, "unavailable");
 assert.equal(missingSkill.prerequisites.chromeSkill, "missing");
@@ -61,6 +53,13 @@ assert.equal(coreError.core.status, "error");
 assert.equal(coreError.capabilities.status, "ok");
 
 console.log("Doctor Browser/core/optional health regression PASS");
+
+function publicBrowser(context) {
+  return new CodexBrowserExecutor({
+    workbench: new CodexPublicBrowserWorkbenchAdapter({ context }),
+    defaultCwd: cwd,
+  });
+}
 
 function fakeContext({ prerequisite = null, backends = [] } = {}) {
   return {

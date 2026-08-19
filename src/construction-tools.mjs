@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { readFile, realpath, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -19,7 +20,7 @@ export function registerConstructionTools(server, { authorityExecutor }) {
     {
       title: "Read Multiple Authorized Project Files",
       description:
-        "Read several UTF-8 text files in one model-free call while preserving Codex project authority. Paths may be absolute or relative to cwd, but every resolved real path must remain inside the Codex trusted authority root for cwd. Returns bounded per-file text plus hashes and truncation metadata. It does not follow a junction/symlink outside the authorized root and does not use a broad raw host filesystem surface.",
+        "Read several UTF-8 text files in one model-free call while preserving Codex project authority. Paths may be absolute or relative to cwd, but every resolved real path must remain inside the Codex trusted authority root for cwd. Returns bounded per-file text plus hashes and truncation metadata. It does not follow a junction/symlink outside the authorized root and does not use the broad raw host filesystem preview.",
       inputSchema: z.object({
         paths: z.array(z.string().min(1).max(32_768)).min(1).max(20),
         cwd: z.string().min(1).max(32_768).optional(),
@@ -36,7 +37,7 @@ export function registerConstructionTools(server, { authorityExecutor }) {
     {
       title: "Guarded Precise Project Edit",
       description:
-        "Apply one guarded exact-text edit to an existing UTF-8 project file without shell quoting. Codexless first resolves Codex authority for cwd, requires the file's real path to stay inside that trusted root, optionally checks the current SHA-256, requires expectedText to occur exactly expectedOccurrences times, rechecks the source hash immediately before writing, and then replaces only those exact occurrences. previewOnly validates and previews without writing. Any drift or mismatch fails closed.",
+        "Apply one guarded exact-text edit to an existing UTF-8 project file without shell quoting. Toolwire first resolves Codex authority for cwd, requires the file's real path to stay inside that trusted root, optionally checks the current SHA-256, requires expectedText to occur exactly expectedOccurrences times, rechecks the source hash immediately before writing, and then replaces only those exact occurrences. previewOnly validates and previews without writing. Any drift or mismatch fails closed.",
       inputSchema: z.object({
         path: z.string().min(1).max(32_768),
         expectedText: z.string().min(1).max(200_000),
@@ -89,17 +90,27 @@ export async function readManyAuthorized({ authorityExecutor, paths, cwd, maxCha
   };
 }
 
-export async function resolveAuthorizedExistingFile({ authorityExecutor, requestedPath, cwd, access = "readOnly" }) {
-  const authority = await authorityExecutor.resolveAuthority({ cwd, access });
+export async function resolveAuthorizedExistingFile({
+  authorityExecutor,
+  path: requestedPath,
+  cwd,
+  includeSha256 = false,
+  maxBytes = null,
+}) {
+  const authority = await authorityExecutor.resolveAuthority({ cwd, access: "readOnly" });
   const root = await canonicalRoot(authority);
-  const filePath = await canonicalExistingFile({ requestedPath, cwd: authority.effectiveCwd, root });
-  const info = await stat(filePath);
+  const target = await canonicalExistingFile({ requestedPath, cwd: authority.effectiveCwd, root });
+  const info = await stat(target);
+  if (Number.isFinite(maxBytes) && maxBytes >= 0 && info.size > maxBytes) {
+    throw new Error(`authorized construction tool refused file above ${maxBytes} bytes: ${target} (${info.size} bytes)`);
+  }
   return {
-    path: filePath,
-    byteLength: info.size,
+    path: target,
     cwd: authority.effectiveCwd,
     trustedAncestor: root,
     permissionProfile: authority.permissionProfile,
+    byteLength: info.size,
+    sha256: includeSha256 ? await sha256File(target) : null,
   };
 }
 
@@ -176,6 +187,17 @@ async function canonicalExistingFile({ requestedPath, cwd, root }) {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+async function sha256File(target) {
+  const hash = createHash("sha256");
+  await new Promise((resolve, reject) => {
+    const stream = createReadStream(target);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", reject);
+    stream.on("end", resolve);
+  });
+  return hash.digest("hex");
 }
 
 function countOccurrences(text, needle) {

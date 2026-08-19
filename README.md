@@ -118,7 +118,7 @@ For local file upload, the extension also needs **Allow access to file URLs** en
 - **Personal ChatGPT plans tested:** Plus and Pro have both passed real-machine product-path testing. That is test evidence, not a promise about future plan policy.
 - **How local access works:** ChatGPT does not connect directly to `localhost`. A typical path is **local Codexless → authenticated Tunnel / remote MCP endpoint → ChatGPT App / Developer Mode**.
 - **No tunnel lock-in:** OpenAI Secure MCP Tunnel is one supported path, not the only possible transport.
-- **Package size:** the current Technical Preview package is under **0.2 MB compressed / 0.8 MB unpacked**, before normal dependencies.
+- **Package size:** the current Technical Preview package is under **0.2 MB compressed / 0.9 MB unpacked**, before normal dependencies.
 - **Independent project:** Codexless is not an OpenAI product and does not imply OpenAI endorsement.
 
 ---
@@ -243,7 +243,19 @@ When Codex quota is available again, you can call Codex again.
 
 ---
 
-### 3. How much access does this get? Can it change or delete local files?
+### 3. Is saving Codex quota the same as bypassing quota, plan limits, or platform rules?
+
+**No. Saving quota means making fewer Codex model calls — not increasing, resetting, transferring, merging, or bypassing anyone's quota or plan limits.**
+
+When the accepted model-free tools are enough, Codexless uses those tools instead of needlessly calling the Codex model. When Codex is actually called, normal Codex usage still applies.
+
+Codexless is built on Codex App Server and ChatGPT app / MCP integration surfaces. It does not reverse-engineer a private UI or secret protocol to evade product boundaries.
+
+It also does not route around local trust / permissions, approvals, sandbox or network boundaries, or platform confirmation requirements. If an upstream supported surface or policy changes, Codexless must adapt to the supported path or fail visibly — not secretly bypass the change.
+
+---
+
+### 4. How much access does this get? Can it change or delete local files?
 
 **By default, the permission ceiling follows the authorization your local Codex already has. Codexless cannot silently widen that ceiling.**
 
@@ -255,13 +267,13 @@ See [`SECURITY.md`](SECURITY.md) for the full boundary.
 
 ---
 
-### 4. Does ChatGPT get everything Codex can do?
+### 5. Does ChatGPT get everything Codex can do?
 
 **No.**
 
 Codexless exposes only capabilities that have been reviewed and accepted for the public surface; it does not expose the entire Codex environment.
 
-The current public service contract contains **39 tools**. The model directly sees **38** of them; one Task Card state tool is app-only.
+The current public service contract contains **39 tools**. The model directly sees **36** of them; three Task Card actions are app-only.
 
 Actual Codex model work uses the dedicated Agent + approval flow. Ordinary local tool actions are not a hidden second route into metered Codex work.
 
@@ -269,7 +281,7 @@ The lower-level consent / commit / replay details are summarized in the internal
 
 ---
 
-### 5. Can the Browser operate websites for me?
+### 6. Can the Browser operate websites for me?
 
 **Yes. It is no longer read-only.**
 
@@ -281,7 +293,7 @@ Browser work uses the current local Chrome profile and its site login state. Loc
 
 ---
 
-### 6. Do I have to change my “plan in ChatGPT → execute in Codex” workflow?
+### 7. Do I have to change my “plan in ChatGPT → execute in Codex” workflow?
 
 **No.**
 
@@ -293,7 +305,7 @@ Codexless reduces unnecessary handoffs; it does not force you to abandon a workf
 
 ---
 
-### 7. I thought ChatGPT could not access my local machine. How does Codexless do it?
+### 8. I thought ChatGPT could not access my local machine. How does Codexless do it?
 
 Right: ChatGPT does not directly access your computer's `localhost`.
 
@@ -311,7 +323,7 @@ Do not put Tunnel / endpoint credentials in the repository or public screenshots
 
 ### 1. Public contract
 
-The current public service contract contains **39 tools**. The model directly sees **38**; one Task Card state tool is app-only.
+The current public service contract contains **39 tools**. The model directly sees **36**; three Task Card actions are app-only.
 
 Metered Agent consent is server-side state: task identity is not approval. Codex dispatch still requires the matching approval / commit path, and a declined task cannot be revived by replaying an older request.
 

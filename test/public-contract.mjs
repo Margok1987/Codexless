@@ -78,29 +78,11 @@ try {
     assert.equal(names.includes(name), false, `${name} must not be exposed by the public preview`);
   }
   assert.equal(names.some((name) => name.startsWith("computer.")), false);
-  assert.deepEqual(names.filter((name) => name.startsWith("codex.browser_")), [
-    "codex.browser_status",
-    "codex.browser_tabs",
-    "codex.browser_read",
-    "codex.browser_confirmation_policy",
-    "codex.browser_screenshot",
-    "codex.browser_prepare_close_tab",
-    "codex.browser_close_tab",
-    "codex.browser_prepare_open_tab",
-    "codex.browser_open_tab",
-    "codex.browser_scroll",
-    "codex.browser_keypress",
-    "codex.browser_prepare_navigate",
-    "codex.browser_navigate",
-    "codex.browser_prepare_click",
-    "codex.browser_click",
-    "codex.browser_prepare_download",
-    "codex.browser_download",
-    "codex.browser_prepare_upload",
-    "codex.browser_upload",
-    "codex.browser_prepare_fill",
-    "codex.browser_fill",
-  ]);
+  assert.deepEqual(
+    names.filter((name) => name.startsWith("codex.browser_")),
+    PUBLIC_TOOL_NAMES.filter((name) => name.startsWith("codex.browser_")),
+    "runtime Browser registration order must match the canonical public surface contract"
+  );
 
   const commandTool = tools.tools.find((tool) => tool.name === "codex.command_exec");
   const preciseEditTool = tools.tools.find((tool) => tool.name === "codex.precise_edit");

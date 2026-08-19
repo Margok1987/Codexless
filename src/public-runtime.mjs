@@ -3,8 +3,8 @@ import path from "node:path";
 import { createAgentPreviewState } from "./agent-tools.mjs";
 import { CodexAgentExecutor } from "./codex-agent-executor.mjs";
 import { ACCEPTED_CODEX_VERSIONS, CodexAuthorityExecutor } from "./codex-authority-executor.mjs";
-import { CodexBrowserReaderExecutor } from "./browser-reader-executor.mjs";
-import { CodexBrowserOperatorExecutor } from "./browser-operator-executor.mjs";
+import { CodexBrowserExecutor } from "./codex-browser-executor.mjs";
+import { CodexPublicBrowserWorkbenchAdapter } from "./public-browser-workbench-adapter.mjs";
 import { resolveCodexExecutable } from "./codex-bin.mjs";
 import { readCodexQuotaSnapshot } from "./codex-quota-snapshot.mjs";
 import { createPreviewTelemetryClient } from "./codex-preview-account-preflight.mjs";
@@ -111,9 +111,8 @@ export async function createPublicRuntime({ env = process.env } = {}) {
       taskStateFile: agentTaskStateFile,
     });
 
-    const browserReader = new CodexBrowserReaderExecutor({ context: publicContext, defaultCwd });
-    const browserOperator = new CodexBrowserOperatorExecutor({
-      reader: browserReader,
+    const browser = new CodexBrowserExecutor({
+      workbench: new CodexPublicBrowserWorkbenchAdapter({ context: publicContext }),
       authorityExecutor,
       defaultCwd,
     });
@@ -121,8 +120,7 @@ export async function createPublicRuntime({ env = process.env } = {}) {
       executor: authorityExecutor,
       authorityExecutor,
       publicContext,
-      browserReader,
-      browserOperator,
+      browser,
       agentExecutor,
       meteredConsentMode,
       meteredQuotaProvider: resourceSnapshotProvider,

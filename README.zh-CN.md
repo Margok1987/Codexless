@@ -120,7 +120,7 @@ Codexless 做的事很简单：**让你的 ChatGPT 套上 Codex 的工服，拎�
 - **个人套餐实测：** Plus 和 Pro 已在真实机器通过产品形态链路测试。这是实测证据，不是未来政策保证。
 - **本地怎么连：** ChatGPT 不会直接访问 `localhost`。典型链路是 **本机 Codexless → 已认证 Tunnel / remote MCP endpoint → ChatGPT App / Developer Mode**。
 - **Tunnel 不锁死：** OpenAI Secure MCP Tunnel 是已经支持的一条路，但不是唯一依赖。
-- **包体：** 当前 Technical Preview 包本体低于 **0.2 MB 压缩 / 0.8 MB 解压**，不含正常安装依赖。
+- **包体：** 当前 Technical Preview 包本体低于 **0.2 MB 压缩 / 0.9 MB 解压**，不含正常安装依赖。
 - **身份：** Codexless 是独立项目，不是 OpenAI 产品，也不代表 OpenAI 背书。
 
 ---
@@ -245,7 +245,19 @@ Codexless 会低频检查官方 Release。有新版时会提醒，但**不会自
 
 ---
 
-### 3. 权限有多大？会不会乱删乱动我本地的东西？
+### 3. 省额度，是不是等于绕额度、绕套餐限制或者钻平台规则？
+
+**不是。省额度，是少调用；不是把谁的额度变多、刷新、转移、合并或者绕过去。**
+
+当前已经验收的 model-free 工具够用时，Codexless 就直接用这些工具，不为了同一件小事额外调用 Codex 模型；真正调用 Codex 时，Codex 额度仍然照常计算。
+
+Codexless 基于 Codex App Server 和 ChatGPT app / MCP integration surface，不靠逆向私有 UI 或 secret protocol 去规避产品边界。
+
+它也不会绕过本机 trust / permission、审批、sandbox / network 边界或平台确认。上游支持面或规则发生变化时，Codexless 应该跟着受支持的路径调整，或者明确失败，而不是偷偷绕过去。
+
+---
+
+### 4. 权限有多大？会不会乱删乱动我本地的东西？
 
 **权限上限默认跟着你本机 Codex 的授权走，不会比 Codex 本身能操作的范围更大。**
 
@@ -259,13 +271,13 @@ Codexless 还可以按动作继续收窄权限。
 
 ---
 
-### 4. Codex 会什么，ChatGPT 就全部会了吗？
+### 5. Codex 会什么，ChatGPT 就全部会了吗？
 
 **不会。**
 
 Codexless 只公开已经验收过的能力，不是把整个 Codex 环境无条件暴露出去。
 
-当前公开服务合同是 **39 个工具**，其中模型直接看到 **38 个**；另外 1 个 Task Card 状态工具只供 App 界面读取。
+当前公开服务合同是 **39 个工具**，其中模型直接看到 **36 个**；另外 3 个 Task Card 动作只供 App 界面使用。
 
 真正需要调用 Codex 模型时，会走单独的 Agent / 审批流程；普通本地工具动作不是另一条隐藏的 Codex 调用通道。
 
@@ -273,7 +285,7 @@ Codexless 只公开已经验收过的能力，不是把整个 Codex 环境无条
 
 ---
 
-### 5. Browser 能帮我操作网页吗？
+### 6. Browser 能帮我操作网页吗？
 
 **能。现在已经不只是看网页。**
 
@@ -285,7 +297,7 @@ Browser 使用的是本机当前 Chrome profile 的登录状态；上传本地�
 
 ---
 
-### 6. 我原来的 ChatGPT 规划 → Codex 执行工作流要改吗？
+### 7. 我原来的 ChatGPT 规划 → Codex 执行工作流要改吗？
 
 **不用。**
 
@@ -297,7 +309,7 @@ Codexless 减少的是没必要的搬运，不是逼你换工作习惯。
 
 ---
 
-### 7. ChatGPT 不是不能直接进本地吗？Codexless 怎么做到的？
+### 8. ChatGPT 不是不能直接进本地吗？Codexless 怎么做到的？
 
 对，ChatGPT 不能直接访问你电脑上的 `localhost`。
 
@@ -315,7 +327,7 @@ Tunnel / endpoint 的凭据不要进仓库，也不要贴进公开截图。
 
 ### 1. 公开合同
 
-当前公开服务合同为 **39 个工具**；模型直接看到 **38 个**，另 1 个 Task Card 状态工具只供 App 界面读取。
+当前公开服务合同为 **39 个工具**；模型直接看到 **36 个**，另 3 个 Task Card 动作只供 App 界面使用。
 
 Metered Agent 的 consent 是服务器侧状态：任务身份不是审批本身；真正 dispatch Codex 还必须经过对应的审批 / commit 路径。拒绝后不能靠重放旧请求把任务重新启动。
 

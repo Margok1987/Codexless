@@ -16,7 +16,7 @@ A user who has deliberately granted broad local Codex authority should expect Co
 
 ## Public surface boundary
 
-The current public **service contract** exposes exactly 37 tools, enforced by `src/surface-contracts.mjs` and `test/public-contract.mjs`. In the current ChatGPT App shape, three Task Card actions (`codex.agent_card_state`, `codex.agent_decline`, `codex.agent_commit`) are app-only, so the model may directly see 34 tools while the service contract remains exact 37. Making those card-internal actions model-visible is not required for correctness.
+The current public **service contract** exposes exactly 39 tools, enforced by `src/surface-contracts.mjs` and `test/public-contract.mjs`. Runtime registration is fail-closed too: registrations outside `PUBLIC_TOOL_NAMES` are skipped rather than exposed, while startup fails if any of the 39 required tools is missing or registered twice; CI also exercises a strict unknown-tool mode. Twenty-one of those tools are the accepted Browser slice. In the current ChatGPT App shape, three Task Card actions (`codex.agent_card_state`, `codex.agent_decline`, `codex.agent_commit`) are app-only, so the model may directly see 36 tools while the service contract remains exact 39. Making those card-internal actions model-visible is not required for correctness.
 
 The public package intentionally excludes private/internal capabilities such as:
 
@@ -24,7 +24,7 @@ The public package intentionally excludes private/internal capabilities such as:
 - generic host process control and process receipts;
 - Computer Use;
 - generic MCP catalog/call tooling;
-- Browser tab-close controls, raw selectors/JavaScript/coordinates, arbitrary keys, generic CDP, and Browser→Computer Use auto-fallback;
+- Browser internals outside the accepted 21-tool slice: raw selectors/caller JavaScript/coordinates/provider IDs, arbitrary keys/modifiers, generic CDP, unprepared generic tab management, and Browser→Computer Use auto-fallback. The prepared exact single-tab close pair is accepted public behavior;
 - household/private integrations.
 
 Internal availability is not a public safety claim. A capability must be explicitly accepted before it can enter the public contract.
@@ -71,13 +71,13 @@ Approval of a Codex Agent task does not grant a new local permission universe. L
 
 ## Browser
 
-The public Browser surface is intentionally bounded around user-intent actions rather than exposing Browser internals. It includes Reader, current-viewport screenshot, dynamic stock confirmation-policy read, prepared open/navigate/click/fill/download/upload, bounded scroll, and only the fixed `Enter` / `Tab` / `Escape` keypresses.
+The public Browser surface is intentionally bounded around user-intent actions rather than exposing Browser internals. It includes Reader, current-viewport screenshot, dynamic stock confirmation-policy read, prepared exact single-tab close, prepared open/navigate/click/fill/download/upload, bounded scroll, and only the fixed `Enter` / `Tab` / `Escape` keypresses.
 
 Prepared mutation refs bind an exact action and current Browser state but are **not permission tokens**. The caller applies the current stock Codex Browser confirmation policy together with the bounded user task. Once a mutation may have been dispatched, uncertainty is fail-visible and must not trigger a blind replay.
 
 Important boundaries and limitations:
 
-- public tab-close controls are intentionally absent because closing an ordinary user tab can discard unsaved state;
+- tab close is available only through prepare→execute refs bound to one exact existing tab and current Browser state; unknown/stale refs, page/provider/generation drift, and uncertain dispatch fail closed and must not trigger blind replay;
 - raw CSS selectors, caller JavaScript/evaluate, arbitrary coordinates/node IDs/provider IDs/indexes, arbitrary keys/modifiers, generic CDP and automatic Browser→Computer Use fallback are not exposed;
 - exact visible-text click fallback is accepted only when Codexless can derive and revalidate a stable semantic role binding server-side; otherwise it fails closed;
 - upload accepts only an existing file inside the Codex-resolved trusted authority root, binds canonical path/size/SHA-256 before dispatch, and revalidates file identity; browser-side file selection is **not** proof that the remote service accepted the upload;

@@ -3,7 +3,8 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { CodexAppServerClient } from "../src/codex-app-server-client.mjs";
-import { CodexBrowserReaderExecutor } from "../src/browser-reader-executor.mjs";
+import { CodexBrowserExecutor } from "../src/codex-browser-executor.mjs";
+import { CodexPublicBrowserWorkbenchAdapter } from "../src/public-browser-workbench-adapter.mjs";
 import { ACCEPTED_CODEX_VERSIONS, CodexAuthorityExecutor } from "../src/codex-authority-executor.mjs";
 import { probeCodexExecutable, redactHomePath, resolveCodexExecutable } from "../src/codex-bin.mjs";
 import { buildDoctorHealth, legacyNodeReplView, normalizeBrowserReaderHealth } from "../src/doctor-health.mjs";
@@ -130,8 +131,11 @@ if (codexResolution?.path && codexProbe?.ok) {
         clientFactory: () => client,
         runtimeKind: STOCK_RUNTIME_KIND,
       });
-      const browserReader = new CodexBrowserReaderExecutor({ context: browserContext, defaultCwd: runtimeCwd });
-      browser = normalizeBrowserReaderHealth(await browserReader.status({ cwd: runtimeCwd }));
+      const browserExecutor = new CodexBrowserExecutor({
+        workbench: new CodexPublicBrowserWorkbenchAdapter({ context: browserContext }),
+        defaultCwd: runtimeCwd,
+      });
+      browser = normalizeBrowserReaderHealth(await browserExecutor.status({ cwd: runtimeCwd }));
       nodeRepl = legacyNodeReplView(browser);
       if (browser.status !== "available") {
         warnings.push({ kind: "browser-reader", message: `Browser Reader is not currently available (${browser.reason ?? "unverified connection"}). Core Codexless can still be healthy.` });
