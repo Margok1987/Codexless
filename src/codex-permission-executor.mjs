@@ -13,7 +13,13 @@ const SUPPORTED_SANDBOX_TYPES = new Set(["readOnly", "workspaceWrite"]);
 const SUPPORTED_BUILTIN_PROFILES = new Set([":read-only", ":workspace"]);
 const KNOWN_SANDBOX_FIELDS = {
   readOnly: new Set(["type", "networkAccess"]),
-  workspaceWrite: new Set(["type", "networkAccess", "writableRoots", "excludeTmpdirEnvVar", "excludeSlashTmp"]),
+  workspaceWrite: new Set([
+    "type",
+    "networkAccess",
+    "writableRoots",
+    "excludeTmpdirEnvVar",
+    "excludeSlashTmp",
+  ]),
 };
 
 function normalizeConfigPath(value) {
@@ -33,15 +39,25 @@ function getTrustLevel(config, workspaceRoot) {
 function hasCustomPermissionConfiguration(config) {
   const configuredProfiles = config?.permissions;
   const defaultPermissions = config?.default_permissions ?? config?.defaultPermissions ?? null;
-  const hasNamedProfiles = Boolean(configuredProfiles && typeof configuredProfiles === "object" && Object.keys(configuredProfiles).length);
+  const hasNamedProfiles = Boolean(
+    configuredProfiles && typeof configuredProfiles === "object" && Object.keys(configuredProfiles).length
+  );
   const hasNonReadOnlyDefault = defaultPermissions !== null && defaultPermissions !== ":read-only";
   return hasNamedProfiles || hasNonReadOnlyDefault;
 }
 
 function buildQuietSessionConfig(config) {
   const mcpServers = getMcpServers(config);
-  const disabledMcpServers = Object.fromEntries(Object.keys(mcpServers).map((name) => [name, { enabled: false }]));
-  return { features: { plugins: false, apps: false }, mcp_servers: disabledMcpServers };
+  const disabledMcpServers = Object.fromEntries(
+    Object.keys(mcpServers).map((name) => [name, { enabled: false }])
+  );
+  return {
+    features: {
+      plugins: false,
+      apps: false,
+    },
+    mcp_servers: disabledMcpServers,
+  };
 }
 
 export class ToolwirePermissionError extends Error {
@@ -65,7 +81,9 @@ export function validatePermissionProjection(started, workspaceRoot) {
   const runtimeWorkspaceRoots = started?.runtimeWorkspaceRoots;
   const sandbox = started?.sandbox;
   if (!profileId || !Array.isArray(runtimeWorkspaceRoots) || !sandbox?.type) {
-    throw new Error("permission resolver capability gate failed: Codex did not return activePermissionProfile, runtimeWorkspaceRoots, and sandbox projection");
+    throw new Error(
+      "permission resolver capability gate failed: Codex did not return activePermissionProfile, runtimeWorkspaceRoots, and sandbox projection"
+    );
   }
   if (!SUPPORTED_BUILTIN_PROFILES.has(profileId)) {
     throw new Error(
@@ -111,8 +129,12 @@ export class CodexPermissionExecutor {
   }) {
     if (!codexBin) throw new Error("CodexPermissionExecutor requires codexBin");
     if (!workspaceRoot) throw new Error("CodexPermissionExecutor requires workspaceRoot");
-    if (!SUPPORTED_RESOLVER_MODES.has(resolverMode)) throw new Error(`resolverMode must be one of: ${[...SUPPORTED_RESOLVER_MODES].join(", ")}`);
-    if (!Number.isInteger(outputBytesCap) || outputBytesCap <= 0) throw new Error("outputBytesCap must be a positive integer");
+    if (!SUPPORTED_RESOLVER_MODES.has(resolverMode)) {
+      throw new Error(`resolverMode must be one of: ${[...SUPPORTED_RESOLVER_MODES].join(", ")}`);
+    }
+    if (!Number.isInteger(outputBytesCap) || outputBytesCap <= 0) {
+      throw new Error("outputBytesCap must be a positive integer");
+    }
     if (!Array.isArray(acceptedCodexVersions) || !acceptedCodexVersions.length || !acceptedCodexVersions.every((value) => typeof value === "string" && value)) {
       throw new Error("acceptedCodexVersions must be a non-empty string array");
     }
@@ -125,9 +147,17 @@ export class CodexPermissionExecutor {
     this.#acceptedCodexVersions = new Set(acceptedCodexVersions);
   }
 
-  get workspaceRoot() { return this.#workspaceRoot; }
-  get resolverMode() { return this.#resolverMode; }
-  get codexVersion() { return this.#codexVersion; }
+  get workspaceRoot() {
+    return this.#workspaceRoot;
+  }
+
+  get resolverMode() {
+    return this.#resolverMode;
+  }
+
+  get codexVersion() {
+    return this.#codexVersion;
+  }
 
   async validate() {
     const info = await stat(this.#workspaceRoot);
@@ -145,7 +175,7 @@ export class CodexPermissionExecutor {
     this.#codexVersion = match[1];
     if (!this.#acceptedCodexVersions.has(this.#codexVersion)) {
       throw new Error(
-        `unsupported Codex CLI version for Codexless 0.1 permission parity: ${this.#codexVersion}. ` +
+        `unsupported Codex CLI version for Codexless Stable permission parity: ${this.#codexVersion}. ` +
         `Accepted versions: ${[...this.#acceptedCodexVersions].join(", ")}. ` +
         "This path depends on experimental/legacy App Server permission fields and must be re-accepted before upgrade."
       );
@@ -154,8 +184,13 @@ export class CodexPermissionExecutor {
     const client = this.#newClient(15_000);
     await client.start();
     try {
-      const configRead = await client.request("config/read", { cwd: this.#workspaceRoot, includeLayers: false });
-      if (!configRead?.config || typeof configRead.config !== "object") throw new Error("Codex config/read did not return an effective config object");
+      const configRead = await client.request("config/read", {
+        cwd: this.#workspaceRoot,
+        includeLayers: false,
+      });
+      if (!configRead?.config || typeof configRead.config !== "object") {
+        throw new Error("Codex config/read did not return an effective config object");
+      }
       return {
         workspaceRoot: this.#workspaceRoot,
         codexVersion: this.#codexVersion,
@@ -169,27 +204,46 @@ export class CodexPermissionExecutor {
   }
 
   async exec({ command, access = "readOnly", timeoutMs = 10_000 }) {
-    if (!Array.isArray(command) || command.length === 0 || !command.every((item) => typeof item === "string")) throw new Error("command must be a non-empty argv string array");
-    if (!SUPPORTED_ACCESS.has(access)) throw new Error(`unsupported access mode: ${access}`);
-    if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > this.#maxTimeoutMs) throw new Error(`timeoutMs must be an integer between 1 and ${this.#maxTimeoutMs}`);
+    if (!Array.isArray(command) || command.length === 0 || !command.every((item) => typeof item === "string")) {
+      throw new Error("command must be a non-empty argv string array");
+    }
+    if (!SUPPORTED_ACCESS.has(access)) {
+      throw new Error(`unsupported access mode: ${access}`);
+    }
+    if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > this.#maxTimeoutMs) {
+      throw new Error(`timeoutMs must be an integer between 1 and ${this.#maxTimeoutMs}`);
+    }
 
     assertRemoteModelFreeMethod("command/exec");
+
     const client = this.#newClient(timeoutMs + this.#watchdogGraceMs);
     await client.start();
     try {
-      const configRead = await client.request("config/read", { cwd: this.#workspaceRoot, includeLayers: false });
+      const configRead = await client.request("config/read", {
+        cwd: this.#workspaceRoot,
+        includeLayers: false,
+      });
       const effectiveConfig = configRead?.config;
-      if (!effectiveConfig || typeof effectiveConfig !== "object") throw new Error("permission resolver failed closed: Codex config/read returned no effective config");
+      if (!effectiveConfig || typeof effectiveConfig !== "object") {
+        throw new Error("permission resolver failed closed: Codex config/read returned no effective config");
+      }
 
       const trustLevel = getTrustLevel(effectiveConfig, this.#workspaceRoot);
       const resolution = trustLevel === "trusted"
         ? await this.#resolveTrustedWorkspace(client, effectiveConfig, timeoutMs)
         : this.#resolveUntrustedWorkspace(access, trustLevel, effectiveConfig);
+
       const sandboxPolicy = this.#downscopeSandbox(resolution, access);
       const result = await client.exec(
-        { command, cwd: this.#workspaceRoot, sandboxPolicy, timeoutMs },
+        {
+          command,
+          cwd: this.#workspaceRoot,
+          sandboxPolicy,
+          timeoutMs,
+        },
         { timeoutMs: timeoutMs + this.#watchdogGraceMs }
       );
+
       const stdout = truncateUtf8(result.stdout, this.#outputBytesCap);
       const stderr = truncateUtf8(result.stderr, this.#outputBytesCap);
       return {
@@ -226,15 +280,32 @@ export class CodexPermissionExecutor {
       cwd: this.#workspaceRoot,
       requestTimeoutMs,
       initializeCapabilities: { experimentalApi: true },
-      clientInfo: { name: "codexless_permission_resolver", title: "Codexless Permission Resolver", version: "0.1.0" },
+      clientInfo: {
+        name: "codex_toolbox_bridge_p3",
+        title: "Codex Toolbox Bridge P3",
+        version: "0.0.1-p3",
+      },
     });
   }
 
   async #resolveTrustedWorkspace(client, effectiveConfig, timeoutMs) {
-    const params = { cwd: this.#workspaceRoot, ephemeral: true };
-    if (this.#resolverMode === "quiet") params.config = buildQuietSessionConfig(effectiveConfig);
-    const started = await client.request("thread/start", params, { timeoutMs: Math.min(timeoutMs + this.#watchdogGraceMs, 15_000) });
-    const { profileId, runtimeWorkspaceRoots, sandbox } = validatePermissionProjection(started, this.#workspaceRoot);
+    const params = {
+      cwd: this.#workspaceRoot,
+      ephemeral: true,
+    };
+    if (this.#resolverMode === "quiet") {
+      params.config = buildQuietSessionConfig(effectiveConfig);
+    }
+
+    const started = await client.request("thread/start", params, {
+      timeoutMs: Math.min(timeoutMs + this.#watchdogGraceMs, 15_000),
+    });
+
+    const { profileId, runtimeWorkspaceRoots, sandbox } = validatePermissionProjection(
+      started,
+      this.#workspaceRoot
+    );
+
     const methods = client.notificationMethods;
     if (methods.some((method) => method.startsWith("turn/") || method === "thread/tokenUsage/updated")) {
       throw new Error("permission resolver failed closed: a model turn/token-usage event appeared during model-free resolution");
@@ -242,7 +313,13 @@ export class CodexPermissionExecutor {
     if (this.#resolverMode === "quiet" && methods.includes("mcpServer/startupStatus/updated")) {
       throw new Error("quiet permission resolver failed closed: an MCP runtime still initialized");
     }
-    return { source: "codex-thread-resolver", profileId, runtimeWorkspaceRoots, sandbox };
+
+    return {
+      source: "codex-thread-resolver",
+      profileId,
+      runtimeWorkspaceRoots,
+      sandbox,
+    };
   }
 
   #resolveUntrustedWorkspace(access, trustLevel, effectiveConfig) {
@@ -274,9 +351,19 @@ export class CodexPermissionExecutor {
 
   #downscopeSandbox(resolution, access) {
     if (access === "readOnly") {
-      if (resolution.profileId === ":read-only" && resolution.sandbox.type === "readOnly") return { ...structuredClone(resolution.sandbox), networkAccess: false };
-      if (resolution.profileId === ":workspace" && resolution.sandbox.type === "workspaceWrite") return { type: "readOnly", networkAccess: false };
-      throw new Error(`readOnly downscope is not safely representable from Codex permission ceiling ${resolution.profileId} / ${resolution.sandbox.type}`);
+      if (resolution.profileId === ":read-only" && resolution.sandbox.type === "readOnly") {
+        return { ...structuredClone(resolution.sandbox), networkAccess: false };
+      }
+      if (resolution.profileId === ":workspace" && resolution.sandbox.type === "workspaceWrite") {
+        // This conversion is only allowed for Codex's built-in :workspace profile.
+        // Custom profiles are rejected above because the legacy sandbox projection cannot
+        // encode their additional filesystem-read constraints. For the built-in projection,
+        // switching workspaceWrite -> readOnly removes write authority without adding fields.
+        return { type: "readOnly", networkAccess: false };
+      }
+      throw new Error(
+        `readOnly downscope is not safely representable from Codex permission ceiling ${resolution.profileId} / ${resolution.sandbox.type}`
+      );
     }
     if (resolution.sandbox.type !== "workspaceWrite") {
       throw new ToolwirePermissionError(
@@ -290,6 +377,9 @@ export class CodexPermissionExecutor {
         }
       );
     }
-    return { ...structuredClone(resolution.sandbox), networkAccess: false };
+    return {
+      ...structuredClone(resolution.sandbox),
+      networkAccess: false,
+    };
   }
 }

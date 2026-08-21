@@ -14,6 +14,7 @@ export const RELEASE_TREE_ENTRIES = Object.freeze([
   "src",
   "config",
   "scripts",
+  "skills",
   "bin",
   "package.json",
   "README.md",

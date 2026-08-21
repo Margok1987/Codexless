@@ -8,6 +8,7 @@ STATE_ROOT="$HOME/.config/codexless"
 BOOTSTRAP_ROOT=${CODEXLESS_BOOTSTRAP_ROOT:-"$STATE_ROOT/bootstrap"}
 REPAIR=0
 JSON=0
+RUNTIME_MODE_REQUESTED=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -20,12 +21,22 @@ while [ "$#" -gt 0 ]; do
       REPAIR=1
       shift
       ;;
+    --existing-only)
+      [ -z "$RUNTIME_MODE_REQUESTED" ] || { echo "Choose at most one Advanced runtime mode: --existing-only or --recommended." >&2; exit 2; }
+      RUNTIME_MODE_REQUESTED="existing"
+      shift
+      ;;
+    --recommended)
+      [ -z "$RUNTIME_MODE_REQUESTED" ] || { echo "Choose at most one Advanced runtime mode: --existing-only or --recommended." >&2; exit 2; }
+      RUNTIME_MODE_REQUESTED="recommended"
+      shift
+      ;;
     --json)
       JSON=1
       shift
       ;;
     -h|--help)
-      printf '%s\n' "Usage: sh scripts/install.sh [--install-dir <path>] [--repair] [--json]"
+      printf '%s\n' "Usage: sh scripts/install.sh [--install-dir <path>] [--repair] [--existing-only|--recommended] [--json]"
       exit 0
       ;;
     *)
@@ -65,6 +76,17 @@ PREVIOUS_MARKER_VERSION=""
 PREVIOUS_MARKER_CREATED_AT=""
 PREVIOUS_MARKER_UPDATED_AT=""
 TRANSACTION_COMMITTED=0
+SKILL_TRANSACTION_ID=""
+SKILL_FINALIZE_WARNING=""
+RUNTIME_MODE_EFFECTIVE=""
+RUNTIME_PREFERENCE_PREVIOUS_PERSISTED=false
+RUNTIME_PREFERENCE_PREVIOUS_MODE=""
+RUNTIME_PREFERENCE_CHANGED=0
+MANAGED_PROVISIONING=""
+MANAGED_ACTIVATION=""
+MANAGED_READY=false
+MANAGED_ONBOARDING_REQUIRED=false
+MANAGED_ONBOARDING_COMMAND=""
 
 if [ "$REPAIR" -eq 1 ]; then
   LIFECYCLE_MODE="repair"
@@ -214,6 +236,45 @@ discard_bootstrap() {
   return 0
 }
 
+prepare_browser_repair_skill() {
+  if ! SKILL_PREPARED=$("$NODE" "$SOURCE_ROOT/scripts/sync-codex-skills.mjs" prepare --target-lane existing --source-dir "$SOURCE_ROOT/skills/codexless-browser-repair"); then return 1; fi
+  SKILL_OK=$(printf '%s' "$SKILL_PREPARED" | json_field ok "$NODE" 2>/dev/null || true)
+  [ "$SKILL_OK" = "true" ] || return 1
+  SKILL_TRANSACTION_ID=$(printf '%s' "$SKILL_PREPARED" | json_field transactionId "$NODE" 2>/dev/null || true)
+  return 0
+}
+
+rollback_browser_repair_skill() {
+  [ -n "$SKILL_TRANSACTION_ID" ] || return 0
+  if ! SKILL_ROLLBACK=$("$NODE" "$SOURCE_ROOT/scripts/sync-codex-skills.mjs" rollback --target-lane existing --transaction-id "$SKILL_TRANSACTION_ID"); then return 1; fi
+  SKILL_OK=$(printf '%s' "$SKILL_ROLLBACK" | json_field ok "$NODE" 2>/dev/null || true)
+  [ "$SKILL_OK" = "true" ] || return 1
+  SKILL_TRANSACTION_ID=""
+  return 0
+}
+
+finalize_browser_repair_skill() {
+  [ -n "$SKILL_TRANSACTION_ID" ] || return 0
+  if ! SKILL_FINALIZED=$("$NODE" "$SOURCE_ROOT/scripts/sync-codex-skills.mjs" finalize --target-lane existing --transaction-id "$SKILL_TRANSACTION_ID"); then return 1; fi
+  SKILL_OK=$(printf '%s' "$SKILL_FINALIZED" | json_field ok "$NODE" 2>/dev/null || true)
+  [ "$SKILL_OK" = "true" ] || return 1
+  SKILL_TRANSACTION_ID=""
+  return 0
+}
+
+restore_runtime_preference() {
+  [ "$RUNTIME_PREFERENCE_CHANGED" -eq 1 ] || return 0
+  if [ "$RUNTIME_PREFERENCE_PREVIOUS_PERSISTED" = "true" ]; then
+    if ! RUNTIME_RESTORE=$("$NODE" "$SOURCE_ROOT/scripts/runtime-install-state.mjs" set-mode --mode "$RUNTIME_PREFERENCE_PREVIOUS_MODE" --state-root "$STATE_ROOT"); then return 1; fi
+  else
+    if ! RUNTIME_RESTORE=$("$NODE" "$SOURCE_ROOT/scripts/runtime-install-state.mjs" clear-mode --state-root "$STATE_ROOT"); then return 1; fi
+  fi
+  RUNTIME_RESTORE_OK=$(printf '%s' "$RUNTIME_RESTORE" | json_field ok "$NODE" 2>/dev/null || true)
+  [ "$RUNTIME_RESTORE_OK" = "true" ] || return 1
+  RUNTIME_PREFERENCE_CHANGED=0
+  return 0
+}
+
 rollback() {
   rollback_ok=1
   if [ "$TRANSACTION_COMMITTED" -eq 1 ]; then return 0; fi
@@ -251,6 +312,20 @@ rollback() {
         ERROR_STAGE="bootstrap-discard"
         ERROR_CODE="BOOTSTRAP_GENERATION_DISCARD_FAILED"
       fi
+      rollback_ok=0
+    fi
+  fi
+  if [ "$RUNTIME_PREFERENCE_CHANGED" -eq 1 ]; then
+    if ! restore_runtime_preference; then
+      ERROR_STAGE="runtime-mode-preference-rollback"
+      ERROR_CODE="RUNTIME_MODE_PREFERENCE_ROLLBACK_FAILED"
+      rollback_ok=0
+    fi
+  fi
+  if [ -n "$SKILL_TRANSACTION_ID" ]; then
+    if ! rollback_browser_repair_skill; then
+      ERROR_STAGE="skill-rollback"
+      ERROR_CODE="SKILL_SYNC_ROLLBACK_FAILED"
       rollback_ok=0
     fi
   fi
@@ -316,6 +391,24 @@ if [ "$REPAIR" -eq 0 ]; then
   fi
 fi
 
+if ! RUNTIME_STATUS=$("$NODE" "$SOURCE_ROOT/scripts/runtime-install-state.mjs" status --state-root "$STATE_ROOT"); then fail "Unable to read runtime install preference/state."; fi
+RUNTIME_STATUS_OK=$(printf '%s' "$RUNTIME_STATUS" | json_field ok "$NODE" 2>/dev/null || true)
+[ "$RUNTIME_STATUS_OK" = "true" ] || fail "Unable to read runtime install preference/state."
+RUNTIME_PREFERENCE_PREVIOUS_PERSISTED=$(printf '%s' "$RUNTIME_STATUS" | json_path preference.persisted "$NODE" 2>/dev/null || printf '%s' false)
+RUNTIME_PREFERENCE_PREVIOUS_MODE=$(printf '%s' "$RUNTIME_STATUS" | json_path preference.mode "$NODE" 2>/dev/null || true)
+if [ -n "$RUNTIME_MODE_REQUESTED" ]; then RUNTIME_MODE_EFFECTIVE=$RUNTIME_MODE_REQUESTED
+elif [ "$RUNTIME_PREFERENCE_PREVIOUS_PERSISTED" = "true" ]; then RUNTIME_MODE_EFFECTIVE=$RUNTIME_PREFERENCE_PREVIOUS_MODE
+else RUNTIME_MODE_EFFECTIVE="recommended"
+fi
+if [ -n "$RUNTIME_MODE_REQUESTED" ]; then
+  ERROR_STAGE="runtime-mode-preference"
+  ERROR_CODE="RUNTIME_MODE_PREFERENCE_FAILED"
+  if ! RUNTIME_PREF_RESULT=$("$NODE" "$SOURCE_ROOT/scripts/runtime-install-state.mjs" set-mode --mode "$RUNTIME_MODE_REQUESTED" --state-root "$STATE_ROOT"); then fail "Runtime mode preference update failed."; fi
+  RUNTIME_PREF_OK=$(printf '%s' "$RUNTIME_PREF_RESULT" | json_field ok "$NODE" 2>/dev/null || true)
+  [ "$RUNTIME_PREF_OK" = "true" ] || fail "Runtime mode preference update failed."
+  RUNTIME_PREFERENCE_CHANGED=1
+fi
+
 ERROR_STAGE="prerequisite"
 ERROR_CODE="PREREQUISITE_FAILED"
 CODEX_JSON=$($NODE "$SOURCE_ROOT/scripts/resolve-codex.mjs" 2>/dev/null || true)
@@ -333,7 +426,7 @@ ERROR_CODE="STAGING_FAILED"
 mkdir -p "$PARENT_DIR" "$CACHE_DIR"
 STAGE_DIR=$(mktemp -d "$PARENT_DIR/.Codexless-stage.XXXXXX") || fail "Unable to create staging directory beside install target."
 
-for entry in src config scripts bin package.json README.md README.zh-CN.md SECURITY.md EXPORT_SYNC.md THIRD_PARTY_NOTICES.md LICENSE; do
+for entry in src config scripts skills bin package.json README.md README.zh-CN.md SECURITY.md EXPORT_SYNC.md THIRD_PARTY_NOTICES.md LICENSE; do
   [ -e "$SOURCE_ROOT/$entry" ] || fail "Release source is missing required entry: $entry"
   cp -R "$SOURCE_ROOT/$entry" "$STAGE_DIR/$entry" || fail "Failed to stage release entry: $entry"
 done
@@ -359,6 +452,19 @@ ERROR_STAGE="dependency-install"
 ERROR_CODE="DEPENDENCY_INSTALL_FAILED"
 if ! (cd "$STAGE_DIR" && "$NPM" ci --omit=dev --ignore-scripts --no-audit --no-fund --cache "$CACHE_DIR" 1>&2); then
   fail "npm production dependency install failed in staging."
+fi
+if [ "$RUNTIME_MODE_EFFECTIVE" = "recommended" ]; then
+  ERROR_STAGE="managed-provision"
+  ERROR_CODE="MANAGED_RUNTIME_PROVISION_FAILED"
+  if ! MANAGED_PROVISIONING=$("$NODE" "$STAGE_DIR/scripts/runtime-install-state.mjs" verify-managed --state-root "$STATE_ROOT"); then
+    MANAGED_ERROR=$(printf '%s' "$MANAGED_PROVISIONING" | json_field error "$NODE" 2>/dev/null || printf '%s' "Managed runtime provisioning failed.")
+    fail "$MANAGED_ERROR"
+  fi
+  MANAGED_OK=$(printf '%s' "$MANAGED_PROVISIONING" | json_field ok "$NODE" 2>/dev/null || true)
+  [ "$MANAGED_OK" = "true" ] || fail "Managed runtime provisioning failed."
+  MANAGED_ACTIVATION=$(printf '%s' "$MANAGED_PROVISIONING" | json_field activation "$NODE" 2>/dev/null || true)
+  MANAGED_READY=$(printf '%s' "$MANAGED_PROVISIONING" | json_field managedReady "$NODE" 2>/dev/null || printf '%s' false)
+  [ "$MANAGED_READY" = true ] || MANAGED_ONBOARDING_REQUIRED=true
 fi
 
 ERROR_STAGE="staging-doctor"
@@ -459,6 +565,10 @@ PREVIOUS_MARKER_BUILD_ID=$(printf '%s' "$MARKER_SNAPSHOT" | json_path marker.las
 PREVIOUS_MARKER_VERSION=$(printf '%s' "$MARKER_SNAPSHOT" | json_path marker.lastKnownVersion "$NODE" 2>/dev/null || true)
 PREVIOUS_MARKER_CREATED_AT=$(printf '%s' "$MARKER_SNAPSHOT" | json_path marker.createdAt "$NODE" 2>/dev/null || true)
 PREVIOUS_MARKER_UPDATED_AT=$(printf '%s' "$MARKER_SNAPSHOT" | json_path marker.updatedAt "$NODE" 2>/dev/null || true)
+
+ERROR_STAGE="skill-prepare"
+ERROR_CODE="SKILL_SYNC_PREPARE_FAILED"
+prepare_browser_repair_skill || fail "Browser Repair Skill prepare failed."
 
 if [ "$HAD_EXISTING_INSTALL" -eq 1 ]; then
   ERROR_STAGE="backup"
@@ -578,6 +688,15 @@ PREVIOUS_MARKER_UPDATED_AT=""
 BACKUP_DIR=""
 INSTALLED=0
 TRANSACTION_COMMITTED=1
+RUNTIME_PREFERENCE_CHANGED=0
+
+if [ -n "$SKILL_TRANSACTION_ID" ]; then
+  ERROR_STAGE="skill-finalize"
+  ERROR_CODE="SKILL_SYNC_FINALIZE_FAILED"
+  if ! finalize_browser_repair_skill; then
+    SKILL_FINALIZE_WARNING="Browser Repair Skill transaction cleanup remains pending. The installed Skill is active; rerun repair or skills sync to clean the transaction."
+  fi
+fi
 
 if [ -n "$PREVIOUS_BACKUP_STASH_DIR" ]; then
   ERROR_STAGE="previous-stash-cleanup"
@@ -594,6 +713,30 @@ if ! release_lock; then
 fi
 trap - EXIT HUP INT TERM
 
+MANAGED_PROVISIONED=false
+[ -n "$MANAGED_PROVISIONING" ] && MANAGED_PROVISIONED=true
+if [ "$MANAGED_ONBOARDING_REQUIRED" = true ]; then MANAGED_ONBOARDING_COMMAND="node \"$INSTALL_DIR/scripts/managed-codex-login.mjs\""; fi
+if ! SUCCESS_RECEIPT=$(printf '%s' "$SUCCESS_RECEIPT" | RUNTIME_MODE_ENV="$RUNTIME_MODE_EFFECTIVE" RUNTIME_REQUEST_ENV="$RUNTIME_MODE_REQUESTED" MANAGED_PROVISIONED_ENV="$MANAGED_PROVISIONED" MANAGED_ACTIVATION_ENV="$MANAGED_ACTIVATION" MANAGED_ONBOARDING_REQUIRED_ENV="$MANAGED_ONBOARDING_REQUIRED" MANAGED_ONBOARDING_COMMAND_ENV="$MANAGED_ONBOARDING_COMMAND" SKILL_WARNING_ENV="$SKILL_FINALIZE_WARNING" "$NODE" -e '
+  let text = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => { text += chunk; });
+  process.stdin.on("end", () => {
+    const value = JSON.parse(text);
+    value.runtimeInstall = {
+      mode: process.env.RUNTIME_MODE_ENV,
+      requestedMode: process.env.RUNTIME_REQUEST_ENV || null,
+      recommendedDualInsurance: process.env.RUNTIME_MODE_ENV === "recommended",
+      managedProvisioned: process.env.MANAGED_PROVISIONED_ENV === "true",
+      managedActivation: process.env.MANAGED_ACTIVATION_ENV || null,
+      managedOnboardingRequired: process.env.MANAGED_ONBOARDING_REQUIRED_ENV === "true",
+      managedOnboardingCommand: process.env.MANAGED_ONBOARDING_COMMAND_ENV || null,
+      noSilentFallback: true
+    };
+    if (process.env.SKILL_WARNING_ENV) value.skillFinalizeWarning = process.env.SKILL_WARNING_ENV;
+    process.stdout.write(JSON.stringify(value));
+  });
+'); then fail "Unable to augment lifecycle receipt with runtime installer state."; fi
+
 PACKAGE_VERSION=$($NODE -e 'const p=require(process.argv[1]); process.stdout.write(String(p.version || ""));' "$INSTALL_DIR/package.json")
 DOCTOR_CMD="$INSTALL_DIR/bin/codexless-doctor.sh"
 HTTP_CMD="$INSTALL_DIR/bin/codexless-http.sh"
@@ -606,5 +749,20 @@ else
   printf 'Doctor: %s\n' "$DOCTOR_CMD"
   printf 'HTTP:   %s\n' "$HTTP_CMD"
   if [ "$HAD_EXISTING_INSTALL" -eq 1 ]; then printf 'Previous build retained: %s\n' "$PREVIOUS_BACKUP_DIR"; fi
+  printf 'Runtime mode: %s\n' "$RUNTIME_MODE_EFFECTIVE"
+  if [ "$MANAGED_PROVISIONED" = true ]; then
+    MANAGED_PACKAGE=$(printf '%s' "$MANAGED_PROVISIONING" | json_path managed.packageName "$NODE" 2>/dev/null || true)
+    MANAGED_VERSION=$(printf '%s' "$MANAGED_PROVISIONING" | json_path managed.packageVersion "$NODE" 2>/dev/null || true)
+    NATIVE_PACKAGE=$(printf '%s' "$MANAGED_PROVISIONING" | json_path managed.platformPackageName "$NODE" 2>/dev/null || true)
+    NATIVE_VERSION=$(printf '%s' "$MANAGED_PROVISIONING" | json_path managed.platformPackageVersion "$NODE" 2>/dev/null || true)
+    printf 'Managed runtime: provisioned %s@%s + %s@%s; activation=%s\n' "$MANAGED_PACKAGE" "$MANAGED_VERSION" "$NATIVE_PACKAGE" "$NATIVE_VERSION" "$MANAGED_ACTIVATION"
+  else
+    printf '%s\n' "Managed runtime: skipped by Advanced Existing-only mode."
+  fi
+  if [ "$MANAGED_ONBOARDING_REQUIRED" = true ]; then
+    printf '\n%s\n' "NEXT ACTION: Managed ChatGPT login is required before dual activation."
+    printf 'Run: %s\n' "$MANAGED_ONBOARDING_COMMAND"
+  fi
+  if [ -n "$SKILL_FINALIZE_WARNING" ]; then printf 'Warning: %s\n' "$SKILL_FINALIZE_WARNING" >&2; fi
   printf '%s\n' "No PATH, LaunchAgent, Browser, Tunnel, or Codex trust settings were changed."
 fi

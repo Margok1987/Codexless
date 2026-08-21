@@ -3,8 +3,9 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const z = require("zod/v4");
 
-export function registerBrowserPreviewTools(server, browser) {
+export function registerBrowserPreviewTools(server, browser, { elicitationBridge = null } = {}) {
   if (!browser) return;
+  if (elicitationBridge) server = browserElicitationRegistrationServer(server, elicitationBridge);
 
   server.registerTool(
     "codex.browser_status",
@@ -388,6 +389,35 @@ export function registerBrowserPreviewTools(server, browser) {
     },
     async (input) => structured(() => browser.fill(input))
   );
+}
+
+function browserElicitationRegistrationServer(server, elicitationBridge) {
+  return {
+    registerTool(name, ...args) {
+      const handlerIndex = args.length - 1;
+      const handler = args[handlerIndex];
+      if (typeof handler === "function") {
+        args[handlerIndex] = async (input, ctx) => {
+          try {
+            return await elicitationBridge.run({
+              toolName: name,
+              input,
+              mcpReq: ctx?.mcpReq ?? null,
+              task: () => handler(input, ctx),
+            });
+          } catch (error) {
+            const payload = browserErrorPayload(error);
+            return {
+              content: [{ type: "text", text: JSON.stringify(payload) }],
+              structuredContent: payload,
+              isError: true,
+            };
+          }
+        };
+      }
+      return server.registerTool(name, ...args);
+    },
+  };
 }
 
 function boundedBrowserDiagnostic(error) {

@@ -18,4 +18,8 @@ if (!Number.isInteger(nodeMajor) || nodeMajor < 22) {
   process.exit(1);
 }
 
-await import(mode === "http" ? "../src/mcp-http.mjs" : "../src/mcp-stdio.mjs");
+if (mode === "http") {
+  await import("../src/mcp-http-public.mjs");
+} else {
+  await import("../src/mcp-stdio-public.mjs");
+}

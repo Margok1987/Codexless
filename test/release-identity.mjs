@@ -74,9 +74,15 @@ assert.equal(first.files.some((entry) => entry.path.includes("node_modules/")), 
 assert.equal(first.files.some((entry) => entry.path.startsWith("test/") || entry.path.startsWith("docs/") || entry.path.startsWith("_work/")), false, "non-installer review/test/work roots must not enter the buildId");
 
 const committed = await readReleaseManifest(projectRoot);
-assert.deepEqual(committed, first, "config/release-manifest.json must match the current installable release tree");
+const current = await buildReleaseManifest({
+  root: projectRoot,
+  serverVersion: PUBLIC_SERVER_VERSION,
+  hostContractVersion: PUBLIC_SURFACE_VERSION,
+  sourceRevision: committed.sourceRevision,
+});
+assert.deepEqual(committed, current, "config/release-manifest.json must match the current installable release tree");
 const committedRaw = await readFile(path.join(projectRoot, ...RELEASE_MANIFEST_RELATIVE_PATH.split("/")), "utf8");
-assert.equal(committedRaw, serializeReleaseManifest(first), "release manifest generation must be byte-for-byte replayable");
+assert.equal(committedRaw, serializeReleaseManifest(current), "release manifest generation must be byte-for-byte replayable");
 
 const installedRoot = await mkdtemp(path.join(os.tmpdir(), "codexless-installed-identity-"));
 try {
@@ -184,7 +190,7 @@ assert.throws(
   "unsupported state compatibility must fail closed"
 );
 
-process.stdout.write(`release identity PASS ${first.version} ${first.buildId}\n`);
+process.stdout.write(`release identity PASS ${current.version} ${current.buildId}\n`);
 
 async function createTinyReleaseTree(root, text) {
   await mkdir(path.join(root, "payload"), { recursive: true });

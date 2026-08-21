@@ -35,6 +35,7 @@ function normalizeLimitBucket(key, snapshot) {
     normalizeWindow("primary", source.primary),
     normalizeWindow("secondary", source.secondary),
   ].filter(Boolean);
+
   return {
     key,
     limitId: typeof source.limitId === "string" ? source.limitId : null,
@@ -51,10 +52,17 @@ function normalizeLimitBucket(key, snapshot) {
 export function normalizeCodexRateLimits(response) {
   const source = isRecord(response) ? response : {};
   const byLimitId = isRecord(source.rateLimitsByLimitId) ? source.rateLimitsByLimitId : null;
-  const validByLimitEntries = byLimitId ? Object.entries(byLimitId).filter(([, snapshot]) => isRecord(snapshot)) : [];
+  const validByLimitEntries = byLimitId
+    ? Object.entries(byLimitId).filter(([, snapshot]) => isRecord(snapshot))
+    : [];
   const legacyRateLimits = isRecord(source.rateLimits) ? source.rateLimits : null;
   const legacyKey = typeof legacyRateLimits?.limitId === "string" ? legacyRateLimits.limitId : null;
-  const entries = validByLimitEntries.length ? validByLimitEntries : legacyRateLimits ? [[legacyKey, legacyRateLimits]] : [];
+  const entries = validByLimitEntries.length
+    ? validByLimitEntries
+    : legacyRateLimits
+      ? [[legacyKey, legacyRateLimits]]
+      : [];
+
   return {
     raw: response,
     limits: entries.map(([key, snapshot]) => normalizeLimitBucket(key, snapshot)),
@@ -65,20 +73,30 @@ export function normalizeCodexRateLimits(response) {
 async function readObservedMethod(client, method, normalize = (value) => value) {
   try {
     const value = await client.request(method, null);
-    return { status: "ok", method, value: normalize(value) };
+    return {
+      status: "ok",
+      method,
+      value: normalize(value),
+    };
   } catch (error) {
     return normalizeUnavailable(method, error);
   }
 }
 
 export async function readCodexQuotaSnapshot({ client, now = Date.now } = {}) {
-  if (!client || typeof client.request !== "function") throw new Error("readCodexQuotaSnapshot requires a Codex App Server client");
-  if (typeof now !== "function") throw new Error("now must be a function");
+  if (!client || typeof client.request !== "function") {
+    throw new Error("readCodexQuotaSnapshot requires a Codex App Server client");
+  }
+  if (typeof now !== "function") {
+    throw new Error("now must be a function");
+  }
+
   const [usage, rateLimits] = await Promise.all([
     readObservedMethod(client, ACCOUNT_USAGE_METHOD),
     readObservedMethod(client, ACCOUNT_RATE_LIMITS_METHOD, normalizeCodexRateLimits),
   ]);
   const okCount = [usage, rateLimits].filter((entry) => entry.status === "ok").length;
+
   return {
     status: okCount === 2 ? "ok" : okCount === 1 ? "partial" : "unavailable",
     observedAt: new Date(now()).toISOString(),

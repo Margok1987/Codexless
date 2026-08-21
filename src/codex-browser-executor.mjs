@@ -30,6 +30,7 @@ const BROWSER_MUTATION_DEFINITIVE_RESPONSE_CODES = new Set([
   "BROWSER_ACTION_TARGET_AMBIGUOUS",
   "BROWSER_ACTION_TARGET_NOT_VISIBLE",
   "BROWSER_ACTION_TARGET_NOT_ENABLED",
+  "BROWSER_EXISTING_TAB_RELEASE_UNAVAILABLE",
   "BROWSER_TAB_STALE",
 ]);
 
@@ -158,10 +159,97 @@ export class BrowserPreviewError extends Error {
   }
 }
 
+export function normalizeBrowserLifecycleShape(browser, tab = null) {
+  const hasExplicitFinalize = typeof browser?.tabs?.finalize === "function";
+  const hasMarkDeliverable = typeof tab?.markDeliverable === "function";
+  const hasMarkHandoff = typeof tab?.markHandoff === "function";
+  if (hasExplicitFinalize) {
+    return {
+      shape: "legacy-explicit-finalize",
+      existingTabRelease: "explicit-finalize",
+      deliverable: "explicit-finalize",
+    };
+  }
+  if (tab === null || tab === undefined) {
+    return {
+      shape: "finalize-absent-release-unproven",
+      existingTabRelease: "unavailable",
+      deliverable: "unknown-until-tab",
+    };
+  }
+  if (hasMarkDeliverable || hasMarkHandoff) {
+    return {
+      shape: "finalize-absent-turn-cleanup",
+      existingTabRelease: "unavailable",
+      deliverable: hasMarkDeliverable ? "markDeliverable" : "unavailable",
+    };
+  }
+  return {
+    shape: "unknown",
+    existingTabRelease: "unavailable",
+    deliverable: "unavailable",
+  };
+}
+
+export function assertBrowserExistingTabReleaseAvailable(browser) {
+  const lifecycle = normalizeBrowserLifecycleShape(browser);
+  if (lifecycle.shape !== "legacy-explicit-finalize") {
+    throw new Error(`TOOLWIRE_BROWSER_EXISTING_TAB_RELEASE_UNAVAILABLE:${lifecycle.shape}`);
+  }
+  return lifecycle;
+}
+
+export async function cleanupBrowserClaim(browser, tab) {
+  const lifecycle = normalizeBrowserLifecycleShape(browser, tab);
+  if (lifecycle.shape === "legacy-explicit-finalize") {
+    await browser.tabs.finalize({ keep: [] });
+    return {
+      cleanupStatus: "released",
+      cleanupReason: "explicit-finalize",
+      lifecycleShape: lifecycle.shape,
+    };
+  }
+  return {
+    cleanupStatus: "unavailable",
+    cleanupReason: lifecycle.shape === "finalize-absent-turn-cleanup"
+      ? "turn-cleanup-unproven"
+      : "explicit-release-unavailable",
+    lifecycleShape: lifecycle.shape,
+  };
+}
+
+export async function releaseBrowserClaim(browser, tab) {
+  return cleanupBrowserClaim(browser, tab);
+}
+
+export async function markBrowserDeliverable(browser, tab) {
+  const lifecycle = normalizeBrowserLifecycleShape(browser, tab);
+  if (lifecycle.shape === "legacy-explicit-finalize") {
+    await browser.tabs.finalize({ keep: [{ tab, status: "deliverable" }] });
+    return lifecycle.shape;
+  }
+  if (lifecycle.shape === "finalize-absent-turn-cleanup" && lifecycle.deliverable === "markDeliverable") {
+    await tab.markDeliverable();
+    return lifecycle.shape;
+  }
+  throw new Error(`TOOLWIRE_BROWSER_DELIVERABLE_API_UNAVAILABLE:${lifecycle.shape}`);
+}
+
+const BROWSER_LIFECYCLE_ADAPTER_SOURCE = [
+  normalizeBrowserLifecycleShape.toString(),
+  assertBrowserExistingTabReleaseAvailable.toString(),
+  cleanupBrowserClaim.toString(),
+  releaseBrowserClaim.toString(),
+  markBrowserDeliverable.toString(),
+].join("\n");
+
 export class CodexBrowserExecutor {
   #workbench;
   #defaultCwd;
   #authorityExecutor;
+  #runtimeCompatibility = null;
+  #runtimeCompatibilityFailure = null;
+  #runtimeCompatibilityResolver = null;
   #sessionId = `toolwire-browser-${randomUUID()}`;
   #turnSeq = 0;
   #browserClientUrl = null;
@@ -170,12 +258,33 @@ export class CodexBrowserExecutor {
   #actionApprovals = new Map();
   #workbenchGeneration = 0;
 
-  constructor({ workbench, defaultCwd, authorityExecutor = null }) {
+  constructor({
+    workbench,
+    defaultCwd,
+    authorityExecutor = null,
+    runtimeCompatibility = null,
+    runtimeCompatibilityResolver = null,
+  }) {
     if (!workbench) throw new Error("CodexBrowserExecutor requires workbench");
     if (!defaultCwd) throw new Error("CodexBrowserExecutor requires defaultCwd");
+    if (runtimeCompatibilityResolver !== null && typeof runtimeCompatibilityResolver !== "function") {
+      throw new Error("runtimeCompatibilityResolver must be null or a function");
+    }
     this.#workbench = workbench;
     this.#defaultCwd = path.resolve(defaultCwd);
     this.#authorityExecutor = authorityExecutor;
+    if (runtimeCompatibility?.status === "unavailable") {
+      this.#runtimeCompatibilityFailure = normalizeRuntimeCompatibilityFailure(runtimeCompatibility);
+    } else {
+      this.#runtimeCompatibility = normalizeRuntimeCompatibilityBinding(runtimeCompatibility);
+    }
+    this.#runtimeCompatibilityResolver = runtimeCompatibilityResolver;
+    if (this.#runtimeCompatibility && !this.#runtimeCompatibilityResolver) {
+      throw new Error("runtimeCompatibilityResolver is required with a Browser runtime compatibility binding");
+    }
+    this.#browserClientUrl = this.#runtimeCompatibility
+      ? pathToFileURL(this.#runtimeCompatibility.browserClientPath).href
+      : null;
     this.#workbenchGeneration = this.#currentWorkbenchGeneration();
   }
 
@@ -203,8 +312,8 @@ export class CodexBrowserExecutor {
 
     try {
       const backends = await this.#listBackends(effectiveCwd);
-      const chrome = backends.find((backend) => backend.family === "chrome");
-      if (!chrome) {
+      const chromeBackends = backends.filter((backend) => backend.family === "chrome");
+      if (chromeBackends.length === 0) {
         return {
           status: "unavailable",
           reason: "chrome_not_connected",
@@ -217,6 +326,10 @@ export class CodexBrowserExecutor {
           ],
         };
       }
+      if (chromeBackends.length > 1) {
+        return chromeBackendAmbiguous(backends, chromeBackends);
+      }
+      const [chrome] = chromeBackends;
       return {
         status: "ok",
         chromeSkill: "ok",
@@ -357,6 +470,7 @@ const __twInfo = __twOpenTabs.find((tab) => tab.providerTabId === ${providerLite
 if (!__twInfo) throw new Error("TOOLWIRE_BROWSER_TAB_STALE");
 let __twTab = null;
 let __twPayload = null;
+let __twCleanup = null;
 try {
   __twTab = await __twBrowser.user.claimTab(__twInfo);
   const __twSnapshot = await __twTab.playwright.domSnapshot();
@@ -367,8 +481,9 @@ try {
     snapshot: __twSnapshot,
   };
 } finally {
-  if (__twTab) if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
+  if (__twTab) __twCleanup = await cleanupBrowserClaim(__twBrowser, __twTab);
 }
+if (__twPayload && __twCleanup) Object.assign(__twPayload, __twCleanup);
 nodeRepl.write(JSON.stringify(__twPayload));
 `, "Read existing Chrome tab DOM", { expectedGeneration: state.workbenchGeneration });
 
@@ -392,6 +507,7 @@ nodeRepl.write(JSON.stringify(__twPayload));
       snapshot: truncated ? snapshot.slice(0, maxChars) : snapshot,
       snapshotChars: snapshot.length,
       snapshotTruncated: truncated,
+      ...browserCleanupReceipt(result),
       authState: "site_specific_unknown",
       note: "This is a read-only snapshot of the existing tab. The Browser runtime did not navigate, click, submit, or change page state. If the site redirected to a login page, inspect the returned current URL/snapshot instead of assuming authentication.",
     };
@@ -420,6 +536,7 @@ const __twInfo = __twOpenTabs.find((tab) => tab.providerTabId === ${providerLite
 if (!__twInfo) throw new Error("TOOLWIRE_BROWSER_TAB_STALE");
 let __twTab = null;
 let __twPayload = null;
+let __twCleanup = null;
 try {
   __twTab = await __twBrowser.user.claimTab(__twInfo);
   const __twScreenshot = await __twTab.screenshot({ fullPage: false });
@@ -432,8 +549,9 @@ try {
     dataBase64: Buffer.from(__twBytes).toString("base64"),
   };
 } finally {
-  if (__twTab) if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
+  if (__twTab) __twCleanup = await cleanupBrowserClaim(__twBrowser, __twTab);
 }
+if (__twPayload && __twCleanup) Object.assign(__twPayload, __twCleanup);
 nodeRepl.write(JSON.stringify(__twPayload));
 `, "Capture existing Chrome tab screenshot", { expectedGeneration: state.workbenchGeneration });
 
@@ -483,6 +601,7 @@ nodeRepl.write(JSON.stringify(__twPayload));
       height,
       fullPage: false,
       dataBase64,
+      ...browserCleanupReceipt(result),
       note: "This is a read-only screenshot of the current visible viewport from the existing tab. The Browser runtime did not navigate, click, type, submit, scroll, or expose raw provider tab IDs. The image is returned as MCP image content rather than embedded inside structured JSON.",
     };
   }
@@ -620,7 +739,7 @@ try {
 } finally {
   if (__twTab && !__twDispatchAttempted) {
     try {
-      if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
+      await cleanupBrowserClaim(__twBrowser, __twTab);
     } catch (__twError) {
       __twReleaseError = __twError;
     }
@@ -741,13 +860,7 @@ try {
 } finally {
   if (__twTab) {
     try {
-      if (typeof __twBrowser.tabs?.finalize === "function") {
-        await __twBrowser.tabs.finalize({ keep: [{ tab: __twTab, status: "deliverable" }] });
-      } else if (typeof __twTab.markDeliverable === "function") {
-        await __twTab.markDeliverable();
-      } else {
-        throw new Error("TOOLWIRE_BROWSER_DELIVERABLE_API_UNAVAILABLE");
-      }
+      await markBrowserDeliverable(__twBrowser, __twTab);
     } catch (__twError) {
       __twFinalizeError = __twError;
     }
@@ -833,6 +946,7 @@ let __twDispatchAttempted = false;
 let __twScrollReturned = false;
 let __twActionError = null;
 let __twFinalizeError = null;
+let __twCleanup = null;
 try {
   __twTab = await __twBrowser.user.claimTab(__twInfo);
   const __twBeforeUrl = (await __twTab.url()) ?? __twInfo.url ?? null;
@@ -851,7 +965,7 @@ try {
 } finally {
   if (__twTab) {
     try {
-      if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
+      __twCleanup = await cleanupBrowserClaim(__twBrowser, __twTab);
     } catch (__twError) {
       __twFinalizeError = __twError;
     }
@@ -865,7 +979,10 @@ if (__twDispatchAttempted && !__twScrollReturned) {
 if (__twActionError && !__twScrollReturned) throw __twActionError;
 if (!__twPayload) __twPayload = { beforeUrl: ${expectedUrlLiteral}, scrollReturned: __twScrollReturned, settleCompleted: false };
 __twPayload.settleError = __twActionError ? (__twActionError instanceof Error ? __twActionError.message : String(__twActionError)) : null;
-__twPayload.cleanupStatus = __twFinalizeError ? "uncertain" : "released";
+Object.assign(__twPayload, __twCleanup ?? {
+  cleanupStatus: "uncertain",
+  cleanupReason: __twFinalizeError ? "explicit-finalize-failed" : "cleanup-receipt-missing",
+});
 __twPayload.cleanupError = __twFinalizeError ? (__twFinalizeError instanceof Error ? __twFinalizeError.message : String(__twFinalizeError)) : null;
 nodeRepl.write(JSON.stringify(__twPayload));
 `, "Dispatch bounded Chrome scroll", { mutationKind: "scroll", expectedGeneration: state.workbenchGeneration });
@@ -893,8 +1010,7 @@ nodeRepl.write(JSON.stringify(__twPayload));
       scrollReturned: dispatch?.scrollReturned === true,
       settleCompleted: dispatch?.settleCompleted === true,
       settleError: stringOrNull(dispatch?.settleError),
-      cleanupStatus: dispatch?.cleanupStatus === "released" ? "released" : "uncertain",
-      cleanupError: stringOrNull(dispatch?.cleanupError),
+      ...browserCleanupReceipt(dispatch),
       beforeUrl: stringOrNull(dispatch?.beforeUrl) ?? state.url,
       afterUrl: current.url,
       urlChanged: current.url !== state.url,
@@ -953,6 +1069,7 @@ let __twDispatchAttempted = false;
 let __twKeypressReturned = false;
 let __twActionError = null;
 let __twFinalizeError = null;
+let __twCleanup = null;
 try {
   __twTab = await __twBrowser.user.claimTab(__twInfo);
   const __twBeforeUrl = (await __twTab.url()) ?? __twInfo.url ?? null;
@@ -976,7 +1093,7 @@ try {
 } finally {
   if (__twTab) {
     try {
-      if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
+      __twCleanup = await cleanupBrowserClaim(__twBrowser, __twTab);
     } catch (__twError) {
       __twFinalizeError = __twError;
     }
@@ -990,7 +1107,10 @@ if (__twDispatchAttempted && !__twKeypressReturned) {
 if (__twActionError && !__twKeypressReturned) throw __twActionError;
 if (!__twPayload) __twPayload = { beforeUrl: ${expectedUrlLiteral}, keypressReturned: __twKeypressReturned, key: ${keyLiteral}, settleCompleted: false };
 __twPayload.settleError = __twActionError ? (__twActionError instanceof Error ? __twActionError.message : String(__twActionError)) : null;
-__twPayload.cleanupStatus = __twFinalizeError ? "uncertain" : "released";
+Object.assign(__twPayload, __twCleanup ?? {
+  cleanupStatus: "uncertain",
+  cleanupReason: __twFinalizeError ? "explicit-finalize-failed" : "cleanup-receipt-missing",
+});
 __twPayload.cleanupError = __twFinalizeError ? (__twFinalizeError instanceof Error ? __twFinalizeError.message : String(__twFinalizeError)) : null;
 nodeRepl.write(JSON.stringify(__twPayload));
 `, "Dispatch fixed Chrome keypress", { mutationKind: "keypress", expectedGeneration: state.workbenchGeneration });
@@ -1024,8 +1144,7 @@ nodeRepl.write(JSON.stringify(__twPayload));
       keypressReturned: dispatch?.keypressReturned === true,
       settleCompleted: dispatch?.settleCompleted === true,
       settleError: stringOrNull(dispatch?.settleError),
-      cleanupStatus: dispatch?.cleanupStatus === "released" ? "released" : "uncertain",
-      cleanupError: stringOrNull(dispatch?.cleanupError),
+      ...browserCleanupReceipt(dispatch),
       beforeUrl: stringOrNull(dispatch?.beforeUrl) ?? state.url,
       afterUrl: current.url,
       urlChanged: current.url !== state.url,
@@ -1163,6 +1282,7 @@ let __twPayload = null;
 let __twDispatchAttempted = false;
 let __twActionError = null;
 let __twFinalizeError = null;
+let __twCleanup = null;
 try {
   __twTab = await __twBrowser.user.claimTab(__twInfo);
   const __twBeforeUrl = (await __twTab.url()) ?? __twInfo.url ?? null;
@@ -1185,7 +1305,7 @@ try {
 } finally {
   if (__twTab) {
     try {
-      if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
+      __twCleanup = await cleanupBrowserClaim(__twBrowser, __twTab);
     } catch (__twError) {
       __twFinalizeError = __twError;
     }
@@ -1202,6 +1322,7 @@ if (__twDispatchAttempted && (__twActionError || __twFinalizeError)) {
 }
 if (__twActionError) throw __twActionError;
 if (__twFinalizeError) throw __twFinalizeError;
+if (__twPayload && __twCleanup) Object.assign(__twPayload, __twCleanup);
 nodeRepl.write(JSON.stringify(__twPayload));
 `, "Execute prepared Chrome navigation", { mutationKind: "navigate", expectedGeneration: prepared.workbenchGeneration });
 
@@ -1225,10 +1346,11 @@ nodeRepl.write(JSON.stringify(__twPayload));
       requestedUrl: prepared.targetUrl,
       afterUrl: current.url,
       redirected: current.url !== prepared.targetUrl,
+      ...browserCleanupReceipt(result),
       postSnapshot: snapshotTruncated ? snapshot.slice(0, BROWSER_POST_ACTION_MAX_CHARS) : snapshot,
       postSnapshotChars: snapshot.length,
       postSnapshotTruncated: snapshotTruncated,
-      note: "Exactly one previously prepared existing-tab navigation was dispatched after the caller applied the current Browser confirmation policy and task context. The legacy actionApprovalRef is only an exact-action binding, not proof of user approval. The Browser runtime revalidated the same starting tab URL, used the official Chrome tab.goto() for the bound http(s) destination, read back the resulting page state, released the claimed user tab, and did not click, fill, submit, or open a new tab.",
+      note: "Exactly one previously prepared existing-tab navigation was dispatched after the caller applied the current Browser confirmation policy and task context. The legacy actionApprovalRef is only an exact-action binding, not proof of user approval. The Browser runtime revalidated the same starting tab URL, used the official Chrome tab.goto() for the bound http(s) destination, and read back the resulting page state without clicking, filling, submitting, or opening a new tab. Existing-tab cleanup is reported separately: finalize-absent runtimes are never described as released unless an explicit release was actually proven.",
     };
   }
 
@@ -1291,6 +1413,7 @@ const __twInfo = __twOpenTabs.find((tab) => tab.providerTabId === ${providerLite
 if (!__twInfo) throw new Error("TOOLWIRE_BROWSER_TAB_STALE");
 let __twTab = null;
 let __twPayload = null;
+let __twCleanup = null;
 try {
   __twTab = await __twBrowser.user.claimTab(__twInfo);
   const __twUrl = (await __twTab.url()) ?? __twInfo.url ?? null;
@@ -1312,8 +1435,9 @@ try {
     resolvedClickBinding: __twResolvedClickBinding,
   };
 } finally {
-  if (__twTab) if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
+  if (__twTab) __twCleanup = await cleanupBrowserClaim(__twBrowser, __twTab);
 }
+if (__twPayload && __twCleanup) Object.assign(__twPayload, __twCleanup);
 nodeRepl.write(JSON.stringify(__twPayload));
 `, "Prepare exact Chrome click", { expectedGeneration: state.workbenchGeneration });
 
@@ -1339,6 +1463,7 @@ nodeRepl.write(JSON.stringify(__twPayload));
       status: "prepared",
       actionApprovalRef,
       expiresAt,
+      ...browserCleanupReceipt(result),
       action: {
         kind: "click",
         tab: publicTab({
@@ -1447,6 +1572,7 @@ let __twPayload = null;
 let __twDispatchAttempted = false;
 let __twActionError = null;
 let __twFinalizeError = null;
+let __twCleanup = null;
 try {
   __twTab = await __twBrowser.user.claimTab(__twInfo);
   const __twBeforeUrl = (await __twTab.url()) ?? __twInfo.url ?? null;
@@ -1476,7 +1602,7 @@ try {
 } finally {
   if (__twTab) {
     try {
-      if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
+      __twCleanup = await cleanupBrowserClaim(__twBrowser, __twTab);
     } catch (__twError) {
       __twFinalizeError = __twError;
     }
@@ -1493,6 +1619,7 @@ if (__twDispatchAttempted && (__twActionError || __twFinalizeError)) {
 }
 if (__twActionError) throw __twActionError;
 if (__twFinalizeError) throw __twFinalizeError;
+if (__twPayload && __twCleanup) Object.assign(__twPayload, __twCleanup);
 nodeRepl.write(JSON.stringify(__twPayload));
 `, "Execute prepared Chrome click", { mutationKind: "click", expectedGeneration: prepared.workbenchGeneration });
 
@@ -1522,10 +1649,11 @@ nodeRepl.write(JSON.stringify(__twPayload));
       tab: publicTab(current),
       beforeUrl: stringOrNull(result?.beforeUrl) ?? prepared.expectedUrl,
       afterUrl: current.url,
+      ...browserCleanupReceipt(result),
       postSnapshot: snapshotTruncated ? snapshot.slice(0, BROWSER_POST_ACTION_MAX_CHARS) : snapshot,
       postSnapshotChars: snapshot.length,
       postSnapshotTruncated: snapshotTruncated,
-      note: "Exactly one previously prepared click was dispatched after the caller applied the current Browser confirmation policy and task context. The legacy actionApprovalRef is only an exact-action binding, not proof of user approval. The Browser runtime revalidated the tab URL and the same unique visible enabled exact target immediately before dispatch, then read back current page state and released the claimed user tab.",
+      note: "Exactly one previously prepared click was dispatched after the caller applied the current Browser confirmation policy and task context. The legacy actionApprovalRef is only an exact-action binding, not proof of user approval. The Browser runtime revalidated the tab URL and the same unique visible enabled exact target immediately before dispatch, then read back current page state. Existing-tab cleanup is reported separately and is never called released on finalize-absent runtimes without proof.",
     };
   }
 
@@ -1601,6 +1729,7 @@ let __twClickReturned = false;
 let __twDownloadConfirmed = false;
 let __twActionError = null;
 let __twFinalizeError = null;
+let __twCleanup = null;
 try {
   __twTab = await __twBrowser.user.claimTab(__twInfo);
   const __twBeforeUrl = (await __twTab.url()) ?? __twInfo.url ?? null;
@@ -1656,7 +1785,7 @@ try {
 } finally {
   if (__twTab) {
     try {
-      if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
+      __twCleanup = await cleanupBrowserClaim(__twBrowser, __twTab);
     } catch (__twError) {
       __twFinalizeError = __twError;
     }
@@ -1673,7 +1802,10 @@ if (__twDispatchAttempted && !__twDownloadConfirmed && (__twActionError || __twF
 }
 if (__twActionError) throw __twActionError;
 if (!__twPayload) throw new Error("TOOLWIRE_BROWSER_DOWNLOAD_RESULT_UNCERTAIN:download dispatch produced no confirmation receipt");
-__twPayload.cleanupStatus = __twFinalizeError ? "uncertain" : "released";
+Object.assign(__twPayload, __twCleanup ?? {
+  cleanupStatus: "uncertain",
+  cleanupReason: __twFinalizeError ? "explicit-finalize-failed" : "cleanup-receipt-missing",
+});
 __twPayload.cleanupError = __twFinalizeError ? (__twFinalizeError instanceof Error ? __twFinalizeError.message : String(__twFinalizeError)) : null;
 nodeRepl.write(JSON.stringify(__twPayload));
 `, "Execute prepared Chrome download", { mutationKind: "download", expectedGeneration: prepared.workbenchGeneration });
@@ -1690,6 +1822,7 @@ nodeRepl.write(JSON.stringify(__twPayload));
     const downloadPath = stringOrNull(result?.downloadPath);
     return {
       status: "downloaded",
+      ...browserCleanupReceipt(result),
       action: {
         kind: "download",
         ...(prepared.target.kind === "text"
@@ -1712,8 +1845,6 @@ nodeRepl.write(JSON.stringify(__twPayload));
       pathError: stringOrNull(result?.pathError),
       readbackStatus: result?.readbackError ? "unavailable" : "ok",
       readbackError: stringOrNull(result?.readbackError),
-      cleanupStatus: result?.cleanupStatus === "released" ? "released" : "uncertain",
-      cleanupError: stringOrNull(result?.cleanupError),
       postSnapshot: snapshotTruncated ? snapshot.slice(0, BROWSER_POST_ACTION_MAX_CHARS) : snapshot,
       postSnapshotChars: snapshot.length,
       postSnapshotTruncated: snapshotTruncated,
@@ -1855,6 +1986,7 @@ let __twChooserConfirmed = false;
 let __twSetFilesReturned = false;
 let __twActionError = null;
 let __twFinalizeError = null;
+let __twCleanup = null;
 try {
   __twTab = await __twBrowser.user.claimTab(__twInfo);
   const __twBeforeUrl = (await __twTab.url()) ?? __twInfo.url ?? null;
@@ -1900,7 +2032,7 @@ try {
 } finally {
   if (__twTab) {
     try {
-      if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
+      __twCleanup = await cleanupBrowserClaim(__twBrowser, __twTab);
     } catch (__twError) {
       __twFinalizeError = __twError;
     }
@@ -1919,7 +2051,10 @@ if (__twActionError) throw __twActionError;
 if (!__twPayload || !__twChooserConfirmed || !__twSetFilesReturned) {
   throw new Error("TOOLWIRE_BROWSER_UPLOAD_RESULT_UNCERTAIN:file chooser dispatch produced no confirmed setFiles receipt");
 }
-__twPayload.cleanupStatus = __twFinalizeError ? "uncertain" : "released";
+Object.assign(__twPayload, __twCleanup ?? {
+  cleanupStatus: "uncertain",
+  cleanupReason: __twFinalizeError ? "explicit-finalize-failed" : "cleanup-receipt-missing",
+});
 __twPayload.cleanupError = __twFinalizeError ? (__twFinalizeError instanceof Error ? __twFinalizeError.message : String(__twFinalizeError)) : null;
 nodeRepl.write(JSON.stringify(__twPayload));
 `, "Execute prepared Chrome upload", { mutationKind: "upload", expectedGeneration: prepared.workbenchGeneration });
@@ -1963,6 +2098,7 @@ nodeRepl.write(JSON.stringify(__twPayload));
     this.#tabs.set(prepared.tabRef, current);
     return {
       status: "file_selected",
+      ...browserCleanupReceipt(result),
       action: {
         kind: "upload",
         ...(prepared.target.kind === "text"
@@ -1986,8 +2122,6 @@ nodeRepl.write(JSON.stringify(__twPayload));
       setFilesReturned: result?.setFilesReturned === true,
       readbackStatus: result?.readbackError ? "unavailable" : "ok",
       readbackError: stringOrNull(result?.readbackError),
-      cleanupStatus: result?.cleanupStatus === "released" ? "released" : "uncertain",
-      cleanupError: stringOrNull(result?.cleanupError),
       postSnapshot: snapshotTruncated ? snapshot.slice(0, BROWSER_POST_ACTION_MAX_CHARS) : snapshot,
       postSnapshotChars: snapshot.length,
       postSnapshotTruncated: snapshotTruncated,
@@ -2057,6 +2191,7 @@ const __twInfo = __twOpenTabs.find((tab) => tab.providerTabId === ${providerLite
 if (!__twInfo) throw new Error("TOOLWIRE_BROWSER_TAB_STALE");
 let __twTab = null;
 let __twPayload = null;
+let __twCleanup = null;
 try {
   __twTab = await __twBrowser.user.claimTab(__twInfo);
   const __twUrl = (await __twTab.url()) ?? __twInfo.url ?? null;
@@ -2138,8 +2273,9 @@ try {
     targetStructure: __twTargetStructure,
   };
 } finally {
-  if (__twTab) if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
+  if (__twTab) __twCleanup = await cleanupBrowserClaim(__twBrowser, __twTab);
 }
+if (__twPayload && __twCleanup) Object.assign(__twPayload, __twCleanup);
 nodeRepl.write(JSON.stringify(__twPayload));
 `, "Prepare exact Chrome fill", { expectedGeneration: state.workbenchGeneration });
 
@@ -2165,6 +2301,7 @@ nodeRepl.write(JSON.stringify(__twPayload));
       status: "prepared",
       actionApprovalRef,
       expiresAt,
+      ...browserCleanupReceipt(result),
       action: {
         kind: "fill",
         tab: publicTab({
@@ -2239,6 +2376,7 @@ let __twPayload = null;
 let __twDispatchAttempted = false;
 let __twActionError = null;
 let __twFinalizeError = null;
+let __twCleanup = null;
 try {
   __twTab = await __twBrowser.user.claimTab(__twInfo);
   const __twBeforeUrl = (await __twTab.url()) ?? __twInfo.url ?? null;
@@ -2472,7 +2610,7 @@ try {
 } finally {
   if (__twTab) {
     try {
-      if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
+      __twCleanup = await cleanupBrowserClaim(__twBrowser, __twTab);
     } catch (__twError) {
       __twFinalizeError = __twError;
     }
@@ -2491,6 +2629,7 @@ if (__twDispatchAttempted && (__twActionError || __twFinalizeError)) {
 }
 if (__twActionError) throw __twActionError;
 if (__twFinalizeError) throw __twFinalizeError;
+if (__twPayload && __twCleanup) Object.assign(__twPayload, __twCleanup);
 nodeRepl.write(JSON.stringify(__twPayload));
 `, "Execute prepared Chrome fill", { mutationKind: "fill", expectedGeneration: prepared.workbenchGeneration });
 
@@ -2506,6 +2645,7 @@ let __twPayload = null;
 let __twDispatchAttempted = false;
 let __twActionError = null;
 let __twFinalizeError = null;
+let __twCleanup = null;
 try {
   __twTab = await __twBrowser.user.claimTab(__twInfo);
   const __twBeforeUrl = (await __twTab.url()) ?? __twInfo.url ?? null;
@@ -2681,7 +2821,7 @@ try {
 } finally {
   if (__twTab) {
     try {
-      if (typeof __twBrowser.tabs?.finalize === "function") await __twBrowser.tabs.finalize({ keep: [] });
+      __twCleanup = await cleanupBrowserClaim(__twBrowser, __twTab);
     } catch (__twError) {
       __twFinalizeError = __twError;
     }
@@ -2700,6 +2840,7 @@ if (__twDispatchAttempted && (__twActionError || __twFinalizeError)) {
 }
 if (__twActionError) throw __twActionError;
 if (__twFinalizeError) throw __twFinalizeError;
+if (__twPayload && __twCleanup) Object.assign(__twPayload, __twCleanup);
 nodeRepl.write(JSON.stringify(__twPayload));
 `, "Repair activated Chrome fill", { mutationKind: "fill", expectedGeneration: prepared.workbenchGeneration });
       result = {
@@ -2730,6 +2871,7 @@ nodeRepl.write(JSON.stringify(__twPayload));
     this.#tabs.set(prepared.tabRef, current);
     return {
       status: "filled",
+      ...browserCleanupReceipt(result),
       action: {
         kind: "fill",
         targetKind: prepared.target.kind,
@@ -2758,8 +2900,34 @@ nodeRepl.write(JSON.stringify(__twPayload));
       postSnapshot: snapshotTruncated ? snapshot.slice(0, BROWSER_POST_ACTION_MAX_CHARS) : snapshot,
       postSnapshotChars: snapshot.length,
       postSnapshotTruncated: snapshotTruncated,
-      note: "Exactly one previously prepared fill was dispatched after the caller applied the current Browser confirmation policy and task context. The legacy actionApprovalRef is only an exact-action binding, not proof of user approval. The Browser runtime revalidated the same tab URL and unique visible enabled exact role/name or role+placeholder target, verified the resulting field value equals the bound text, read back current page state, and released the claimed user tab. It did not click, press Enter, navigate, or submit the page.",
+      note: "Exactly one previously prepared fill was dispatched after the caller applied the current Browser confirmation policy and task context. The legacy actionApprovalRef is only an exact-action binding, not proof of user approval. The Browser runtime revalidated the same tab URL and unique visible enabled exact role/name or role+placeholder target, verified the resulting field value equals the bound text, and read back current page state. Existing-tab cleanup is reported separately and finalize-absent runtimes are not claimed released without proof. It did not click, press Enter, navigate, or submit the page.",
     };
+  }
+
+  async #boundRuntimeCompatibilityStatus(cwd, skillPath) {
+    if (!this.#runtimeCompatibility) return null;
+    let current;
+    try {
+      current = normalizeRuntimeCompatibilityBinding(
+        await this.#runtimeCompatibilityResolver({ cwd, chromeSkillPath: skillPath })
+      );
+    } catch {
+      current = null;
+    }
+    if (!current || !runtimeCompatibilityBindingsMatch(this.#runtimeCompatibility, current)) {
+      return {
+        status: "unavailable",
+        reason: "BROWSER_RUNTIME_COMPAT_CHANGED_RESTART_REQUIRED",
+        chromeSkill: "changed",
+        nodeRepl: "unknown",
+        nextActions: [
+          "Restart the main Codexless household runtime so Browser compatibility, isolated node_repl overrides, and the canonical browser client/service fingerprint are rebound together.",
+          "Do not hot-switch the Browser child to the newly discovered plugin inside the current main runtime.",
+        ],
+      };
+    }
+    this.#browserClientUrl = pathToFileURL(this.#runtimeCompatibility.browserClientPath).href;
+    return null;
   }
 
   async #dependencyStatus(cwd) {
@@ -2787,6 +2955,11 @@ nodeRepl.write(JSON.stringify(__twPayload));
         ],
       };
     }
+    if (this.#runtimeCompatibilityFailure) {
+      return runtimeCompatibilityUnavailable(this.#runtimeCompatibilityFailure);
+    }
+    const compatibilityStatus = await this.#boundRuntimeCompatibilityStatus(cwd, skill.path);
+    if (compatibilityStatus) return compatibilityStatus;
 
     try {
       const mcp = await this.#workbench.catalog({ kind: "mcp", cwd, query: NODE_REPL_TOOL });
@@ -2814,7 +2987,9 @@ nodeRepl.write(JSON.stringify(__twPayload));
       ));
     }
 
-    this.#browserClientUrl = this.#browserClientUrl ?? deriveBrowserClientUrl(skill.path);
+    if (!this.#runtimeCompatibility) {
+      this.#browserClientUrl = this.#browserClientUrl ?? deriveBrowserClientUrl(skill.path);
+    }
     return { status: "ok", skillPathResolved: true, browserClientResolved: true };
   }
 
@@ -2828,7 +3003,8 @@ nodeRepl.write(JSON.stringify(__twPayload));
       );
     }
     const backends = await this.#listBackends(cwd);
-    if (!backends.some((backend) => backend.family === "chrome")) {
+    const chromeBackends = backends.filter((backend) => backend.family === "chrome");
+    if (chromeBackends.length === 0) {
       throw new BrowserPreviewError(
         "BROWSER_CHROME_NOT_CONNECTED",
         "The Codex Browser runtime is available but no connected Chrome extension/backend is visible",
@@ -2837,6 +3013,12 @@ nodeRepl.write(JSON.stringify(__twPayload));
           "Call codex.browser_status to distinguish Browser setup from site login state.",
         ]
       );
+    }
+    if (chromeBackends.length > 1) {
+      const ambiguous = chromeBackendAmbiguous(backends, chromeBackends);
+      throw new BrowserPreviewError(ambiguous.reason, ambiguous.error, ambiguous.nextActions, {
+        connectedBrowsers: ambiguous.connectedBrowsers,
+      });
     }
   }
 
@@ -2854,27 +3036,31 @@ nodeRepl.write(JSON.stringify(__twBackends.map((backend) => ({
 
   async #runJson(cwd, body, title, { mutationKind = null, expectedGeneration = null } = {}) {
     const clientUrl = await this.#resolveBrowserClientUrl(cwd);
+    const dispatchGeneration = expectedGeneration ?? this.#workbenchGeneration;
     const bootstrap = `
 if (globalThis.__toolwireBrowserAgent?.browsers == null) {
   const { setupBrowserRuntime } = await import(${JSON.stringify(clientUrl)});
   globalThis.__toolwireBrowserAgent = await setupBrowserRuntime();
 }
 `;
+    const lifecycleAdapterSource = body.includes("markBrowserDeliverable(") || body.includes("cleanupBrowserClaim(")
+      ? `${BROWSER_LIFECYCLE_ADAPTER_SOURCE}\n`
+      : "";
     let response;
     try {
       response = await this.#workbench.mcpCall({
         server: NODE_REPL_SERVER,
         tool: NODE_REPL_TOOL,
         cwd,
-        arguments: { code: `${bootstrap}\n{\n${body}\n}`, title },
+        arguments: { code: `${bootstrap}\n{\n${lifecycleAdapterSource}${body}\n}`, title },
         meta: this.#nextTurnMeta(),
-        expectedGeneration,
+        expectedGeneration: dispatchGeneration,
       });
       this.#syncWorkbenchGeneration();
     } catch (error) {
       const generationChanged = this.#syncWorkbenchGeneration();
       const message = error instanceof Error ? error.message : String(error);
-      if (/WORKBENCH_GENERATION_STALE/i.test(message) || generationChanged) {
+      if (/WORKBENCH_GENERATION_STALE/i.test(message)) {
         throw new BrowserPreviewError(
           "BROWSER_WORKBENCH_RESTARTED",
           "The persistent Codex Workbench restarted before this Browser request could safely use its prior runtime state",
@@ -2884,13 +3070,23 @@ if (globalThis.__toolwireBrowserAgent?.browsers == null) {
       if (mutationKind) {
         throw browserMutationResultUncertain(
           mutationKind,
-          `Browser ${mutationKind} request was sent but its MCP response was not received reliably: ${message}`
+          generationChanged
+            ? `Browser ${mutationKind} request may already have been dispatched before the Workbench generation changed, so its result is uncertain: ${message}`
+            : `Browser ${mutationKind} request was sent but its MCP response was not received reliably: ${message}`
+        );
+      }
+      if (generationChanged) {
+        throw new BrowserPreviewError(
+          "BROWSER_WORKBENCH_RESTARTED",
+          "The persistent Codex Workbench restarted before this Browser request could safely use its prior runtime state",
+          ["Call codex.browser_tabs again and prepare a fresh Browser action from the current Workbench generation."]
         );
       }
       throw classifyBrowserError(error);
     }
     if (response?.isError) {
       const classified = classifyBrowserError(new Error(response?.text ?? "node_repl browser call failed"));
+      if (classified.code === "BROWSER_TAB_BUSY") throw classified;
       const definitiveMutationResponse = typeof classified?.code === "string"
         && (classified.code.endsWith("_RESULT_UNCERTAIN") || BROWSER_MUTATION_DEFINITIVE_RESPONSE_CODES.has(classified.code));
       if (mutationKind && !definitiveMutationResponse) {
@@ -2961,6 +3157,74 @@ if (globalThis.__toolwireBrowserAgent?.browsers == null) {
       },
     };
   }
+}
+
+function normalizeRuntimeCompatibilityBinding(value) {
+  if (value === null || value === undefined) return null;
+  if (value?.status !== "ok") {
+    throw new Error("Browser runtime compatibility binding must have status=ok");
+  }
+  for (const field of ["build", "chromeSkillPath", "browserClientPath", "browserServicePath", "browserClientSha256"]) {
+    if (typeof value?.[field] !== "string" || !value[field]) {
+      throw new Error(`Browser runtime compatibility binding is missing ${field}`);
+    }
+  }
+  if (!/^[a-f0-9]{64}$/i.test(value.browserClientSha256)) {
+    throw new Error("Browser runtime compatibility binding has an invalid browserClientSha256");
+  }
+  return {
+    build: value.build,
+    chromeSkillPath: path.resolve(value.chromeSkillPath),
+    browserClientPath: path.resolve(value.browserClientPath),
+    browserServicePath: path.resolve(value.browserServicePath),
+    browserClientSha256: value.browserClientSha256.toLowerCase(),
+  };
+}
+
+function normalizeRuntimeCompatibilityFailure(value) {
+  if (value?.status !== "unavailable" || typeof value?.reason !== "string" || !value.reason) {
+    throw new Error("Browser runtime compatibility failure must have status=unavailable and a reason");
+  }
+  return {
+    reason: value.reason,
+    build: typeof value.build === "string" ? value.build : null,
+  };
+}
+
+function runtimeCompatibilityUnavailable(failure) {
+  const mapped = failure.reason === "current_browser_plugin_manifest_mismatch"
+    ? "BROWSER_RUNTIME_MANIFEST_MISMATCH"
+    : failure.reason === "current_browser_plugin_pair_not_found"
+      ? "BROWSER_RUNTIME_COMPONENT_MISSING"
+      : failure.reason === "current_browser_plugin_path_escape" || failure.reason === "current_chrome_skill_path_untrusted"
+        ? "BROWSER_RUNTIME_PATH_UNTRUSTED"
+        : "BROWSER_RUNTIME_COMPATIBILITY_UNAVAILABLE";
+  return {
+    status: "unavailable",
+    reason: mapped,
+    compatibilityReason: failure.reason,
+    ...(failure.build ? { build: failure.build } : {}),
+    chromeSkill: "ok",
+    nodeRepl: "not_started",
+    nextActions: [
+      "Restore or update the current Codex bundled chrome/browser plugin pair so the Skill, manifests, browser client, and browser service come from one matching build, then restart the Codexless household runtime.",
+      "Do not diagnose this as an ordinary disconnected Chrome session; Browser startup was refused before backend attachment.",
+    ],
+  };
+}
+
+function runtimeCompatibilityPathMatches(left, right) {
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function runtimeCompatibilityBindingsMatch(bound, current) {
+  return bound.build === current.build
+    && bound.browserClientSha256 === current.browserClientSha256
+    && runtimeCompatibilityPathMatches(bound.chromeSkillPath, current.chromeSkillPath)
+    && runtimeCompatibilityPathMatches(bound.browserClientPath, current.browserClientPath)
+    && runtimeCompatibilityPathMatches(bound.browserServicePath, current.browserServicePath);
 }
 
 function deriveBrowserClientUrl(skillPath) {
@@ -3621,6 +3885,19 @@ function stringOrNull(value) {
   return typeof value === "string" ? value : null;
 }
 
+function browserCleanupReceipt(value) {
+  const cleanupStatus = value?.cleanupStatus === "released"
+    ? "released"
+    : value?.cleanupStatus === "unavailable"
+      ? "unavailable"
+      : "uncertain";
+  return {
+    cleanupStatus,
+    cleanupReason: stringOrNull(value?.cleanupReason) ?? (cleanupStatus === "uncertain" ? "cleanup-receipt-missing" : null),
+    cleanupError: stringOrNull(value?.cleanupError),
+  };
+}
+
 function inspectScreenshotImage(bytes) {
   if (!Buffer.isBuffer(bytes) || bytes.length < 8) return null;
   if (bytes.subarray(0, 8).toString("hex") === PNG_SIGNATURE_HEX && bytes.length >= 24) {
@@ -3669,6 +3946,21 @@ function browserUnavailable(error) {
     reason: classified.code ?? "browser_unavailable",
     error: classified.message,
     nextActions: classified.nextActions ?? ["Retry codex.browser_status after restoring the Browser runtime."],
+  };
+}
+
+function chromeBackendAmbiguous(backends, chromeBackends) {
+  return {
+    status: "unavailable",
+    reason: "BROWSER_CHROME_BACKEND_AMBIGUOUS",
+    error: `The Codex Browser runtime reports ${chromeBackends.length} Chrome-family backends, but the current upstream API exposes only browsers.get(\"chrome\") and no profile/backend selector.`,
+    chromeSkill: "ok",
+    nodeRepl: "ok",
+    connectedBrowsers: backends.map(sanitizeBackend),
+    nextActions: [
+      "Keep exactly one intended Chrome Browser backend active, then call codex.browser_status again.",
+      "Do not guess a Chrome profile or backend index; the current upstream Browser API does not expose a supported selector for it.",
+    ],
   };
 }
 
@@ -3776,6 +4068,74 @@ function classifyBrowserError(error) {
       "BROWSER_TURN_METADATA_REJECTED",
       "The Codex Browser runtime rejected the supplied turn metadata",
       ["Refresh/reload the Browser surface so it injects x-codex-turn-metadata automatically."]
+    );
+  }
+  if (/TOOLWIRE_BROWSER_EXISTING_TAB_RELEASE_UNAVAILABLE/i.test(message)) {
+    return new BrowserPreviewError(
+      "BROWSER_EXISTING_TAB_RELEASE_UNAVAILABLE",
+      "The current Browser API shape does not expose an existing-tab release operation that Codexless can prove it can complete safely; existing-tab actions remain available, but cleanup cannot be reported as released without proof.",
+      [
+        "Use the cleanup receipt from the action: finalize-absent turn cleanup is reported as unavailable/turn-cleanup-unproven, not released.",
+        "If a later claim reports that the tab is already part of a Browser session, refresh tab state once and do not automatically replay any mutation; use a fresh tab when that safely fits the task.",
+      ],
+      { lifecycleShape: message.split(":").at(-1) ?? null }
+    );
+  }
+  const tabBusy = /\bTab\s+.+?\s+is already part of browser session\s+\S+/i.test(message)
+    || /\btab\b.*\balready (?:claimed|attached|owned) by (?:another )?browser session\b/i.test(message);
+  if (tabBusy) {
+    return new BrowserPreviewError(
+      "BROWSER_TAB_BUSY",
+      "The Chrome tab is visible, but this Browser call cannot claim it because it is already part of a Browser session.",
+      [
+        "Call codex.browser_tabs once to refresh the current visible-tab state. This refresh does not force or prove release of an existing claim.",
+        "On finalize-absent Browser shapes, Codexless synthetic calls cannot prove the real turn-end cleanup that releases claimed user tabs; use a different/fresh tab if the task can safely continue there.",
+        "Do not automatically replay click, fill, navigate, keypress, scroll, download, upload, or close. Re-read current state first and prepare a fresh mutation only if the intended effect is still clearly needed.",
+      ],
+      { claimStatus: "busy", recovery: "bounded-no-automatic-mutation-replay" }
+    );
+  }
+  const protocolMismatch = /\bbrowser (?:extension |client |service )?protocol (?:version )?(?:mismatch|incompatible)\b/i.test(message)
+    || /\bunsupported browser protocol version\b/i.test(message);
+  if (protocolMismatch) {
+    return new BrowserPreviewError(
+      "BROWSER_RUNTIME_PROTOCOL_MISMATCH",
+      message,
+      [
+        "Restart/update the Codex Browser runtime and Chrome extension as one matched bundle, then call codex.browser_status again.",
+        "This is a protocol compatibility failure, not evidence that Chrome is merely disconnected.",
+      ]
+    );
+  }
+  const extensionPolicyBlocked = /\bextension(?:install)?blocklist\b/i.test(message)
+    || /\b(?:chrome )?extension\b.*\bblocked by (?:the )?(?:administrator|enterprise|organization)\b/i.test(message)
+    || /\bnative messaging host\b.*\b(?:forbidden|blocked|not allowed)\b/i.test(message);
+  if (extensionPolicyBlocked) {
+    return new BrowserPreviewError(
+      "BROWSER_EXTENSION_POLICY_BLOCKED",
+      message,
+      ["Ask the machine or browser administrator to allow the supported Codex Chrome extension/native-messaging policy. Codexless will not bypass enterprise policy."],
+      { source: "enterprise-extension-policy" }
+    );
+  }
+  const executionPolicyBlocked = /\bAppLocker\b/i.test(message)
+    || /\bWindows Defender Application Control\b|\bWDAC\b/i.test(message)
+    || /\b(?:app|program|executable)\b.*\bblocked by (?:group policy|your system administrator)\b/i.test(message)
+    || /\bERROR_ACCESS_DISABLED_BY_POLICY\b/i.test(message);
+  if (executionPolicyBlocked) {
+    return new BrowserPreviewError(
+      "BROWSER_ENTERPRISE_EXECUTION_POLICY_BLOCKED",
+      message,
+      ["Ask the machine administrator to allow the signed Codex Browser/node_repl runtime. Codexless will not disable or bypass AppLocker, WDAC, or Group Policy."],
+      { source: "enterprise-execution-policy" }
+    );
+  }
+  if (/\bERR_BLOCKED_BY_ADMINISTRATOR\b/i.test(message)) {
+    return new BrowserPreviewError(
+      "BROWSER_ENTERPRISE_NETWORK_POLICY_BLOCKED",
+      message,
+      ["Use a destination allowed by the managed browser/network policy, or ask the administrator to change that policy. Reinstalling the extension is not an appropriate fix."],
+      { source: "managed-browser-network-policy" }
     );
   }
   if (/TOOLWIRE_BROWSER_NAVIGATE_RESULT_UNCERTAIN/i.test(message)) {
@@ -3979,7 +4339,11 @@ function classifyBrowserError(error) {
       ["Call codex.browser_tabs again and use a fresh tabRef."]
     );
   }
-  if (/extension|browser.*connect|no.*browser|not connected/i.test(message)) {
+  const chromeDisconnected = /\bchrome extension (?:is |was )?(?:not connected|disconnected)\b/i.test(message)
+    || /\bchrome (?:browser|backend) (?:is |was )?(?:not connected|disconnected)\b/i.test(message)
+    || /\bno connected chrome (?:extension|browser|backend)\b/i.test(message)
+    || /\bno chrome (?:extension|browser|backend) (?:is )?connected\b/i.test(message);
+  if (chromeDisconnected) {
     return new BrowserPreviewError(
       "BROWSER_CHROME_NOT_CONNECTED",
       message,

@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
+import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { redactHomePath } from "./codex-bin.mjs";
 
 export const STOCK_RUNTIME_KIND = "local-stock";
 const PROMPT_INPUT_TIMEOUT_MS = 15_000;
@@ -26,6 +26,20 @@ function samePath(left, right) {
 
 function configArgs(configOverrides) {
   return configOverrides.flatMap((value) => ["-c", value]);
+}
+
+function redactHomePath(value) {
+  if (typeof value !== "string" || !value) return value ?? null;
+  const home = os.homedir();
+  if (!home) return value;
+  const normalizedValue = path.resolve(value);
+  const normalizedHome = path.resolve(home);
+  const comparableValue = process.platform === "win32" ? normalizedValue.toLowerCase() : normalizedValue;
+  const comparableHome = process.platform === "win32" ? normalizedHome.toLowerCase() : normalizedHome;
+  const homeToken = process.platform === "win32" ? "%USERPROFILE%" : "$HOME";
+  if (comparableValue === comparableHome) return homeToken;
+  if (comparableValue.startsWith(`${comparableHome}${path.sep}`)) return `${homeToken}${normalizedValue.slice(normalizedHome.length)}`;
+  return normalizedValue;
 }
 
 function redactPromptInputArgs(configOverrides, resolvedModel, cwd) {
@@ -76,6 +90,7 @@ export async function runStockPromptInputSidecar(spec, { timeoutMs = PROMPT_INPU
   try {
     const { stdout } = await execFileAsync(spec.command, spec.args, {
       cwd: spec.cwd,
+      ...(spec.env ? { env: spec.env } : {}),
       encoding: "utf8",
       windowsHide: true,
       timeout: timeoutMs,
@@ -192,6 +207,7 @@ export class StockPromptInputSkillRoutingCore {
   #codexBin;
   #appServerCwd;
   #configOverrides;
+  #launchEnv;
   #promptInputRunner;
 
   constructor({
@@ -199,6 +215,7 @@ export class StockPromptInputSkillRoutingCore {
     codexBin,
     appServerCwd,
     configOverrides = [],
+    launchEnv = null,
     promptInputRunner = runStockPromptInputSidecar,
   }) {
     if (typeof runtimeKind !== "string" || !runtimeKind.trim()) {
@@ -213,6 +230,9 @@ export class StockPromptInputSkillRoutingCore {
     if (!Array.isArray(configOverrides) || !configOverrides.every((value) => typeof value === "string" && value.trim())) {
       throw new Error("configOverrides must be an array of non-empty strings");
     }
+    if (launchEnv !== null && (typeof launchEnv !== "object" || Array.isArray(launchEnv))) {
+      throw new Error("launchEnv must be null or an environment object");
+    }
     if (typeof promptInputRunner !== "function") {
       throw new Error("promptInputRunner must be a function");
     }
@@ -221,6 +241,7 @@ export class StockPromptInputSkillRoutingCore {
     this.#codexBin = codexBin;
     this.#appServerCwd = path.resolve(appServerCwd);
     this.#configOverrides = Object.freeze([...configOverrides]);
+    this.#launchEnv = launchEnv ? Object.freeze({ ...launchEnv }) : null;
     this.#promptInputRunner = promptInputRunner;
   }
 
@@ -228,7 +249,7 @@ export class StockPromptInputSkillRoutingCore {
     return {
       command: this.#codexBin,
       args: [...configArgs(this.#configOverrides), "app-server", "--stdio"],
-      options: { cwd: this.#appServerCwd },
+      options: { cwd: this.#appServerCwd, ...(this.#launchEnv ? { env: this.#launchEnv } : {}) },
     };
   }
 
@@ -313,6 +334,7 @@ export class StockPromptInputSkillRoutingCore {
         "prompt-input",
       ],
       cwd: responseCwd,
+      ...(this.#launchEnv ? { env: this.#launchEnv } : {}),
     };
     const appServerSpec = this.appServerSpec();
     const expectedConfigArgs = configArgs(this.#configOverrides);
@@ -320,10 +342,7 @@ export class StockPromptInputSkillRoutingCore {
     const sameConfigOverrides = sidecarConfigArgs.length === expectedConfigArgs.length
       && sidecarConfigArgs.every((value, index) => value === expectedConfigArgs[index]);
     const alignment = {
-      runtime: {
-        kind: this.#runtimeKind,
-        supported: true,
-      },
+      runtime: { kind: this.#runtimeKind, supported: true },
       session: {
         method,
         newSession: true,

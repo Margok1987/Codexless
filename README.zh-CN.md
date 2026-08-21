@@ -41,7 +41,17 @@ Codexless 做的事很简单：**让你的 ChatGPT 套上 Codex 的工服，拎�
 
 ---
 
-### 2. Codex 已经学会的，直接拿来用
+### 2. 双重保险，应对 Codex 更新
+
+Codexless 除了使用本机 Codex 的工具箱，也可以在 Recommended 安装中准备一套**官方固定版本的 Codex runtime**，作为第二条独立工具路径。它不会替换你已经在用的本机 Codex。
+
+完成一次额外的官方 ChatGPT 登录后，文件和命令相关工作可以使用这套固定版本。本机 Codex 更新后如果暂时出现兼容问题，这些工具仍有一条独立的可用路径；如果暂时不登录，本机 Codex 路径照常可用。
+
+**本机 Codex 仍然是当前完整体验的必要前提：Browser 和 Call Codex 目前都继续使用本机 Codex。** 两套路径彼此独立；某一路发生错误时会明确报错，不会自动切到另一条。固定版本使用隔离登录，Codexless 不复制本机 Codex 的登录凭据。
+
+---
+
+### 3. Codex 已经学会的，直接拿来用
 
 项目规则、Skills、目录习惯，能复用的就直接复用。
 
@@ -55,7 +65,7 @@ Codexless 做的事很简单：**让你的 ChatGPT 套上 Codex 的工服，拎�
 
 ---
 
-### 3. 先跟 ChatGPT 说，需要 Codex 时它再摇人
+### 4. 先跟 ChatGPT 说，需要 Codex 时它再摇人
 
 **ChatGPT 可以直接当你的默认入口。** 你先把事交给它；当前工具够用，它就继续做。真需要 Codex 专门出手时，再从当前 Chat 升级过去。你想直接开 Codex 当然也可以，Codexless 不限制原来的工作习惯。
 
@@ -76,7 +86,7 @@ Codexless 做的事很简单：**让你的 ChatGPT 套上 Codex 的工服，拎�
 
 ---
 
-### 4. Chat 窗口也能钻进 Chrome 干活了
+### 5. Chat 窗口也能钻进 Chrome 干活了
 
 **不仅有看浏览器的眼睛👀，也有操控浏览器的手🖐**
 
@@ -114,20 +124,19 @@ Codexless 做的事很简单：**让你的 ChatGPT 套上 Codex 的工服，拎�
 
 - **平台：** Windows + **Apple Silicon macOS（arm64）** Technical Preview。Intel Mac 暂不支持。
 - **前提：** 本机已有 **Node.js 22+** 和可工作的 **Codex**。Codex Desktop 不是必须项，CLI 能正常使用也可以。
-- **不会再装一份 Codex：** Codexless 会寻找并复用本机已有的 Codex；找不到当前可用版本时会明确提示，不会自动再装一套。
+- **Recommended 双路径：** 本机已有可工作的 Codex 仍是前提。Recommended 安装还会为 Codexless 准备一套官方固定版本的 runtime，作为独立工具路径；它不会替你安装或替换本机 Codex。
 - **浏览器操控：** 本机需要安装 Chrome 和 ChatGPT 浏览器扩展；Browser 使用当前 Chrome profile 的网站登录状态。
 - **上传文件：** 还需要在扩展设置中额外打开 **“允许访问文件网址”**。
 - **个人套餐实测：** Plus 和 Pro 已在真实机器通过产品形态链路测试。这是实测证据，不是未来政策保证。
 - **本地怎么连：** ChatGPT 不会直接访问 `localhost`。典型链路是 **本机 Codexless → 已认证 Tunnel / remote MCP endpoint → ChatGPT App / Developer Mode**。
 - **Tunnel 不锁死：** OpenAI Secure MCP Tunnel 是已经支持的一条路，但不是唯一依赖。
-- **包体：** 当前 Technical Preview 包本体低于 **0.21 MB 压缩 / 0.9 MB 解压**，不含正常安装依赖。
 - **身份：** Codexless 是独立项目，不是 OpenAI 产品，也不代表 OpenAI 背书。
 
 ---
 
 ## 安装与更新
 
-**先确认电脑里有 Node.js 22+ 和可工作的 Codex。安装脚本会检查，但不会替你安装 Node/npm 或 Codex。**
+**先确认电脑里有 Node.js 22+ 和可工作的本机 Codex。安装脚本会检查这些前提；它不会替你安装 Node/npm，也不会替你安装或替换这套本机 Codex。Recommended 安装还会为 Codexless 准备一套官方固定版本的 runtime。**
 
 如果你不想自己判断环境，先把这个仓库交给自己的 AI，让它帮你检查平台、Node、Codex 和安装路径。
 
@@ -215,7 +224,7 @@ sh ./bin/codexless-install.sh
 
 ### installer 会做什么？
 
-两端 installer 都会先检查 Node.js 和本机 Codex，再在临时区域安装依赖、运行 doctor，成功后才切换正式安装。
+两端 installer 都会先检查 Node.js 和本机 Codex，再在临时区域安装依赖；Recommended 安装还会准备官方固定版本的 Codex runtime。doctor 通过后，才会切换正式安装。
 
 它不会替你安装 Chrome、浏览器扩展或配置 Tunnel，也不会自动扩大 Codex trust。Browser 上传所需的文件访问权限也需要用户自行打开。
 

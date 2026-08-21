@@ -1,18 +1,28 @@
 import { createRequire } from "node:module";
-import { createPublicRuntime } from "./public-runtime.mjs";
+import { createCodexlessRuntime } from "./codexless-runtime.mjs";
 
 const require = createRequire(import.meta.url);
 const { serveStdio } = require("@modelcontextprotocol/server/stdio");
 
-const runtime = await createPublicRuntime();
+const runtime = await createCodexlessRuntime();
 const handle = serveStdio(runtime.createServer, {
   legacy: "serve",
-  onerror: (error) => console.error("[codexless-mcp]", error),
+  onerror: (error) => console.error("[mcp]", error),
 });
 
+const runtimeLabel = runtime.mode === "public"
+  ? "Codexless public"
+  : runtime.mode === "household"
+    ? "Codexless household"
+    : "Codexless Workbench";
+
 console.error(
-  `Codexless Public Preview running; defaultCwd=${runtime.authorityValidation.defaultCwd ?? runtime.defaultCwd}; ` +
-  `consent=${runtime.meteredConsentMode}; surface=${runtime.surfaceVersion}; tools=${runtime.toolNames.length}`
+  `${runtimeLabel} running; ` +
+  `defaultCwd=${runtime.authorityValidation.defaultCwd ?? "none"}; ` +
+  `profile=${runtime.authorityValidation.profileOverride ?? "codex-resolved"}; ` +
+  `consent=${runtime.meteredConsentMode}; ` +
+  `cua=${runtime.cuaValidation ? `${runtime.cuaValidation.codexVersion}/${runtime.cuaValidation.skyVersion}` : "off"}; ` +
+  `surface=${runtime.surfaceVersion}`
 );
 
 let shutdownPromise = null;

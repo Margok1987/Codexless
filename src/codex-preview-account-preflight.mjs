@@ -23,6 +23,7 @@ function unavailableAccount(error) {
     status: "unavailable",
     method: ACCOUNT_READ_METHOD,
     accountPresent: null,
+    authMode: null,
     requiresOpenaiAuth: null,
     plan: null,
     error: normalizeError(error),
@@ -36,6 +37,7 @@ function normalizeAccount(response) {
     status: "ok",
     method: ACCOUNT_READ_METHOD,
     accountPresent: Boolean(account),
+    authMode: typeof account?.type === "string" ? account.type : typeof source.authMode === "string" ? source.authMode : null,
     requiresOpenaiAuth: typeof source.requiresOpenaiAuth === "boolean" ? source.requiresOpenaiAuth : null,
     plan: typeof account?.planType === "string" ? account.planType : null,
     error: null,
@@ -43,7 +45,10 @@ function normalizeAccount(response) {
 }
 
 function projectQuotaEntry(entry) {
-  return { status: entry?.status ?? "unavailable", error: entry?.status === "unavailable" ? entry.error ?? null : null };
+  return {
+    status: entry?.status ?? "unavailable",
+    error: entry?.status === "unavailable" ? entry.error ?? null : null,
+  };
 }
 
 function normalizeQuota(snapshot) {
@@ -66,7 +71,9 @@ function unavailableQuota(error, now) {
 }
 
 async function closeTelemetryClient(client) {
-  if (!client || typeof client.close !== "function") return { status: "not-started", error: null };
+  if (!client || typeof client.close !== "function") {
+    return { status: "not-started", error: null };
+  }
   try {
     await client.close();
     return { status: "ok", error: null };
@@ -75,11 +82,14 @@ async function closeTelemetryClient(client) {
   }
 }
 
-export function createPreviewTelemetryClient({ codexBin, defaultCwd, configOverrides = [], stderrHandler = null } = {}) {
+export function createPreviewTelemetryClient({ codexBin, defaultCwd, configOverrides = [], launchEnv = null, stderrHandler = null } = {}) {
   if (!codexBin) throw new Error("createPreviewTelemetryClient requires codexBin");
   if (!defaultCwd) throw new Error("createPreviewTelemetryClient requires defaultCwd");
   if (!Array.isArray(configOverrides) || !configOverrides.every((value) => typeof value === "string" && value.trim())) {
     throw new Error("configOverrides must be an array of non-empty strings");
+  }
+  if (launchEnv !== null && (typeof launchEnv !== "object" || Array.isArray(launchEnv))) {
+    throw new Error("launchEnv must be null or an environment object");
   }
 
   const cwd = path.resolve(defaultCwd);
@@ -87,16 +97,20 @@ export function createPreviewTelemetryClient({ codexBin, defaultCwd, configOverr
     cwd,
     launch: () => ({
       command: codexBin,
-      args: [...configOverrides.flatMap((value) => ["-c", value]), "app-server", "--stdio"],
-      options: { cwd },
+      args: [
+        ...configOverrides.flatMap((value) => ["-c", value]),
+        "app-server",
+        "--stdio",
+      ],
+      options: { cwd, ...(launchEnv ? { env: launchEnv } : {}) },
     }),
     requestTimeoutMs: 10_000,
     initializeCapabilities: { experimentalApi: true },
     stderrHandler,
     clientInfo: {
-      name: "codexless_preview_account_preflight",
-      title: "Codexless Preview Account Preflight",
-      version: "0.1.0",
+      name: "codex_toolbox_preview_account_preflight",
+      title: "Codex Toolbox Preview Account Preflight",
+      version: "0.0.1",
     },
   });
 }
@@ -105,6 +119,7 @@ export async function readPreviewAccountPreflight({
   codexBin,
   defaultCwd,
   configOverrides = [],
+  launchEnv = null,
   clientFactory = createPreviewTelemetryClient,
   now = Date.now,
 } = {}) {
@@ -117,7 +132,7 @@ export async function readPreviewAccountPreflight({
   let quota;
 
   try {
-    client = clientFactory({ codexBin, defaultCwd, configOverrides });
+    client = clientFactory({ codexBin, defaultCwd, configOverrides, launchEnv });
     await client.start();
   } catch (error) {
     return {
@@ -142,7 +157,10 @@ export async function readPreviewAccountPreflight({
   }
 
   const cleanup = await closeTelemetryClient(client);
-  const observedCount = [account.status === "ok", quota.status !== "unavailable"].filter(Boolean).length;
+  const observedCount = [
+    account.status === "ok",
+    quota.status !== "unavailable",
+  ].filter(Boolean).length;
   const dataStatus = observedCount === 2 ? "ok" : observedCount === 1 ? "partial" : "unavailable";
 
   return {

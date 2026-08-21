@@ -296,7 +296,7 @@ async function readMarkerFromSeedForWrongPath(release, wrongDir) {
 async function createFixtureRelease(version, sourceRevision, hostContractVersion) {
   const packageParent = path.join(root, `package-${sourceRevision}`);
   const releaseRoot = path.join(packageParent, `codexless-${version}`);
-  for (const directory of ["src", "config", "scripts", "bin"]) await mkdir(path.join(releaseRoot, directory), { recursive: true });
+  for (const directory of ["src", "config", "scripts", "skills/codexless-browser-repair", "bin"]) await mkdir(path.join(releaseRoot, directory), { recursive: true });
 
   for (const relative of BOOTSTRAP_GENERATION_FILES) {
     const from = path.join(projectRoot, ...relative.split("/"));
@@ -326,6 +326,7 @@ async function createFixtureRelease(version, sourceRevision, hostContractVersion
   await writeFile(path.join(releaseRoot, "scripts", "launch.mjs"), "// fixture\n", "utf8");
   await writeFile(path.join(releaseRoot, "bin", "fixture.txt"), "fixture\n", "utf8");
   await writeFile(path.join(releaseRoot, "config", "toolbox-method-registry.json"), "{}\n", "utf8");
+  await writeFile(path.join(releaseRoot, "skills", "codexless-browser-repair", "SKILL.md"), "---\nname: codexless-browser-repair\ndescription: fixture\n---\n", "utf8");
   await writeFile(path.join(releaseRoot, "package.json"), `${JSON.stringify({ name: "codexless", version, private: true, type: "module" }, null, 2)}\n`, "utf8");
   await writeFile(path.join(releaseRoot, "npm-shrinkwrap.json"), `${JSON.stringify({ name: "codexless", version, lockfileVersion: 3, requires: true, packages: { "": { name: "codexless", version } } }, null, 2)}\n`, "utf8");
   for (const file of ["README.md", "README.zh-CN.md", "SECURITY.md", "EXPORT_SYNC.md", "THIRD_PARTY_NOTICES.md", "LICENSE"]) {

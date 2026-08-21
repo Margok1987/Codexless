@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { CodexAppServerClient } from "./codex-app-server-client.mjs";
 import { buildAgentResourceReceipt } from "./agent-resource.mjs";
+import { projectCodexModel } from "./codex-model-catalog.mjs";
 
 const TERMINAL_TURN_STATUSES = new Set(["completed", "failed", "interrupted"]);
 const DEFAULT_MAX_EVENTS = 128;
@@ -43,37 +44,6 @@ function supportedReasoningEfforts(entry) {
         .map((option) => typeof option?.reasoningEffort === "string" ? option.reasoningEffort : null)
         .filter(Boolean)
     : [];
-}
-
-function projectModel(entry) {
-  if (!entry || typeof entry !== "object") return null;
-  const id = typeof entry.id === "string" ? entry.id : null;
-  const model = typeof entry.model === "string" ? entry.model : null;
-  if (!id && !model) return null;
-  return {
-    id,
-    model,
-    displayName: typeof entry.displayName === "string" ? entry.displayName : null,
-    description: typeof entry.description === "string" ? entry.description : null,
-    modelSpecialty: typeof entry.modelSpecialty === "string" ? entry.modelSpecialty : null,
-    hidden: entry.hidden === true,
-    isDefault: entry.isDefault === true,
-    defaultReasoningEffort: typeof entry.defaultReasoningEffort === "string" ? entry.defaultReasoningEffort : null,
-    supportedReasoningEfforts: Array.isArray(entry.supportedReasoningEfforts)
-      ? entry.supportedReasoningEfforts.map((option) => ({
-          reasoningEffort: typeof option?.reasoningEffort === "string" ? option.reasoningEffort : null,
-          description: typeof option?.description === "string" ? option.description : null,
-        }))
-      : [],
-    serviceTiers: Array.isArray(entry.serviceTiers)
-      ? entry.serviceTiers.map((tier) => ({
-          id: typeof tier?.id === "string" ? tier.id : null,
-          name: typeof tier?.name === "string" ? tier.name : null,
-          description: typeof tier?.description === "string" ? tier.description : null,
-        }))
-      : [],
-    defaultServiceTier: typeof entry.defaultServiceTier === "string" ? entry.defaultServiceTier : null,
-  };
 }
 
 function normalizeAgentStatus(turnStatus) {
@@ -194,6 +164,7 @@ function compactNotification(message) {
   const event = { type: message.method, at: Date.now() };
   const turnId = notificationTurnId(message);
   if (turnId) event.turnId = turnId;
+
   if (message.method === "item/agentMessage/delta") {
     const delta = message?.params?.delta;
     if (typeof delta === "string") event.text = delta.slice(-MAX_EVENT_TEXT_CHARS);
@@ -251,7 +222,11 @@ export class CodexAgentExecutor {
           cwd: this.#defaultCwd,
           launch: () => ({
             command: codexBin,
-            args: [...configOverrides.flatMap((value) => ["-c", value]), "app-server", "--stdio"],
+            args: [
+              ...configOverrides.flatMap((value) => ["-c", value]),
+              "app-server",
+              "--stdio",
+            ],
             options: { cwd: this.#defaultCwd },
           }),
           requestTimeoutMs,
@@ -260,7 +235,7 @@ export class CodexAgentExecutor {
           clientInfo: {
             name: "codexless_agent",
             title: "Codexless Agent",
-            version: "0.1.0",
+            version: "0.1.50-household-workspace",
           },
         });
   }
@@ -301,7 +276,7 @@ export class CodexAgentExecutor {
       includeHidden,
     });
     return {
-      models: Array.isArray(result?.data) ? result.data.map(projectModel).filter(Boolean) : [],
+      models: Array.isArray(result?.data) ? result.data.map(projectCodexModel).filter(Boolean) : [],
       nextCursor: typeof result?.nextCursor === "string" ? result.nextCursor : null,
     };
   }
@@ -323,7 +298,9 @@ export class CodexAgentExecutor {
     if (clientRequestId) {
       const prior = this.#clientRequestIds.get(clientRequestId);
       if (prior) {
-        if (prior.requestHash !== requestHash) throw new Error(`clientRequestId was already used for a different agent start: ${clientRequestId}`);
+        if (prior.requestHash !== requestHash) {
+          throw new Error(`clientRequestId was already used for a different agent start: ${clientRequestId}`);
+        }
         const state = this.#agents.get(prior.agentRef);
         if (!state) return this.#unknown(prior.agentRef, "accepted start mapping is no longer available");
         return { ...this.#snapshot(state, 0), duplicate: true };
@@ -376,25 +353,42 @@ export class CodexAgentExecutor {
     if (clientRequestId) this.#clientRequestIds.set(clientRequestId, { agentRef, requestHash });
 
     try {
-      const threadParams = { cwd: effectiveCwd, ephemeral: false };
+      const threadParams = {
+        cwd: effectiveCwd,
+        ephemeral: false,
+      };
       if (permissionProfile) threadParams.permissions = permissionProfile;
       if (requestedModel || validatedReasoningModel) threadParams.model = requestedModel ?? validatedReasoningModel;
-      if (requestedReasoningEffort) threadParams.config = { model_reasoning_effort: requestedReasoningEffort };
+      // Current App Server v2 does not accept reasoningEffort as a top-level
+      // thread/start parameter. Bind the approved effort through the supported
+      // per-thread config override so thread/start can resolve and echo the
+      // effective effort before any metered turn is dispatched.
+      if (requestedReasoningEffort) {
+        threadParams.config = { model_reasoning_effort: requestedReasoningEffort };
+      }
       const started = await this.#client.request("thread/start", threadParams);
       const threadId = started?.thread?.id;
       if (typeof threadId !== "string" || !threadId) throw new Error("thread/start returned no formal thread id");
       if (permissionProfile) {
         const activeProfile = started?.activePermissionProfile?.id;
-        if (activeProfile !== permissionProfile) throw new Error(`thread/start authority mismatch: expected ${permissionProfile}, got ${String(activeProfile ?? "missing")}`);
+        if (activeProfile !== permissionProfile) {
+          throw new Error(
+            `thread/start authority mismatch: expected ${permissionProfile}, got ${String(activeProfile ?? "missing")}`
+          );
+        }
       }
       const expectedModel = requestedModel ?? validatedReasoningModel;
       const acceptedModel = typeof started?.model === "string" ? started.model : null;
       if (expectedModel && acceptedModel !== expectedModel) {
-        throw new Error(`CODEX_AGENT_SELECTION_MISMATCH: prepared model "${expectedModel}" was not honored by thread/start (observed ${acceptedModel ?? "missing"}); no Codex turn was started`);
+        throw new Error(
+          `CODEX_AGENT_SELECTION_MISMATCH: prepared model "${expectedModel}" was not honored by thread/start (observed ${acceptedModel ?? "missing"}); no Codex turn was started`
+        );
       }
       const acceptedReasoningEffort = typeof started?.reasoningEffort === "string" ? started.reasoningEffort : null;
       if (requestedReasoningEffort && acceptedReasoningEffort !== requestedReasoningEffort) {
-        throw new Error(`CODEX_AGENT_SELECTION_MISMATCH: prepared reasoning effort "${requestedReasoningEffort}" was not honored by thread/start (observed ${acceptedReasoningEffort ?? "missing"}); no Codex turn was started`);
+        throw new Error(
+          `CODEX_AGENT_SELECTION_MISMATCH: prepared reasoning effort "${requestedReasoningEffort}" was not honored by thread/start (observed ${acceptedReasoningEffort ?? "missing"}); no Codex turn was started`
+        );
       }
       state.threadId = threadId;
       state.status = "idle";
@@ -418,6 +412,8 @@ export class CodexAgentExecutor {
         threadId: state.threadId,
         clientUserMessageId: clientRequestId ?? agentRef,
         input: [{ type: "text", text: task }],
+        // thread/start establishes the thread default; mirror the same explicit
+        // request onto the first turn so turn/start cannot silently diverge.
         ...(requestedReasoningEffort ? { effort: requestedReasoningEffort } : {}),
       });
       const turn = turnStarted?.turn;
@@ -435,7 +431,9 @@ export class CodexAgentExecutor {
         if (!state.currentTurnId && state.pendingApproval.turnId) state.currentTurnId = state.pendingApproval.turnId;
         if (!state.latestTurnStatus) state.latestTurnStatus = "inProgress";
         state.status = "awaitingApproval";
-      } else state.status = "unknown";
+      } else {
+        state.status = "unknown";
+      }
       state.updatedAt = Date.now();
       this.#appendEvent(state, { type: "turn/acceptance-unknown", text: state.latestError, at: Date.now() });
       return { ...this.#snapshot(state, 0), duplicate: false };
@@ -456,8 +454,12 @@ export class CodexAgentExecutor {
     this.#assertOpen();
     const state = this.#agents.get(agentRef);
     if (!state) throw new Error(`unknown agentRef: ${agentRef}`);
-    if (!state.pendingApproval || !state.pendingRequestHandle) throw new Error(`agent has no pending server request: ${agentRef}`);
-    if (String(state.pendingApproval.requestId) !== String(requestId)) throw new Error(`server request is unknown or stale for agent ${agentRef}: ${String(requestId)}`);
+    if (!state.pendingApproval || !state.pendingRequestHandle) {
+      throw new Error(`agent has no pending server request: ${agentRef}`);
+    }
+    if (String(state.pendingApproval.requestId) !== String(requestId)) {
+      throw new Error(`server request is unknown or stale for agent ${agentRef}: ${String(requestId)}`);
+    }
     state.pendingRequestHandle.resolve(result);
     const resolvedId = state.pendingApproval.requestId;
     state.pendingApproval = null;
@@ -473,8 +475,12 @@ export class CodexAgentExecutor {
     this.#assertOpen();
     const state = this.#agents.get(agentRef);
     if (!state) throw new Error(`unknown agentRef: ${agentRef}`);
-    if (!state.pendingApproval || !state.pendingRequestHandle) throw new Error(`agent has no pending server request: ${agentRef}`);
-    if (String(state.pendingApproval.requestId) !== String(requestId)) throw new Error(`server request is unknown or stale for agent ${agentRef}: ${String(requestId)}`);
+    if (!state.pendingApproval || !state.pendingRequestHandle) {
+      throw new Error(`agent has no pending server request: ${agentRef}`);
+    }
+    if (String(state.pendingApproval.requestId) !== String(requestId)) {
+      throw new Error(`server request is unknown or stale for agent ${agentRef}: ${String(requestId)}`);
+    }
     state.pendingRequestHandle.reject(error);
     const rejectedId = state.pendingApproval.requestId;
     state.pendingApproval = null;
@@ -489,12 +495,18 @@ export class CodexAgentExecutor {
   async resolveApproval({ agentRef, approvalRequestId, clientRequestId, decision }) {
     this.#assertOpen();
     if (!new Set(["approve", "reject"]).has(decision)) throw new Error("decision must be approve or reject");
-    if (typeof approvalRequestId !== "string" || !approvalRequestId.trim()) throw new Error("approvalRequestId must be a non-empty string");
-    if (typeof clientRequestId !== "string" || !clientRequestId.trim()) throw new Error("clientRequestId must be a non-empty string");
+    if (typeof approvalRequestId !== "string" || !approvalRequestId.trim()) {
+      throw new Error("approvalRequestId must be a non-empty string");
+    }
+    if (typeof clientRequestId !== "string" || !clientRequestId.trim()) {
+      throw new Error("clientRequestId must be a non-empty string");
+    }
     const hash = controlRequestHash(decision, agentRef, approvalRequestId);
     const prior = this.#controlRequestIds.get(clientRequestId);
     if (prior) {
-      if (prior.requestHash !== hash) throw new Error(`clientRequestId was already used for a different agent control action: ${clientRequestId}`);
+      if (prior.requestHash !== hash) {
+        throw new Error(`clientRequestId was already used for a different agent control action: ${clientRequestId}`);
+      }
       const priorState = this.#agents.get(prior.agentRef);
       if (!priorState) return { ...this.#unknown(prior.agentRef, "accepted control mapping is no longer available"), duplicate: true };
       return { ...this.#snapshot(priorState, 0), duplicate: true };
@@ -502,8 +514,12 @@ export class CodexAgentExecutor {
 
     const state = this.#agents.get(agentRef);
     if (!state) return this.#unknown(agentRef, "unknown agentRef");
-    if (!state.pendingApproval || !state.pendingRequestHandle) throw new Error(`agent has no pending Codex approval: ${agentRef}`);
-    if (String(state.pendingApproval.requestId) !== approvalRequestId) throw new Error(`approval request is unknown or stale for agent ${agentRef}: ${approvalRequestId}`);
+    if (!state.pendingApproval || !state.pendingRequestHandle) {
+      throw new Error(`agent has no pending Codex approval: ${agentRef}`);
+    }
+    if (String(state.pendingApproval.requestId) !== approvalRequestId) {
+      throw new Error(`approval request is unknown or stale for agent ${agentRef}: ${approvalRequestId}`);
+    }
 
     const result = approvalResponseFor(state.pendingRequestHandle, decision);
     const snapshot = await this.resolvePendingRequest({ agentRef, requestId: approvalRequestId, result });
@@ -513,24 +529,37 @@ export class CodexAgentExecutor {
 
   async cancel({ agentRef, clientRequestId, expectedTurnId = null }) {
     this.#assertOpen();
-    if (typeof clientRequestId !== "string" || !clientRequestId.trim()) throw new Error("clientRequestId must be a non-empty string");
+    if (typeof clientRequestId !== "string" || !clientRequestId.trim()) {
+      throw new Error("clientRequestId must be a non-empty string");
+    }
     const state = this.#agents.get(agentRef);
     if (!state) return this.#unknown(agentRef, "unknown agentRef");
     await this.#refreshFromOfficial(state);
     const targetTurnId = state.currentTurnId;
-    if (expectedTurnId !== null && expectedTurnId !== targetTurnId) throw new Error(`agent task turn changed: expected ${expectedTurnId}, current ${String(targetTurnId ?? "none")}`);
+    if (expectedTurnId !== null && expectedTurnId !== targetTurnId) {
+      throw new Error(`agent task turn changed: expected ${expectedTurnId}, current ${String(targetTurnId ?? "none")}`);
+    }
     const hash = controlRequestHash("cancel", agentRef, targetTurnId);
     const prior = this.#controlRequestIds.get(clientRequestId);
     if (prior) {
-      if (prior.requestHash !== hash) throw new Error(`clientRequestId was already used for a different agent control action: ${clientRequestId}`);
+      if (prior.requestHash !== hash) {
+        throw new Error(`clientRequestId was already used for a different agent control action: ${clientRequestId}`);
+      }
       await this.#refreshFromOfficial(state);
       return { ...this.#snapshot(state, 0), duplicate: true, controlAcceptance: prior.acceptance ?? "accepted" };
     }
-    if (!targetTurnId || !state.threadId || !["running", "awaitingApproval", "unknown"].includes(state.status)) throw new Error(`agent has no interruptible active turn: ${agentRef} (${state.status})`);
+    if (!targetTurnId || !state.threadId || !["running", "awaitingApproval", "unknown"].includes(state.status)) {
+      throw new Error(`agent has no interruptible active turn: ${agentRef} (${state.status})`);
+    }
     const earlierCancel = [...this.#controlRequestIds.entries()].find(([, entry]) =>
-      entry?.action === "cancel" && entry?.agentRef === agentRef && entry?.targetId === targetTurnId && entry?.acceptance !== "rejected"
+      entry?.action === "cancel" &&
+      entry?.agentRef === agentRef &&
+      entry?.targetId === targetTurnId &&
+      entry?.acceptance !== "rejected"
     );
-    if (earlierCancel) throw new Error(`cancel was already dispatched for this turn under requestId ${earlierCancel[0]}; query agent_show or retry that exact requestId instead of replaying turn/interrupt`);
+    if (earlierCancel) {
+      throw new Error(`cancel was already dispatched for this turn under requestId ${earlierCancel[0]}; query agent_show or retry that exact requestId instead of replaying turn/interrupt`);
+    }
 
     const record = { agentRef, requestHash: hash, action: "cancel", targetId: targetTurnId, acceptance: "dispatching" };
     this.#controlRequestIds.set(clientRequestId, record);
@@ -559,8 +588,11 @@ export class CodexAgentExecutor {
       if (state.latestTurnStatus === "interrupted") {
         record.acceptance = "accepted";
         state.latestError = null;
-      } else if (["completed", "failed"].includes(state.latestTurnStatus)) record.acceptance = "accepted";
-      else state.status = "unknown";
+      } else if (["completed", "failed"].includes(state.latestTurnStatus)) {
+        record.acceptance = "accepted";
+      } else {
+        state.status = "unknown";
+      }
       await this.#ensureResourceReceipt(state);
       return { ...this.#snapshot(state, 0), duplicate: false, controlAcceptance: record.acceptance };
     }
@@ -569,7 +601,9 @@ export class CodexAgentExecutor {
   async send({ agentRef, message, clientRequestId = null, model = null, reasoningEffort = null }) {
     this.#assertOpen();
     if (typeof message !== "string" || !message.trim()) throw new Error("message must be a non-empty string");
-    if (clientRequestId !== null && (typeof clientRequestId !== "string" || !clientRequestId.trim())) throw new Error("clientRequestId must be a non-empty string when provided");
+    if (clientRequestId !== null && (typeof clientRequestId !== "string" || !clientRequestId.trim())) {
+      throw new Error("clientRequestId must be a non-empty string when provided");
+    }
     const requestedModel = normalizeModel(model);
     const requestedReasoningEffort = normalizeReasoningEffort(reasoningEffort);
     const sendHashBase = `${agentRef}\0${message}\0${requestedModel ?? ""}`;
@@ -580,7 +614,9 @@ export class CodexAgentExecutor {
     if (clientRequestId) {
       const prior = this.#sendRequestIds.get(clientRequestId);
       if (prior) {
-        if (prior.requestHash !== requestHash) throw new Error(`clientRequestId was already used for a different agent send: ${clientRequestId}`);
+        if (prior.requestHash !== requestHash) {
+          throw new Error(`clientRequestId was already used for a different agent send: ${clientRequestId}`);
+        }
         const priorState = this.#agents.get(prior.agentRef);
         if (!priorState) return this.#unknown(prior.agentRef, "accepted send mapping is no longer available");
         return { ...this.#snapshot(priorState, 0), duplicate: true };
@@ -589,12 +625,15 @@ export class CodexAgentExecutor {
 
     const state = this.#agents.get(agentRef);
     if (!state) return this.#unknown(agentRef, "unknown agentRef");
+
     await this.#refreshFromOfficial(state);
     if (state.pendingApproval) throw new Error(`agent ${agentRef} has a pending Codex approval`);
     if (state.status !== "idle") throw new Error(`agent ${agentRef} is not idle: ${state.status}`);
 
     const resumed = await this.#client.request("thread/resume", { threadId: state.threadId });
-    if (resumed?.thread?.canAcceptDirectInput === false) throw new Error(`Codex thread cannot accept direct input: ${state.threadId}`);
+    if (resumed?.thread?.canAcceptDirectInput === false) {
+      throw new Error(`Codex thread cannot accept direct input: ${state.threadId}`);
+    }
     if (typeof resumed?.model === "string") state.resolvedModel = resumed.model;
     if (typeof resumed?.modelProvider === "string") state.modelProvider = resumed.modelProvider;
     state.serviceTier = typeof resumed?.serviceTier === "string" ? resumed.serviceTier : state.serviceTier;
@@ -610,6 +649,9 @@ export class CodexAgentExecutor {
 
     if (clientRequestId) this.#sendRequestIds.set(clientRequestId, { agentRef, requestHash });
 
+    // The next turn becomes the current logical turn as soon as dispatch begins.
+    // Clear the previous completed-turn projection so an uncertain turn/start
+    // response cannot make show() keep reporting the prior turn as current.
     state.currentTurnId = null;
     state.latestTurnStatus = null;
     state.latestTokenUsage = null;
@@ -652,7 +694,9 @@ export class CodexAgentExecutor {
         if (!state.currentTurnId && state.pendingApproval.turnId) state.currentTurnId = state.pendingApproval.turnId;
         if (!state.latestTurnStatus) state.latestTurnStatus = "inProgress";
         state.status = "awaitingApproval";
-      } else state.status = "unknown";
+      } else {
+        state.status = "unknown";
+      }
       state.updatedAt = Date.now();
       this.#appendEvent(state, { type: "turn/acceptance-unknown", text: state.latestError, at: Date.now() });
       return { ...this.#snapshot(state, 0), duplicate: false };
@@ -663,7 +707,7 @@ export class CodexAgentExecutor {
     const models = [];
     const seenCursors = new Set();
     let cursor = null;
-    for (let page = 0; page < 10; page += 1) {
+    for (let page = 0; page < 20; page += 1) {
       const result = await this.listModels({ cursor, limit: 200, includeHidden: true });
       models.push(...result.models);
       if (!result.nextCursor) return models;
@@ -714,9 +758,14 @@ export class CodexAgentExecutor {
   async #refreshFromOfficial(state) {
     if (!state.threadId) return;
     try {
-      const turns = await this.#client.request("thread/turns/list", { threadId: state.threadId, limit: 20 });
+      const turns = await this.#client.request("thread/turns/list", {
+        threadId: state.threadId,
+        limit: 20,
+      });
       const data = Array.isArray(turns?.data) ? turns.data : [];
-      const turn = state.currentTurnId ? data.find((candidate) => candidate?.id === state.currentTurnId) : data[0];
+      const turn = state.currentTurnId
+        ? data.find((candidate) => candidate?.id === state.currentTurnId)
+        : data[0];
       if (!turn) return;
       const currentTurnAlreadyTerminal = state.turnEndedAt !== null || TERMINAL_TURN_STATUSES.has(state.latestTurnStatus);
       const officialTurnIsTerminal = TERMINAL_TURN_STATUSES.has(turn.status);
@@ -738,8 +787,9 @@ export class CodexAgentExecutor {
         state.lastCompletedTurnId = turn.id;
         state.finalResult = lastAgentMessage(turn);
         state.latestError = null;
-      } else if (turn.status === "failed") state.latestError = turn?.error?.message ?? JSON.stringify(turn?.error ?? "turn failed");
-      else if (turn.status === "interrupted") {
+      } else if (turn.status === "failed") {
+        state.latestError = turn?.error?.message ?? JSON.stringify(turn?.error ?? "turn failed");
+      } else if (turn.status === "interrupted") {
         state.finalResult = lastAgentMessage(turn) ?? state.finalResult;
         state.latestError = null;
       }
@@ -781,12 +831,19 @@ export class CodexAgentExecutor {
       return;
     }
     if (turnId && !state.currentTurnId) state.currentTurnId = turnId;
-    if (message.method === "thread/tokenUsage/updated" && message?.params?.tokenUsage) state.latestTokenUsage = structuredClone(message.params.tokenUsage);
+    if (message.method === "thread/tokenUsage/updated" && message?.params?.tokenUsage) {
+      state.latestTokenUsage = structuredClone(message.params.tokenUsage);
+    }
     if (message.method === "item/started" && message?.params?.item?.id) {
       state.approvalItems.set(message.params.item.id, structuredClone(message.params.item));
-      if (state.approvalItems.size > 32) state.approvalItems.delete(state.approvalItems.keys().next().value);
+      if (state.approvalItems.size > 32) {
+        const oldest = state.approvalItems.keys().next().value;
+        state.approvalItems.delete(oldest);
+      }
     }
-    if (message.method === "item/completed" && message?.params?.item?.id) state.approvalItems.delete(message.params.item.id);
+    if (message.method === "item/completed" && message?.params?.item?.id) {
+      state.approvalItems.delete(message.params.item.id);
+    }
     if (message.method === "serverRequest/resolved") {
       if (state.pendingApproval && String(state.pendingApproval.requestId) === String(requestId)) {
         state.pendingApproval = null;
@@ -809,8 +866,9 @@ export class CodexAgentExecutor {
         state.lastCompletedTurnId = turn?.id ?? state.currentTurnId;
         state.finalResult = lastAgentMessage(turn) ?? state.finalResult;
         state.latestError = null;
-      } else if (status === "failed") state.latestError = turn?.error?.message ?? JSON.stringify(turn?.error ?? "turn failed");
-      else if (status === "interrupted") {
+      } else if (status === "failed") {
+        state.latestError = turn?.error?.message ?? JSON.stringify(turn?.error ?? "turn failed");
+      } else if (status === "interrupted") {
         state.finalResult = lastAgentMessage(turn) ?? state.finalResult;
         state.latestError = null;
       }
@@ -837,13 +895,19 @@ export class CodexAgentExecutor {
       (threadId && candidate.threadId === threadId) || (turnId && candidate.currentTurnId === turnId)
     );
     if (!state) {
-      request.reject({ code: -32602, message: `Agent server request could not be mapped to an active agent: ${request.method}` });
+      request.reject({
+        code: -32602,
+        message: `Agent server request could not be mapped to an active agent: ${request.method}`,
+      });
       return;
     }
     if (turnId && !state.currentTurnId) state.currentTurnId = turnId;
     if (!state.latestTurnStatus) state.latestTurnStatus = "inProgress";
     if (state.pendingApproval) {
-      request.reject({ code: -32000, message: `Agent already has a pending server request: ${String(state.pendingApproval.requestId)}` });
+      request.reject({
+        code: -32000,
+        message: `Agent already has a pending server request: ${String(state.pendingApproval.requestId)}`,
+      });
       return;
     }
 
@@ -875,7 +939,12 @@ export class CodexAgentExecutor {
       let quotaSnapshot;
       try {
         quotaSnapshot = this.#resourceSnapshotProvider
-          ? await this.#resourceSnapshotProvider({ agentRef: state.agentRef, threadId: state.threadId, turnId, cwd: state.cwd })
+          ? await this.#resourceSnapshotProvider({
+              agentRef: state.agentRef,
+              threadId: state.threadId,
+              turnId,
+              cwd: state.cwd,
+            })
           : {
               status: "unavailable",
               observedAt: new Date().toISOString(),
@@ -883,7 +952,10 @@ export class CodexAgentExecutor {
               rateLimits: { status: "unavailable", error: { name: "Unavailable", message: "resource telemetry provider is not configured" } },
             };
       } catch (error) {
-        const projected = { name: error instanceof Error ? error.name : "Error", message: error instanceof Error ? error.message : String(error) };
+        const projected = {
+          name: error instanceof Error ? error.name : "Error",
+          message: error instanceof Error ? error.message : String(error),
+        };
         quotaSnapshot = {
           status: "unavailable",
           observedAt: new Date().toISOString(),
@@ -903,8 +975,11 @@ export class CodexAgentExecutor {
       this.#appendEvent(state, { type: "resource-receipt/ready", turnId, at: Date.now() });
       return receipt;
     })();
-    try { return await state.resourceReceiptPromise; }
-    finally { state.resourceReceiptPromise = null; }
+    try {
+      return await state.resourceReceiptPromise;
+    } finally {
+      state.resourceReceiptPromise = null;
+    }
   }
 
   #snapshot(state, afterSeq) {
@@ -924,7 +999,11 @@ export class CodexAgentExecutor {
       lastCompletedTurnId: state.lastCompletedTurnId,
       createdAt: state.createdAt,
       updatedAt: state.updatedAt,
-      timing: { startedAt: state.turnStartedAt, endedAt: state.turnEndedAt, durationMs: state.turnDurationMs },
+      timing: {
+        startedAt: state.turnStartedAt,
+        endedAt: state.turnEndedAt,
+        durationMs: state.turnDurationMs,
+      },
       execution: {
         requestedModel: state.requestedModel,
         ...(state.requestedReasoningEffort ? { requestedReasoningEffort: state.requestedReasoningEffort } : {}),
@@ -961,6 +1040,8 @@ export class CodexAgentExecutor {
   }
 
   #assertOpen() {
-    if (!this.#opened || this.#closed || !this.#client.running) throw new Error("CodexAgentExecutor is not open");
+    if (!this.#opened || this.#closed || !this.#client.running) {
+      throw new Error("CodexAgentExecutor is not open");
+    }
   }
 }

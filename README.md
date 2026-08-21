@@ -41,7 +41,17 @@ These supported tool actions **do not call the Codex model and do not consume Co
 
 ---
 
-### 2. Reuse what Codex already knows
+### 2. A second path when Codex updates
+
+Codexless can keep using the Codex toolbox already installed on your machine, and Recommended setup also prepares a **pinned official Codex runtime** as a second, independent tool path. It does not replace the local Codex you already use.
+
+After one additional official ChatGPT sign-in, file and command work can use the pinned runtime. If a local Codex update temporarily causes a compatibility problem, those tools still have an independent path. If you skip the extra sign-in for now, the local Codex path keeps working normally.
+
+**Your local Codex is still required: Browser and Call Codex currently use it.** The two paths stay independent. If one fails, Codexless reports that failure instead of silently switching to the other. The pinned runtime uses its own isolated login; Codexless does not copy credentials from your existing Codex setup.
+
+---
+
+### 3. Reuse what Codex already knows
 
 Project rules, Skills, directory conventions — when Codexless can safely reuse them, it does.
 
@@ -55,7 +65,7 @@ That does **not** mean every Codex update instantly becomes a ChatGPT capability
 
 ---
 
-### 3. Start with ChatGPT. Bring in Codex when needed
+### 4. Start with ChatGPT. Bring in Codex when needed
 
 **ChatGPT can be your default starting point.** Give it the task. If the current tools are enough, it keeps going. If the work really needs Codex, it can escalate from the same Chat. Prefer to open Codex directly? That's fine too — Codexless does not lock you into one workflow.
 
@@ -76,7 +86,7 @@ If the current Chat cannot render the Task Card, Codexless falls back to a plain
 
 ---
 
-### 4. ChatGPT can work inside Chrome too
+### 5. ChatGPT can work inside Chrome too
 
 **It can do more than look at a page — it can carry out a bounded set of browser actions as well.**
 
@@ -112,20 +122,19 @@ For local file upload, the extension also needs **Allow access to file URLs** en
 
 - **Platforms:** Windows + **Apple Silicon macOS (`arm64`)** Technical Preview. Intel Mac is not supported yet.
 - **Prerequisites:** **Node.js 22+** and one working local **Codex** installation. Codex Desktop is optional; a working CLI/runtime is enough.
-- **No second Codex install:** Codexless discovers and reuses the Codex runtime already on your machine. If it cannot find a currently accepted runtime, it fails visibly instead of silently installing another copy.
+- **Recommended dual runtime:** A working local Codex is still required. Recommended setup also prepares Codexless's pinned official Codex runtime as an independent tool path; it does not install or replace your local Codex.
 - **Browser:** Chrome and the ChatGPT browser extension must be installed and connected on this machine. Browser work uses the current Chrome profile and its site login state.
 - **Upload:** local file upload additionally requires the extension's **Allow access to file URLs** setting.
 - **Personal ChatGPT plans tested:** Plus and Pro have both passed real-machine product-path testing. That is test evidence, not a promise about future plan policy.
 - **How local access works:** ChatGPT does not connect directly to `localhost`. A typical path is **local Codexless → authenticated Tunnel / remote MCP endpoint → ChatGPT App / Developer Mode**.
 - **No tunnel lock-in:** OpenAI Secure MCP Tunnel is one supported path, not the only possible transport.
-- **Package size:** the current Technical Preview package is under **0.21 MB compressed / 0.9 MB unpacked**, before normal dependencies.
 - **Independent project:** Codexless is not an OpenAI product and does not imply OpenAI endorsement.
 
 ---
 
 ## Install and update
 
-**Make sure you already have Node.js 22+ and a working Codex installation. The installer checks those prerequisites, but it does not install Node/npm or Codex for you.**
+**Make sure you already have Node.js 22+ and a working local Codex installation. The installer checks those prerequisites; it does not install Node/npm, and it does not install or replace that local Codex for you. Recommended setup also prepares Codexless's pinned official Codex runtime.**
 
 If you would rather not inspect the environment yourself, give this repository to your AI assistant and ask it to check your platform, Node version, Codex installation, and install path first.
 
@@ -213,7 +222,7 @@ Uninstall:
 
 ### What does the installer do?
 
-On both platforms, the installer checks Node.js and the local Codex runtime, installs dependencies in a staging area, runs doctor checks, and activates the final install only after those checks pass.
+On both platforms, the installer checks Node.js and the local Codex runtime, installs dependencies in a staging area, and, for Recommended setup, prepares the pinned official Codex runtime. It runs doctor checks and activates the final install only after those checks pass.
 
 It does not install Chrome or the browser extension, configure a Tunnel, or silently widen Codex trust. Browser upload permissions also remain an explicit user-side setting.
 

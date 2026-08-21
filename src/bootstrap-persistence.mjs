@@ -13,6 +13,7 @@ export const BOOTSTRAP_GENERATION_FILES = Object.freeze([
   "src/bootstrap-archive.mjs",
   "src/bootstrap-persistence.mjs",
   "src/release-discovery.mjs",
+  "src/platform-support.mjs",
   "src/release-identity.mjs",
   "src/lifecycle-contract.mjs",
 ]);

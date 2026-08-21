@@ -47,13 +47,15 @@ function unavailable(reason, details = {}) {
 }
 
 export function defaultBrowserRuntimeCwd({ env = process.env } = {}) {
-  const override = typeof env?.CODEXLESS_BROWSER_RUNTIME_CWD === "string"
-    ? env.CODEXLESS_BROWSER_RUNTIME_CWD.trim()
-    : "";
+  const override = typeof env?.CODEX_TOOLBOX_BROWSER_RUNTIME_CWD === "string" && env.CODEX_TOOLBOX_BROWSER_RUNTIME_CWD.trim()
+    ? env.CODEX_TOOLBOX_BROWSER_RUNTIME_CWD.trim()
+    : typeof env?.CODEXLESS_BROWSER_RUNTIME_CWD === "string"
+      ? env.CODEXLESS_BROWSER_RUNTIME_CWD.trim()
+      : "";
   return path.resolve(override || os.homedir());
 }
 
-export async function resolveBrowserRuntimeCompatibility({ codexBin, chromeSkillPath, env = process.env, platform = process.platform } = {}) {
+export async function resolveBrowserRuntimeCompatibility({ codexBin, chromeSkillPath, env = process.env } = {}) {
   if (typeof codexBin !== "string" || !codexBin.trim()) {
     throw new Error("resolveBrowserRuntimeCompatibility requires codexBin");
   }
@@ -137,10 +139,7 @@ export async function resolveBrowserRuntimeCompatibility({ codexBin, chromeSkill
 
   const expectedBrowserClientPath = path.join(chromeVersionRoot, "scripts", "browser-client.mjs");
   const expectedBrowserServicePath = path.join(browserVersionRoot, "scripts", "browser-service.mjs");
-  const hasBrowserClient = await isRegularFile(expectedBrowserClientPath);
-  const hasBrowserService = await isRegularFile(expectedBrowserServicePath);
-  const allowStockBrowserService = platform === "darwin" && hasBrowserClient && !hasBrowserService;
-  if (!hasBrowserClient || (!hasBrowserService && !allowStockBrowserService)) {
+  if (!await isRegularFile(expectedBrowserClientPath) || !await isRegularFile(expectedBrowserServicePath)) {
     return unavailable("current_browser_plugin_pair_not_found", {
       build,
       chromeSkillPath: skillPath,
@@ -149,10 +148,12 @@ export async function resolveBrowserRuntimeCompatibility({ codexBin, chromeSkill
   }
 
   let browserClientPath;
-  let browserServicePath = null;
+  let browserServicePath;
   try {
-    browserClientPath = await realpath(expectedBrowserClientPath);
-    if (hasBrowserService) browserServicePath = await realpath(expectedBrowserServicePath);
+    [browserClientPath, browserServicePath] = await Promise.all([
+      realpath(expectedBrowserClientPath),
+      realpath(expectedBrowserServicePath),
+    ]);
   } catch {
     return unavailable("current_browser_plugin_pair_not_found", {
       build,
@@ -161,10 +162,7 @@ export async function resolveBrowserRuntimeCompatibility({ codexBin, chromeSkill
     });
   }
 
-  if (
-    !isPathWithin(chromeVersionRoot, browserClientPath) ||
-    (browserServicePath !== null && !isPathWithin(browserVersionRoot, browserServicePath))
-  ) {
+  if (!isPathWithin(chromeVersionRoot, browserClientPath) || !isPathWithin(browserVersionRoot, browserServicePath)) {
     return unavailable("current_browser_plugin_path_escape", {
       build,
       chromeSkillPath: skillPath,
@@ -175,18 +173,11 @@ export async function resolveBrowserRuntimeCompatibility({ codexBin, chromeSkill
   const browserClientSha256 = createHash("sha256")
     .update(await readFile(browserClientPath))
     .digest("hex");
+  const trustedServices = JSON.stringify({
+    browser: pathForService(browserServicePath),
+    sky: "@oai/sky/service",
+  });
   const resolvedCodexBin = path.resolve(codexBin);
-  const overrides = [
-    `mcp_servers.node_repl.env.BROWSER_USE_CODEX_APP_VERSION=${tomlString(build)}`,
-    ...(browserServicePath === null ? [] : [
-      `mcp_servers.node_repl.env.NODE_REPL_TRUSTED_SERVICES=${tomlString(JSON.stringify({
-        browser: pathForService(browserServicePath),
-        sky: "@oai/sky/service",
-      }))}`,
-    ]),
-    `mcp_servers.node_repl.env.CODEX_CLI_PATH=${tomlString(resolvedCodexBin)}`,
-    `shell_environment_policy.set.NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S=${tomlString(browserClientSha256)}`,
-  ];
 
   return {
     status: "ok",
@@ -199,7 +190,11 @@ export async function resolveBrowserRuntimeCompatibility({ codexBin, chromeSkill
     browserClientSha256,
     chromeManifestPath: chromeManifest.path,
     browserManifestPath: browserManifest.path,
-    serviceSource: browserServicePath === null ? "stock-node-repl" : "plugin-pair",
-    overrides,
+    overrides: [
+      `mcp_servers.node_repl.env.BROWSER_USE_CODEX_APP_VERSION=${tomlString(build)}`,
+      `mcp_servers.node_repl.env.NODE_REPL_TRUSTED_SERVICES=${tomlString(trustedServices)}`,
+      `mcp_servers.node_repl.env.CODEX_CLI_PATH=${tomlString(resolvedCodexBin)}`,
+      `shell_environment_policy.set.NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S=${tomlString(browserClientSha256)}`,
+    ],
   };
 }

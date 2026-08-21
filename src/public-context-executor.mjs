@@ -154,7 +154,7 @@ export class CodexPublicContextExecutor {
   }
 
   async #readExplicitSkills(effectiveCwd) {
-    const result = await this.#request("skills/list", { cwds: [effectiveCwd], forceReload: false });
+    const result = await this.#request("skills/list", { cwds: [effectiveCwd], forceReload: true });
     return (result?.data ?? []).flatMap((row) => row?.skills ?? []);
   }
 

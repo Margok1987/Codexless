@@ -57,7 +57,7 @@ assert.equal(selected?.parsed.raw, "0.2.0-preview.2", "draft/stable/non-preview 
 
 assert.equal(releaseAssetContract(targetVersion, "win32", "x64").artifactName, `codexless-${targetVersion}-windows-x64.zip`);
 assert.equal(releaseAssetContract(targetVersion, "darwin", "arm64").artifactName, `codexless-${targetVersion}-macos-arm64.tar.gz`);
-assert.throws(() => releaseAssetContract(targetVersion, "win32", "arm64"), /unsupported release platform/);
+assert.throws(() => releaseAssetContract(targetVersion, "win32", "arm64"), { name: "ReleaseDiscoveryError", code: "UNSUPPORTED_PLATFORM" });
 assert.equal(parseGithubAssetDigest(`sha256:${artifactSha}`), artifactSha);
 assert.throws(() => parseGithubAssetDigest(`md5:${artifactSha}`), /unsupported or malformed/);
 const uploadedAsset = asset(91, "state-test.zip", 1, `sha256:${artifactSha}`, "http://127.0.0.1/state-test.zip");

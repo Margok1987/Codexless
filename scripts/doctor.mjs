@@ -8,12 +8,15 @@ import { resolveBrowserRuntimeCompatibility } from "../src/browser-runtime-compa
 import { CodexPublicBrowserWorkbenchAdapter } from "../src/public-browser-workbench-adapter.mjs";
 import { CodexAuthorityExecutor } from "../src/codex-authority-executor.mjs";
 import { probeCodexExecutable, redactHomePath, resolveCodexExecutable } from "../src/codex-bin.mjs";
+import { resolveManagedRuntime } from "../src/codex-runtime-provider.mjs";
+import { probeManagedRuntimeReadiness } from "../src/managed-runtime-readiness.mjs";
 import { buildDoctorHealth, legacyNodeReplView, normalizeBrowserReaderHealth } from "../src/doctor-health.mjs";
 import { readJsonFile } from "../src/json-file.mjs";
 import { CodexPublicContextExecutor } from "../src/public-context-executor.mjs";
 import { createRecentCallDiagnostics, recentCallOptionsFromEnv } from "../src/recent-call-diagnostics.mjs";
 import { STOCK_RUNTIME_KIND } from "../src/stock-prompt-input-skill-routing.mjs";
 import { opportunisticCodexlessUpdateCheck } from "../src/public-update-check.mjs";
+import { effectiveRuntimeRouting } from "../src/runtime-routing-policy.mjs";
 import { PUBLIC_SERVER_VERSION, PUBLIC_SURFACE_VERSION, PUBLIC_TOOL_NAMES } from "../src/surface-contracts.mjs";
 
 const require = createRequire(import.meta.url);
@@ -46,7 +49,7 @@ record(
 );
 const nodeMajor = Number.parseInt(process.versions.node.split(".")[0], 10);
 record("node", Number.isInteger(nodeMajor) && nodeMajor >= 22, `Node ${process.version}`, nodeMajor >= 22 ? null : "Node.js 22+ is required");
-record("public-surface", PUBLIC_TOOL_NAMES.length === 39, `${PUBLIC_SURFACE_VERSION}; ${PUBLIC_TOOL_NAMES.length} tools`);
+record("public-surface", PUBLIC_TOOL_NAMES.length === 40, `${PUBLIC_SURFACE_VERSION}; ${PUBLIC_TOOL_NAMES.length} tools`);
 
 for (const spec of ["@modelcontextprotocol/node", "@modelcontextprotocol/server", "zod"]) {
   try {
@@ -56,6 +59,53 @@ for (const spec of ["@modelcontextprotocol/node", "@modelcontextprotocol/server"
   } catch (error) {
     record(`dependency:${spec}`, false, "not resolvable", error instanceof Error ? error.message : String(error));
   }
+}
+
+let runtimeRouting = null;
+let managedReadiness = { status: "unavailable", reason: "runtime_routing_not_checked" };
+const managedLoginCommand = `node "${path.join(projectRoot, "scripts", "managed-codex-login.mjs")}"`;
+try {
+  runtimeRouting = await effectiveRuntimeRouting({ root: projectRoot });
+  record(
+    "runtime-routing-policy",
+    runtimeRouting.noSilentFallback === true,
+    `${runtimeRouting.installMode}/${runtimeRouting.activation}; modelFree=${runtimeRouting.routes.stableModelFree}; browser=${runtimeRouting.routes.browser}; callCodex=${runtimeRouting.routes.formalAgent}`,
+    runtimeRouting.noSilentFallback === true ? null : "Repair/reinstall Codexless; runtime routing must never use silent fallback."
+  );
+  if (runtimeRouting.installMode === "recommended" && runtimeRouting.activation === "existing_only_pending_managed") {
+    managedReadiness = { status: "pending", reason: "official_chatgpt_login_required", nextActionCommand: managedLoginCommand };
+    record(
+      "managed-runtime-readiness",
+      false,
+      "Managed dual activation is pending official ChatGPT login.",
+      `Run: ${managedLoginCommand}`
+    );
+  } else if (runtimeRouting.activation === "dual_ready") {
+    try {
+      const managedRuntime = await resolveManagedRuntime();
+      const managedProbe = await probeManagedRuntimeReadiness({ runtime: managedRuntime, cwd: runtimeCwd });
+      const managedOk = managedProbe.status === "ready";
+      managedReadiness = managedOk ? managedProbe : { ...managedProbe, status: "degraded", probeStatus: managedProbe.status };
+      record(
+        "managed-runtime-readiness",
+        managedOk,
+        managedOk ? `Managed ${managedRuntime.packageVersion}/${managedRuntime.platformPackageVersion} readiness PASS` : `Managed dual lane is degraded: ${managedReadiness.reason ?? "readiness unavailable"}`,
+        managedOk ? null : "Dual policy remains active; run the Codexless managed-login/readiness helper or repair/reinstall Codexless. Do not fall back to Existing for Managed-routed calls."
+      );
+    } catch (error) {
+      managedReadiness = { status: "degraded", reason: "managed_runtime_probe_failed", error: sanitizeText(error instanceof Error ? error.message : String(error)) };
+      record(
+        "managed-runtime-readiness",
+        false,
+        "Managed dual lane could not be verified",
+        "Dual policy remains active; run the Codexless managed-login/readiness helper or repair/reinstall Codexless. Do not fall back to Existing for Managed-routed calls."
+      );
+    }
+  } else {
+    managedReadiness = { status: "not_applicable", reason: "advanced_existing_only" };
+  }
+} catch (error) {
+  record("runtime-routing-policy", false, "Runtime routing state could not be read", error instanceof Error ? error.message : String(error));
 }
 
 try {
@@ -200,6 +250,8 @@ notes.push("Browser Reader is conditional; unavailable Browser/Node REPL prerequ
 notes.push("Permission fields have different meanings: permissionCeiling is the locally authorized maximum for an operation, while permissionProfile is the profile actually used. Read-only operations downscope; explicit write operations may inherit the local Codex ceiling. Remote callers cannot select a stronger profile.");
 notes.push("codex.project_context reports a fresh Codex bootstrap projection for its cwd; per-operation authority is resolved separately. Doctor --cwd uses the same Codexless authority resolver as project execution rather than treating the bootstrap projection as a global permission result.");
 notes.push("Tunnel connectivity is intentionally not changed or provisioned by doctor. Verify the release-candidate tunnel separately after local install/doctor passes.");
+notes.push(`Recommended provisioning does not activate dual routing. Before first Managed readiness PASS, official Managed ChatGPT login is required. Run: ${managedLoginCommand}`);
+notes.push("After dual_ready, a Managed readiness failure is degraded/fail-visible and never downgrades or silently falls back to Existing.");
 notes.push("Doctor does not start a Codex model turn.");
 notes.push("Recent-call diagnostics are bounded evidence: no matching receipt means only that no server-arrival record was found in the retained local window; it does not prove the Host did not send the call.");
 
@@ -247,6 +299,15 @@ const result = {
     appServer,
   },
   project: projectResult,
+  runtimeRouting: runtimeRouting ? {
+    installMode: runtimeRouting.installMode,
+    activation: runtimeRouting.activation,
+    managedReady: runtimeRouting.managedReady,
+    preferenceSource: runtimeRouting.preferenceSource,
+    routes: runtimeRouting.routes,
+    noSilentFallback: runtimeRouting.noSilentFallback,
+    managedReadiness,
+  } : { status: "unavailable", managedReadiness },
   capabilities: {
     browserReader: browser,
     nodeRepl,
@@ -339,7 +400,9 @@ function dedupeWarnings(rows) {
 function printHuman(result) {
   const mark = (ok) => ok ? "PASS" : "FAIL";
   process.stdout.write(`Codexless doctor: ${result.status.toUpperCase()}\n`);
-  process.stdout.write(`Version ${result.codexless.packageVersion} | ${result.codexless.surfaceVersion} | ${result.codexless.publicToolCount} public tools\n\n`);
+  process.stdout.write(`Version ${result.codexless.packageVersion} | ${result.codexless.surfaceVersion} | ${result.codexless.publicToolCount} public tools\n`);
+  if (result.runtimeRouting?.activation) process.stdout.write(`Runtime ${result.runtimeRouting.installMode}/${result.runtimeRouting.activation} | modelFree=${result.runtimeRouting.routes?.stableModelFree ?? "unknown"} | Browser/Call Codex=${result.runtimeRouting.routes?.browser ?? "unknown"}/${result.runtimeRouting.routes?.formalAgent ?? "unknown"}\n`);
+  process.stdout.write("\n");
   for (const check of result.checks) {
     process.stdout.write(`[${mark(check.ok)}] ${check.name}: ${check.detail}\n`);
     if (!check.ok && check.action) process.stdout.write(`       -> ${check.action}\n`);

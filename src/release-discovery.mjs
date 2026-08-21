@@ -8,6 +8,7 @@ import {
   requiresHostRefreshForIdentity,
 } from "./lifecycle-contract.mjs";
 import { validateReleaseManifest } from "./release-identity.mjs";
+import { codexlessPlatformSupport } from "./platform-support.mjs";
 
 export const CODEXLESS_GITHUB_REPOSITORY = Object.freeze({
   owner: "liyana31811",
@@ -43,6 +44,13 @@ export class ReleaseDiscoveryError extends Error {
 
 export function releaseAssetContract(version, platform, arch) {
   const normalizedVersion = requireSemver(version).raw;
+  const support = codexlessPlatformSupport({ platform, arch });
+  if (support.status !== "supported") {
+    throw new ReleaseDiscoveryError(support.reason, {
+      code: "UNSUPPORTED_PLATFORM",
+      stage: "asset-selection",
+    });
+  }
   if (platform === "win32" && arch === "x64") {
     return {
       artifactName: `codexless-${normalizedVersion}-windows-x64.zip`,
@@ -61,8 +69,8 @@ export function releaseAssetContract(version, platform, arch) {
       arch: "arm64",
     };
   }
-  throw new ReleaseDiscoveryError(`unsupported release platform: ${platform}/${arch}`, {
-    code: "UNSUPPORTED_PLATFORM",
+  throw new ReleaseDiscoveryError(`supported platform has no release asset contract: ${platform}/${arch}`, {
+    code: "RELEASE_ASSET_CONTRACT_MISSING",
     stage: "asset-selection",
   });
 }

@@ -47,10 +47,19 @@ export class CodexAppServerClient {
     serverRequestHandler = null,
     stderrHandler = null,
   }) {
-    if (!launch && !bin) throw new Error("CodexAppServerClient requires either a codex binary path or a launch factory");
-    if (launch && typeof launch !== "function") throw new Error("CodexAppServerClient launch must be a function returning a spawn spec");
-    if (serverRequestHandler !== null && typeof serverRequestHandler !== "function") throw new Error("serverRequestHandler must be a function when provided");
-    if (stderrHandler !== null && typeof stderrHandler !== "function") throw new Error("stderrHandler must be a function when provided");
+    if (!launch && !bin) {
+      throw new Error("CodexAppServerClient requires either a codex binary path or a launch factory");
+    }
+    if (launch && typeof launch !== "function") {
+      throw new Error("CodexAppServerClient launch must be a function returning a spawn spec");
+    }
+
+    if (serverRequestHandler !== null && typeof serverRequestHandler !== "function") {
+      throw new Error("serverRequestHandler must be a function when provided");
+    }
+    if (stderrHandler !== null && typeof stderrHandler !== "function") {
+      throw new Error("stderrHandler must be a function when provided");
+    }
 
     this.#cwd = cwd;
     this.#defaultRequestTimeoutMs = requestTimeoutMs;
@@ -63,22 +72,36 @@ export class CodexAppServerClient {
       options: { cwd: this.#cwd },
     }));
     this.clientInfo = {
-      name: clientInfo.name ?? "codexless",
+      name: clientInfo.name ?? "codex_toolbox_bridge",
       title: clientInfo.title ?? "Codexless",
-      version: clientInfo.version ?? "0.1.0",
+      version: clientInfo.version ?? "0.0.1",
     };
   }
 
-  get notificationMethods() { return [...this.#notificationMethods]; }
-  get serverRequestMethods() { return [...this.#serverRequestMethods]; }
-  get pendingServerRequestIds() { return [...this.#pendingServerRequests.values()].map((entry) => entry.id); }
-  get initializedResult() { return this.#initializedResult; }
-  get running() { return Boolean(this.#child); }
+  get notificationMethods() {
+    return [...this.#notificationMethods];
+  }
+
+  get serverRequestMethods() {
+    return [...this.#serverRequestMethods];
+  }
+
+  get pendingServerRequestIds() {
+    return [...this.#pendingServerRequests.values()].map((entry) => entry.id);
+  }
+
+  get initializedResult() {
+    return this.#initializedResult;
+  }
 
   onNotification(handler) {
     if (typeof handler !== "function") throw new Error("notification handler must be a function");
     this.#notificationHandlers.add(handler);
     return () => this.#notificationHandlers.delete(handler);
+  }
+
+  get running() {
+    return Boolean(this.#child);
   }
 
   async start() {
@@ -103,8 +126,11 @@ export class CodexAppServerClient {
     child.stdout.on("data", (chunk) => this.#onStdout(chunk));
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk) => {
-      try { this.#stderrHandler(chunk); }
-      catch (error) { process.stderr.write(`[codex-app-server] stderr handler failure: ${error instanceof Error ? error.message : String(error)}\n`); }
+      try {
+        this.#stderrHandler(chunk);
+      } catch (error) {
+        process.stderr.write(`[codex-app-server] stderr handler failure: ${error instanceof Error ? error.message : String(error)}\n`);
+      }
     });
     child.on("error", (error) => this.#failAll(error));
     child.on("exit", (code, signal) => {
@@ -149,12 +175,16 @@ export class CodexAppServerClient {
                 await this.close();
                 waiter.reject(timeoutError);
               } catch (cleanupError) {
-                waiter.reject(new AggregateError([timeoutError, cleanupError], `${timeoutError.message}; cleanup also failed`));
+                waiter.reject(new AggregateError(
+                  [timeoutError, cleanupError],
+                  `${timeoutError.message}; cleanup also failed`
+                ));
               }
             })();
           }, timeoutMs)
         : null;
       timer?.unref?.();
+
       this.#pending.set(key, { method, resolve, reject, timer });
       this.#send({ id, method, params });
     });
@@ -165,7 +195,9 @@ export class CodexAppServerClient {
     this.#send({ method, params });
   }
 
-  exec(params, options) { return this.request("command/exec", params, options); }
+  exec(params, options) {
+    return this.request("command/exec", params, options);
+  }
 
   async close() {
     const child = this.#child;
@@ -173,30 +205,39 @@ export class CodexAppServerClient {
     let cleanupError = null;
     this.#closing = true;
 
-    if (child && this.#pendingServerRequests.size) this.#closePendingServerRequests();
+    if (child && this.#pendingServerRequests.size) {
+      this.#closePendingServerRequests();
+    }
     this.#child = null;
     this.#cleanup = null;
 
     if (child) {
-      try { child.stdin.end(); } catch {}
+      try {
+        child.stdin.end();
+      } catch {}
       await Promise.race([
         new Promise((resolve) => child.once("exit", resolve)),
         new Promise((resolve) => setTimeout(resolve, 1_000)),
       ]);
       if (child.exitCode === null && child.signalCode === null) {
-        try { child.kill(); } catch {}
+        try {
+          child.kill();
+        } catch {}
       }
     }
 
     if (cleanup) {
-      try { await cleanup(); }
-      catch (error) {
+      try {
+        await cleanup();
+      } catch (error) {
         cleanupError = error;
         process.stderr.write(`[codex-app-server] cleanup failure: ${error instanceof Error ? error.message : String(error)}\n`);
       }
     }
 
-    if (this.#pending.size) this.#failAll(new Error("codex app-server closed before pending requests completed"));
+    if (this.#pending.size) {
+      this.#failAll(new Error("codex app-server closed before pending requests completed"));
+    }
     this.#closing = false;
     if (cleanupError) throw cleanupError;
   }
@@ -216,8 +257,9 @@ export class CodexAppServerClient {
       if (!line) continue;
 
       let message;
-      try { message = JSON.parse(line); }
-      catch (error) {
+      try {
+        message = JSON.parse(line);
+      } catch (error) {
         this.#failAll(new Error(`Invalid Codex App Server JSON line: ${line}\n${error.message}`));
         continue;
       }
@@ -235,34 +277,59 @@ export class CodexAppServerClient {
       if (key !== null && typeof message.method === "string") {
         this.#serverRequestMethods.add(message.method);
         if (!this.#serverRequestHandler) {
-          this.#send({ id: message.id, error: { code: -32601, message: `Server-initiated request not supported by Codexless: ${message.method}` } });
+          this.#send({
+            id: message.id,
+            error: {
+              code: -32601,
+              message: `Server-initiated request not supported by Codexless: ${message.method}`,
+            },
+          });
           continue;
         }
+
         if (this.#pendingServerRequests.has(key)) {
-          this.#send({ id: message.id, error: { code: -32600, message: `Duplicate server request id: ${String(message.id)}` } });
+          this.#send({
+            id: message.id,
+            error: { code: -32600, message: `Duplicate server request id: ${String(message.id)}` },
+          });
           continue;
         }
+
         const handle = this.#createServerRequestHandle(message);
         try {
           const handlerResult = this.#serverRequestHandler(handle);
           Promise.resolve(handlerResult).catch((error) => {
             if (!handle.settled) {
-              try { handle.reject({ code: -32603, message: `serverRequestHandler failed: ${error instanceof Error ? error.message : String(error)}` }); }
-              catch {}
+              try {
+                handle.reject({
+                  code: -32603,
+                  message: `serverRequestHandler failed: ${error instanceof Error ? error.message : String(error)}`,
+                });
+              } catch {}
             }
           });
         } catch (error) {
-          if (!handle.settled) handle.reject({ code: -32603, message: `serverRequestHandler failed: ${error instanceof Error ? error.message : String(error)}` });
+          if (!handle.settled) {
+            handle.reject({
+              code: -32603,
+              message: `serverRequestHandler failed: ${error instanceof Error ? error.message : String(error)}`,
+            });
+          }
         }
         continue;
       }
 
       if (typeof message.method === "string") {
         this.#notificationMethods.add(message.method);
-        if (message.method === "serverRequest/resolved") this.#settleServerRequestFromServer(message.params);
+        if (message.method === "serverRequest/resolved") {
+          this.#settleServerRequestFromServer(message.params);
+        }
         for (const handler of this.#notificationHandlers) {
-          try { handler(message); }
-          catch (error) { process.stderr.write(`[codex-app-server] notification handler failure: ${error instanceof Error ? error.message : String(error)}\n`); }
+          try {
+            handler(message);
+          } catch (error) {
+            process.stderr.write(`[codex-app-server] notification handler failure: ${error instanceof Error ? error.message : String(error)}\n`);
+          }
         }
       }
     }
@@ -270,13 +337,24 @@ export class CodexAppServerClient {
 
   #createServerRequestHandle(message) {
     const key = String(message.id);
-    const entry = { id: message.id, method: message.method, params: message.params, settled: false, settlement: null, handle: null };
+    const entry = {
+      id: message.id,
+      method: message.method,
+      params: message.params,
+      settled: false,
+      settlement: null,
+      handle: null,
+    };
     const handle = {
       id: entry.id,
       method: entry.method,
       params: entry.params,
-      get settled() { return entry.settled; },
-      get settlement() { return entry.settlement; },
+      get settled() {
+        return entry.settled;
+      },
+      get settlement() {
+        return entry.settlement;
+      },
       resolve: (result) => this.#settleServerRequest(key, { kind: "resolve", result }),
       reject: (error) => this.#settleServerRequest(key, { kind: "reject", error }),
     };
@@ -289,8 +367,10 @@ export class CodexAppServerClient {
     const entry = this.#pendingServerRequests.get(key);
     if (!entry) throw new Error(`server request is unknown or already settled: ${key}`);
     if (!this.#child) throw new Error(`cannot settle server request after Codex App Server closed: ${key}`);
-    if (settlement.kind === "resolve") this.#send({ id: entry.id, result: settlement.result });
-    else {
+
+    if (settlement.kind === "resolve") {
+      this.#send({ id: entry.id, result: settlement.result });
+    } else {
       const error = settlement.error && typeof settlement.error === "object"
         ? settlement.error
         : { code: -32000, message: String(settlement.error ?? "server request rejected") };
@@ -316,8 +396,13 @@ export class CodexAppServerClient {
 
   #closePendingServerRequests() {
     for (const [key, entry] of this.#pendingServerRequests) {
-      const error = { code: -32000, message: `Codexless client closed before server request was resolved: ${entry.method}` };
-      try { this.#send({ id: entry.id, error }); } catch {}
+      const error = {
+        code: -32000,
+        message: `Codex Toolbox client closed before server request was resolved: ${entry.method}`,
+      };
+      try {
+        this.#send({ id: entry.id, error });
+      } catch {}
       entry.settled = true;
       entry.settlement = { kind: "reject", error };
       this.#pendingServerRequests.delete(key);
@@ -326,7 +411,10 @@ export class CodexAppServerClient {
 
   #abandonServerRequests(error) {
     for (const [key, entry] of this.#pendingServerRequests) {
-      const rpcError = { code: -32000, message: error instanceof Error ? error.message : String(error) };
+      const rpcError = {
+        code: -32000,
+        message: error instanceof Error ? error.message : String(error),
+      };
       entry.settled = true;
       entry.settlement = { kind: "reject", error: rpcError };
       this.#pendingServerRequests.delete(key);

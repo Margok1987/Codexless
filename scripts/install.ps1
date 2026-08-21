@@ -2,6 +2,8 @@
 param(
   [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "Codexless"),
   [switch]$Repair,
+  [switch]$ExistingOnly,
+  [switch]$Recommended,
   [switch]$Json
 )
 
@@ -31,6 +33,15 @@ $BootstrapPrepared = $null
 $MarkerWritten = $false
 $PreviousMarker = $null
 $TransactionCommitted = $false
+$SkillTransactionId = $null
+$SkillFinalizeWarning = $null
+$RuntimeModeRequested = if ($ExistingOnly) { "existing" } elseif ($Recommended) { "recommended" } else { $null }
+$RuntimeModeEffective = $null
+$RuntimePreferenceSnapshot = $null
+$RuntimePreferenceChanged = $false
+$ManagedProvisioning = $null
+$ManagedOnboardingRequired = $false
+$ManagedOnboardingCommand = $null
 
 function Invoke-Checked {
   param(
@@ -88,7 +99,7 @@ function Copy-ReleaseTree {
   param([Parameter(Mandatory=$true)][string]$From, [Parameter(Mandatory=$true)][string]$To)
   New-Item -ItemType Directory -Force -Path $To | Out-Null
   $entries = @(
-    "src", "config", "scripts", "bin",
+    "src", "config", "scripts", "skills", "bin",
     "package.json",
     "README.md", "README.zh-CN.md", "SECURITY.md", "EXPORT_SYNC.md",
     "THIRD_PARTY_NOTICES.md", "LICENSE"
@@ -173,8 +184,55 @@ function Restore-PreviousBackupStash {
   $script:PreviousBackupStashDir = $null
 }
 
+function Prepare-BrowserRepairSkillTransaction {
+  $script = Join-Path $SourceRoot "scripts\sync-codex-skills.mjs"
+  $source = Join-Path $SourceRoot "skills\codexless-browser-repair"
+  $prepared = Read-JsonCommand $node $script "prepare" "--target-lane" "existing" "--source-dir" $source
+  if (-not $prepared.ok) { throw ([string]$prepared.error) }
+  $script:SkillTransactionId = if ($prepared.transactionId) { [string]$prepared.transactionId } else { $null }
+  return $prepared
+}
+
+function Rollback-BrowserRepairSkillTransaction {
+  if (-not $SkillTransactionId) { return }
+  $rolledBack = Read-JsonCommand $node (Join-Path $SourceRoot "scripts\sync-codex-skills.mjs") "rollback" "--target-lane" "existing" "--transaction-id" ([string]$SkillTransactionId)
+  if (-not $rolledBack.ok) { throw ([string]$rolledBack.error) }
+  $script:SkillTransactionId = $null
+}
+
+function Finalize-BrowserRepairSkillTransaction {
+  if (-not $SkillTransactionId) { return }
+  $finalized = Read-JsonCommand $node (Join-Path $SourceRoot "scripts\sync-codex-skills.mjs") "finalize" "--target-lane" "existing" "--transaction-id" ([string]$SkillTransactionId)
+  if (-not $finalized.ok) { throw ([string]$finalized.error) }
+  $script:SkillTransactionId = $null
+}
+
+function Get-RuntimeInstallStatus {
+  $status = Read-JsonCommand $node (Join-Path $SourceRoot "scripts\runtime-install-state.mjs") "status" "--state-root" $StateRoot
+  if (-not $status.ok) { throw ([string]$status.error) }
+  return $status
+}
+
+function Set-RuntimeModePreference {
+  param([Parameter(Mandatory=$true)][string]$Mode)
+  $result = Read-JsonCommand $node (Join-Path $SourceRoot "scripts\runtime-install-state.mjs") "set-mode" "--mode" $Mode "--state-root" $StateRoot
+  if (-not $result.ok) { throw ([string]$result.error) }
+}
+
+function Restore-RuntimeModePreference {
+  if (-not $RuntimePreferenceChanged) { return }
+  if ($RuntimePreferenceSnapshot -and $RuntimePreferenceSnapshot.persisted) {
+    Set-RuntimeModePreference -Mode ([string]$RuntimePreferenceSnapshot.mode)
+  } else {
+    $cleared = Read-JsonCommand $node (Join-Path $SourceRoot "scripts\runtime-install-state.mjs") "clear-mode" "--state-root" $StateRoot
+    if (-not $cleared.ok) { throw ([string]$cleared.error) }
+  }
+  $script:RuntimePreferenceChanged = $false
+}
+
 try {
   if ($env:OS -ne "Windows_NT") { throw "Codexless Technical Preview installer currently supports Windows only." }
+  if ($ExistingOnly -and $Recommended) { throw "Choose at most one Advanced runtime mode: -ExistingOnly or -Recommended. Managed-only is not an installer option." }
 
   $ErrorStage = "prerequisite"
   $ErrorCode = "PREREQUISITE_FAILED"
@@ -198,6 +256,15 @@ try {
     $LifecycleAction = if ($HadExistingInstall) { "update-failed" } else { "install-failed" }
   }
 
+  $RuntimePreferenceSnapshot = (Get-RuntimeInstallStatus).preference
+  $RuntimeModeEffective = if ($RuntimeModeRequested) { $RuntimeModeRequested } elseif ($RuntimePreferenceSnapshot.persisted) { [string]$RuntimePreferenceSnapshot.mode } else { "recommended" }
+  if ($RuntimeModeRequested) {
+    $ErrorStage = "runtime-mode-preference"
+    $ErrorCode = "RUNTIME_MODE_PREFERENCE_FAILED"
+    Set-RuntimeModePreference -Mode $RuntimeModeRequested
+    $RuntimePreferenceChanged = $true
+  }
+
   $ErrorStage = "prerequisite"
   $ErrorCode = "PREREQUISITE_FAILED"
   $codexResolution = Read-JsonCommand $node (Join-Path $SourceRoot "scripts\resolve-codex.mjs")
@@ -216,6 +283,13 @@ try {
     $ErrorStage = "dependency-install"
     $ErrorCode = "DEPENDENCY_INSTALL_FAILED"
     Invoke-Checked $npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+    if ($RuntimeModeEffective -eq "recommended") {
+      $ErrorStage = "managed-provision"
+      $ErrorCode = "MANAGED_RUNTIME_PROVISION_FAILED"
+      $ManagedProvisioning = Read-JsonCommand $node (Join-Path $StageDir "scripts\runtime-install-state.mjs") "verify-managed" "--state-root" $StateRoot
+      if (-not $ManagedProvisioning.ok) { throw ([string]$ManagedProvisioning.error) }
+      $ManagedOnboardingRequired = -not [bool]$ManagedProvisioning.managedReady
+    }
     $ErrorStage = "staging-doctor"
     $ErrorCode = "STAGING_DOCTOR_FAILED"
     $stageDoctor = Run-DoctorJson -Root $StageDir -Node $node
@@ -273,6 +347,10 @@ try {
   $markerSnapshot = Read-JsonCommand $node (Join-Path $SourceRoot "scripts\lifecycle.mjs") "marker-read-optional" "--state-root" $StateRoot "--install-dir" $InstallDir
   if (-not $markerSnapshot.ok) { throw ([string]$markerSnapshot.error) }
   $PreviousMarker = $markerSnapshot.marker
+
+  $ErrorStage = "skill-prepare"
+  $ErrorCode = "SKILL_SYNC_PREPARE_FAILED"
+  $skillPrepared = Prepare-BrowserRepairSkillTransaction
 
   if ($HadExistingInstall) {
     $ErrorStage = "backup"
@@ -352,6 +430,17 @@ try {
     $BackupDir = $null
     $Installed = $false
     $TransactionCommitted = $true
+    $RuntimePreferenceChanged = $false
+
+    if ($SkillTransactionId) {
+      try {
+        $ErrorStage = "skill-finalize"
+        $ErrorCode = "SKILL_SYNC_FINALIZE_FAILED"
+        Finalize-BrowserRepairSkillTransaction
+      } catch {
+        $SkillFinalizeWarning = $_.Exception.Message
+      }
+    }
 
     if ($PreviousBackupStashDir) {
       $ErrorStage = "previous-stash-cleanup"
@@ -396,6 +485,20 @@ try {
           }
         }
       }
+      if ($RuntimePreferenceChanged) {
+        try { Restore-RuntimeModePreference } catch {
+          $ErrorStage = "runtime-mode-preference-rollback"
+          $ErrorCode = "RUNTIME_MODE_PREFERENCE_ROLLBACK_FAILED"
+          $transactionFailure = "Lifecycle rollback could not restore the previous runtime mode preference."
+        }
+      }
+      if ($SkillTransactionId) {
+        try { Rollback-BrowserRepairSkillTransaction } catch {
+          $ErrorStage = "skill-rollback"
+          $ErrorCode = "SKILL_SYNC_ROLLBACK_FAILED"
+          $transactionFailure = "Lifecycle rollback could not restore the previous Browser Repair Skill state."
+        }
+      }
     }
     throw $transactionFailure
   }
@@ -404,6 +507,20 @@ try {
   $ErrorCode = "INSTALLER_LOCK_RELEASE_FAILED"
   Release-ActivationLock
 
+  $ManagedOnboardingCommand = if ($ManagedOnboardingRequired) { 'node "' + (Join-Path $InstallDir "scripts\managed-codex-login.mjs") + '"' } else { $null }
+  $runtimeInstall = [ordered]@{
+    mode = $RuntimeModeEffective
+    requestedMode = $RuntimeModeRequested
+    recommendedDualInsurance = ($RuntimeModeEffective -eq "recommended")
+    managedProvisioned = ($null -ne $ManagedProvisioning)
+    managedActivation = if ($ManagedProvisioning) { [string]$ManagedProvisioning.activation } else { $null }
+    managedOnboardingRequired = $ManagedOnboardingRequired
+    managedOnboardingCommand = $ManagedOnboardingCommand
+    noSilentFallback = $true
+  }
+  $SuccessReceipt | Add-Member -NotePropertyName runtimeInstall -NotePropertyValue $runtimeInstall -Force
+  if ($SkillFinalizeWarning) { $SuccessReceipt | Add-Member -NotePropertyName skillFinalizeWarning -NotePropertyValue $SkillFinalizeWarning -Force }
+
   if ($Json) { $SuccessReceipt | ConvertTo-Json -Depth 8 }
   else {
     Write-Host "Codexless $($SuccessReceipt.action): $($SuccessReceipt.to.version)"
@@ -411,6 +528,15 @@ try {
     Write-Host "Doctor: $(Join-Path $InstallDir 'bin\codexless-doctor.cmd')"
     Write-Host "HTTP:   $(Join-Path $InstallDir 'bin\codexless-http.cmd')"
     if ($SuccessReceipt.rollback.backupRetained) { Write-Host "Previous build retained: $($SuccessReceipt.rollback.backupPath)" }
+    Write-Host "Runtime mode: $RuntimeModeEffective"
+    if ($ManagedProvisioning) { Write-Host "Managed runtime: provisioned $($ManagedProvisioning.managed.packageName)@$($ManagedProvisioning.managed.packageVersion) + $($ManagedProvisioning.managed.platformPackageName)@$($ManagedProvisioning.managed.platformPackageVersion); activation=$($ManagedProvisioning.activation)" }
+    else { Write-Host "Managed runtime: skipped by Advanced Existing-only mode." }
+    if ($ManagedOnboardingRequired) {
+      Write-Host ""
+      Write-Host "NEXT ACTION: Managed ChatGPT login is required before dual activation."
+      Write-Host "Run: $ManagedOnboardingCommand"
+    }
+    if ($SkillFinalizeWarning) { Write-Warning "Browser Repair Skill transaction cleanup remains pending: $SkillFinalizeWarning" }
     Write-Host "No PATH, service, Browser, or Tunnel settings were changed."
   }
 } catch {
@@ -444,6 +570,20 @@ try {
           $ErrorCode = "BOOTSTRAP_GENERATION_DISCARD_FAILED"
           $failureMessage = "Lifecycle rollback could not discard the prepared bootstrap generation."
         }
+      }
+    }
+    if ($RuntimePreferenceChanged) {
+      try { Restore-RuntimeModePreference } catch {
+        $ErrorStage = "runtime-mode-preference-rollback"
+        $ErrorCode = "RUNTIME_MODE_PREFERENCE_ROLLBACK_FAILED"
+        $failureMessage = "Lifecycle rollback could not restore the previous runtime mode preference."
+      }
+    }
+    if ($SkillTransactionId) {
+      try { Rollback-BrowserRepairSkillTransaction } catch {
+        $ErrorStage = "skill-rollback"
+        $ErrorCode = "SKILL_SYNC_ROLLBACK_FAILED"
+        $failureMessage = "Lifecycle rollback could not restore the previous Browser Repair Skill state."
       }
     }
   }

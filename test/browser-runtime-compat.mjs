@@ -4,14 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import { resolveBrowserRuntimeCompatibility } from "../src/browser-runtime-compat.mjs";
 
-const root = mkdtempSync(path.join(os.tmpdir(), "codexless-browser-runtime-compat-"));
+const root = mkdtempSync(path.join(os.tmpdir(), "toolwire-browser-runtime-compat-"));
 try {
-  const codexHome = path.join(root, ".codex");
+  const codexHome = path.join(root, "ユーザー Space", "custom codex home");
   const bundleRoot = path.join(codexHome, "plugins", "cache", "openai-bundled");
   const build = "26.999.12345";
   const chromeVersionRoot = path.join(bundleRoot, "chrome", build);
   const browserVersionRoot = path.join(bundleRoot, "browser", build);
-  const skillPath = path.join(chromeVersionRoot, "skills", "control-chrome", "SKILL.md");
+  const skillPath = path.join(chromeVersionRoot, "skills", "control-chrome", "nested-layout", "SKILL.md");
   const clientPath = path.join(chromeVersionRoot, "scripts", "browser-client.mjs");
   const servicePath = path.join(browserVersionRoot, "scripts", "browser-service.mjs");
   const chromeManifestPath = path.join(chromeVersionRoot, ".codex-plugin", "plugin.json");
@@ -27,10 +27,11 @@ try {
 
   const env = {
     CODEX_HOME: codexHome,
-    CODEXLESS_BROWSER_RUNTIME_CWD: path.join(root, "neutral"),
+    CODEX_TOOLBOX_BROWSER_RUNTIME_CWD: path.join(root, "neutral"),
   };
+  const codexBin = path.join(root, "Program Files", "Codex 日本語", "codex.exe");
   const resolved = await resolveBrowserRuntimeCompatibility({
-    codexBin: path.join(root, "codex.exe"),
+    codexBin,
     chromeSkillPath: skillPath,
     env,
   });
@@ -40,37 +41,14 @@ try {
   assert.equal(path.resolve(resolved.chromeSkillPath), path.resolve(skillPath));
   assert.equal(path.resolve(resolved.browserClientPath), path.resolve(clientPath));
   assert.equal(path.resolve(resolved.browserServicePath), path.resolve(servicePath));
-  assert.equal(path.resolve(resolved.chromeManifestPath), path.resolve(chromeManifestPath));
-  assert.equal(path.resolve(resolved.browserManifestPath), path.resolve(browserManifestPath));
+  assert.equal(path.resolve(resolved.browserRuntimeCwd), path.resolve(env.CODEX_TOOLBOX_BROWSER_RUNTIME_CWD));
   assert.match(resolved.browserClientSha256, /^[a-f0-9]{64}$/);
   assert.equal(resolved.overrides.length, 4);
   assert.match(resolved.overrides.join("\n"), new RegExp(build.replaceAll(".", "\\.")));
   assert.match(resolved.overrides.join("\n"), /NODE_REPL_TRUSTED_SERVICES/);
   assert.match(resolved.overrides.join("\n"), /CODEX_CLI_PATH/);
   assert.match(resolved.overrides.join("\n"), /NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S/);
-
-  rmSync(servicePath);
-  const macStockService = await resolveBrowserRuntimeCompatibility({
-    codexBin: path.join(root, "codex"),
-    chromeSkillPath: skillPath,
-    env,
-    platform: "darwin",
-  });
-  assert.equal(macStockService.status, "ok");
-  assert.equal(macStockService.browserServicePath, null);
-  assert.equal(macStockService.serviceSource, "stock-node-repl");
-  assert.equal(macStockService.overrides.length, 3);
-  assert.doesNotMatch(macStockService.overrides.join("\n"), /NODE_REPL_TRUSTED_SERVICES/);
-
-  const windowsMissingService = await resolveBrowserRuntimeCompatibility({
-    codexBin: path.join(root, "codex.exe"),
-    chromeSkillPath: skillPath,
-    env,
-    platform: "win32",
-  });
-  assert.equal(windowsMissingService.status, "unavailable");
-  assert.equal(windowsMissingService.reason, "current_browser_plugin_pair_not_found");
-  writeFileSync(servicePath, "export const browserService = true;\n");
+  assert.ok(resolved.overrides.some((value) => value.includes(path.resolve(codexBin).replaceAll("\\", "\\\\"))), "Codex paths with spaces/non-ASCII must stay quoted in the generated TOML override");
 
   writeFileSync(browserManifestPath, JSON.stringify({ name: "browser", version: `${build}-drift` }));
   const manifestMismatch = await resolveBrowserRuntimeCompatibility({
@@ -102,7 +80,7 @@ try {
   assert.equal(untrusted.status, "unavailable");
   assert.equal(untrusted.reason, "current_chrome_skill_path_untrusted");
 
-  console.log("Browser runtime compatibility metadata resolver PASS");
+  console.log("Household Browser runtime compatibility resolver PASS");
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

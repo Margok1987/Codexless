@@ -30,10 +30,18 @@ try {
   await mkdir(stateDir, { recursive: true });
   const recentState = path.join(stateDir, "recent-calls.json");
   const taskState = path.join(stateDir, "agent-task-cards.json");
+  const managedHome = path.join(stateDir, "managed-codex-home");
+  const managedAuthState = path.join(managedHome, "auth-sentinel.json");
+  const callProfileState = path.join(stateDir, "codex-call-profile.md");
   const recentBytes = JSON.stringify({ version: 1, receipts: [], sentinel: secret });
   const taskBytes = JSON.stringify({ version: 1, records: [], sentinel: secret });
+  const managedAuthBytes = JSON.stringify({ fixture: "managed-user-state", sentinel: secret });
+  const callProfileBytes = `fixture-profile-${secret}\n`;
+  await mkdir(managedHome, { recursive: true });
   await writeFile(recentState, recentBytes, "utf8");
   await writeFile(taskState, taskBytes, "utf8");
+  await writeFile(managedAuthState, managedAuthBytes, "utf8");
+  await writeFile(callProfileState, callProfileBytes, "utf8");
 
   const releaseA = await createFixtureRelease("release-a", "payload-A", "host-v1");
   const releaseB = await createFixtureRelease("release-b", "payload-B", "host-v1");
@@ -50,6 +58,13 @@ try {
   assert.equal(freshReceipt.action, "installed");
   assert.equal(freshReceipt.from, null);
   assert.equal(freshReceipt.rollback.backupRetained, false);
+  assert.equal(freshReceipt.runtimeInstall.mode, "recommended");
+  assert.equal(freshReceipt.runtimeInstall.recommendedDualInsurance, true);
+  assert.equal(freshReceipt.runtimeInstall.managedProvisioned, true);
+  assert.equal(freshReceipt.runtimeInstall.managedActivation, "existing_only_pending_managed");
+  assert.equal(freshReceipt.runtimeInstall.managedOnboardingRequired, true);
+  assert.match(freshReceipt.runtimeInstall.managedOnboardingCommand ?? "", /^node ".*managed-codex-login\.mjs"$/i);
+  assert.equal(freshReceipt.runtimeInstall.noSilentFallback, true);
   assert.equal(freshReceipt.requiresRuntimeRestart, false);
   assert.equal(freshReceipt.requiresHostRefresh, false);
   const markerAfterA = await readMarker(mainInstall);
@@ -58,6 +73,19 @@ try {
   assert.equal(markerAfterA.lastKnownVersion, freshReceipt.to.version);
   assertMarkerSafe(markerAfterA, mainInstall);
   await assertBootstrapPointsTo(defaultBootstrapRoot, freshReceipt.artifactBuildId, "fresh one-command install");
+
+  const advancedInstall = path.join(root, "advanced-existing-only", "Codexless");
+  const advancedExistingOnly = runInstaller(releaseA, advancedInstall, { existingOnly: true });
+  assert.equal(advancedExistingOnly.status, 0, advancedExistingOnly.stderr || advancedExistingOnly.stdout);
+  const advancedReceipt = parseReceipt(advancedExistingOnly.stdout);
+  validateLifecycleReceipt(advancedReceipt, { expectOk: true });
+  assert.equal(advancedReceipt.runtimeInstall.mode, "existing");
+  assert.equal(advancedReceipt.runtimeInstall.recommendedDualInsurance, false);
+  assert.equal(advancedReceipt.runtimeInstall.managedProvisioned, false);
+  assert.equal(advancedReceipt.runtimeInstall.managedActivation, null);
+  assert.equal(advancedReceipt.runtimeInstall.managedOnboardingRequired, false);
+  assert.equal(advancedReceipt.runtimeInstall.managedOnboardingCommand, null);
+  assert.equal(advancedReceipt.runtimeInstall.noSilentFallback, true);
 
   const updateSame = runInstaller(releaseB, mainInstall);
   assert.equal(updateSame.status, 0, updateSame.stderr || updateSame.stdout);
@@ -255,6 +283,8 @@ try {
 
   assert.equal(await readFile(recentState, "utf8"), recentBytes, "recent-call state must remain byte-for-byte untouched");
   assert.equal(await readFile(taskState, "utf8"), taskBytes, "agent task-card state must remain byte-for-byte untouched");
+  assert.equal(await readFile(managedAuthState, "utf8"), managedAuthBytes, "Managed CODEX_HOME/login state must remain byte-for-byte untouched");
+  assert.equal(await readFile(callProfileState, "utf8"), callProfileBytes, "Codex Call Profile must remain byte-for-byte untouched");
 
   process.stdout.write(`installer lifecycle Windows E2E PASS ${changedReceipt.artifactBuildId}\n`);
 } finally {
@@ -263,12 +293,13 @@ try {
 
 async function createFixtureRelease(name, marker, hostContractVersion, { incompatibleState = false } = {}) {
   const releaseRoot = path.join(root, name);
-  for (const directory of ["src", "config", "scripts", "bin"]) await mkdir(path.join(releaseRoot, directory), { recursive: true });
+  for (const directory of ["src", "config", "scripts", "skills/codexless-browser-repair", "bin"]) await mkdir(path.join(releaseRoot, directory), { recursive: true });
 
   for (const file of [
     "release-identity.mjs",
     "lifecycle-contract.mjs",
     "release-discovery.mjs",
+    "platform-support.mjs",
     "bootstrap-persistence.mjs",
     "bootstrap-archive.mjs",
     "bootstrap-updater.mjs",
@@ -287,6 +318,23 @@ async function createFixtureRelease(name, marker, hostContractVersion, { incompa
   ]) {
     await copyFile(path.join(projectRoot, "scripts", file), path.join(releaseRoot, "scripts", file));
   }
+
+  await writeFile(path.join(releaseRoot, "scripts", "runtime-install-state.mjs"), [
+    "import process from 'node:process';",
+    "const command = process.argv[2] || 'status';",
+    "let value;",
+    "if (command === 'status') value = {ok:true,preference:{mode:null,persisted:false,updatedAt:null},routing:{activation:'existing_only_pending_managed',managedReady:false,persisted:false,updatedAt:null}};",
+    "else if (command === 'verify-managed') value = {ok:true,action:'managed-runtime-provisioned',activationChanged:false,activation:'existing_only_pending_managed',managedReady:false,managed:{packageName:'@openai/codex',packageVersion:'0.147.0',platformPackageName:'@openai/codex-win32-x64',platformPackageVersion:'0.147.0-win32-x64',binarySha256:'f'.repeat(64),codexHome:'fixture-managed-home',source:'fixture'},officialLoginRequiredBeforeFirstDualActivation:true,noExistingCredentialCopy:true,noExistingCodexHomeCopy:true,noSilentFallback:true};",
+    "else value = {ok:true,action:command,mode:process.argv.includes('--mode') ? process.argv[process.argv.indexOf('--mode') + 1] : null};",
+    "process.stdout.write(JSON.stringify(value) + '\\n');",
+    "",
+  ].join("\n"), "utf8");
+  await writeFile(path.join(releaseRoot, "scripts", "sync-codex-skills.mjs"), [
+    "import process from 'node:process';",
+    "process.stdout.write(JSON.stringify({ok:true,status:'current',action:'no-op',targetLane:'existing',transactionId:null}) + '\\n');",
+    "",
+  ].join("\n"), "utf8");
+  await writeFile(path.join(releaseRoot, "skills", "codexless-browser-repair", "SKILL.md"), "---\nname: codexless-browser-repair\ndescription: fixture\n---\n", "utf8");
 
   await writeFile(path.join(releaseRoot, "scripts", "resolve-codex.mjs"), [
     "import process from 'node:process';",
@@ -364,7 +412,7 @@ function installerEnv({ doctorFail = "", doctorDelayMs = 0, bootstrapRoot = null
   return env;
 }
 
-function installerArgs(releaseRoot, installDir, { repair = false } = {}) {
+function installerArgs(releaseRoot, installDir, { repair = false, existingOnly = false, recommended = false } = {}) {
   const args = [
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",
@@ -373,6 +421,8 @@ function installerArgs(releaseRoot, installDir, { repair = false } = {}) {
     "-Json",
   ];
   if (repair) args.push("-Repair");
+  if (existingOnly) args.push("-ExistingOnly");
+  if (recommended) args.push("-Recommended");
   return args;
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "codexless",
-  "version": "0.1.1-preview.3",
+  "version": "0.1.1-preview.4",
   "private": true,
   "license": "Apache-2.0",
   "description": "Windows and Apple Silicon macOS Technical Preview: let ChatGPT use accepted Codex-backed local capabilities and escalate to Codex only when needed.",
@@ -32,16 +32,28 @@
     "release:verify": "node scripts/check-release.mjs verify",
     "bootstrap:update": "node scripts/bootstrap.mjs update",
     "bootstrap:materialize": "node scripts/materialize-bootstrap.mjs",
-    "test:release-identity": "node test/release-identity.mjs",
+    "test:release-identity": "node test/release-identity.mjs && node test/release-artifacts.mjs",
     "test:lifecycle": "node test/lifecycle-contract.mjs && node test/installer-lifecycle-windows.mjs",
     "test:release-discovery": "node test/release-discovery.mjs",
     "test:bootstrap": "node test/bootstrap-archive-policy.mjs && node test/bootstrap-persistence.mjs && node test/bootstrap-updater-windows.mjs",
     "update:release": "node scripts/bootstrap.mjs update",
-    "test:auto-update": "node test/public-auto-update-check.mjs"
+    "test:auto-update": "node test/public-auto-update-check.mjs",
+    "start:public-http": "node src/mcp-http-public.mjs",
+    "start:public-stdio": "node src/mcp-stdio-public.mjs",
+    "codexless:managed-login": "node scripts/managed-codex-login.mjs",
+    "compatibility:report": "node scripts/compatibility-report.mjs",
+    "skills:check": "node scripts/sync-codex-skills.mjs check",
+    "skills:sync": "node scripts/sync-codex-skills.mjs sync",
+    "test:compatibility": "node --test test/upstream-compatibility-fingerprint.mjs",
+    "test:skills": "node --test test/codex-skill-sync.mjs test/public-skill-refresh.mjs",
+    "release:preflight": "node scripts/release-preflight.mjs",
+    "release:artifacts": "node scripts/build-release-artifacts.mjs",
+    "release:artifacts:verify": "node scripts/verify-release-artifacts.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/node": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
+    "@openai/codex": "0.147.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
@@ -67,6 +79,7 @@
     "EXPORT_SYNC.md",
     "THIRD_PARTY_NOTICES.md",
     "bin/codexless-update.cmd",
-    "bin/codexless-update.sh"
+    "bin/codexless-update.sh",
+    "skills"
   ]
 }

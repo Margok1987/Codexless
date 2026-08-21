@@ -1,8 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import path from "node:path";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { CodexBrowserExecutor, canonicalizeContentEditableParagraphText, resolveBoundContentEditableParagraphText } from "../src/codex-browser-executor.mjs";
+import { pathToFileURL } from "node:url";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  CodexBrowserExecutor,
+  assertBrowserExistingTabReleaseAvailable,
+  canonicalizeContentEditableParagraphText,
+  cleanupBrowserClaim,
+  markBrowserDeliverable,
+  normalizeBrowserLifecycleShape,
+  releaseBrowserClaim,
+  resolveBoundContentEditableParagraphText,
+} from "../src/codex-browser-executor.mjs";
 import { registerBrowserPreviewTools } from "../src/browser-tools.mjs";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
@@ -147,9 +157,120 @@ test("Browser bound rich-editor resolver accepts exactly one visible nested cont
   );
 });
 
-function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeReplAvailable = true } = {}) {
+test("Browser API shape legacy explicit-finalize supports repeated existing-tab claim/read/release/reclaim", async () => {
+  const calls = [];
+  let claimed = false;
+  let claimCount = 0;
+  const tab = {
+    id: "legacy-tab",
+    async title() { return "Legacy tab"; },
+  };
+  const browser = {
+    tabs: {
+      async finalize(options) {
+        calls.push(options);
+        claimed = false;
+      },
+    },
+    user: {
+      async claimTab() {
+        if (claimed) throw new Error("Tab legacy-tab is already part of browser session synthetic-session");
+        claimed = true;
+        claimCount += 1;
+        return tab;
+      },
+    },
+  };
+  assert.deepEqual(normalizeBrowserLifecycleShape(browser, tab), {
+    shape: "legacy-explicit-finalize",
+    existingTabRelease: "explicit-finalize",
+    deliverable: "explicit-finalize",
+  });
+  assert.equal(assertBrowserExistingTabReleaseAvailable(browser).shape, "legacy-explicit-finalize");
+
+  const first = await browser.user.claimTab();
+  assert.equal(await first.title(), "Legacy tab");
+  assert.deepEqual(await cleanupBrowserClaim(browser, first), {
+    cleanupStatus: "released",
+    cleanupReason: "explicit-finalize",
+    lifecycleShape: "legacy-explicit-finalize",
+  });
+
+  const second = await browser.user.claimTab();
+  assert.equal(await second.title(), "Legacy tab");
+  assert.deepEqual(await releaseBrowserClaim(browser, second), {
+    cleanupStatus: "released",
+    cleanupReason: "explicit-finalize",
+    lifecycleShape: "legacy-explicit-finalize",
+  });
+  assert.equal(claimCount, 2);
+  assert.deepEqual(calls, [{ keep: [] }, { keep: [] }]);
+});
+
+test("Browser API shape finalize-absent turn-cleanup reports truthful unavailable receipt and cannot prove synthetic reclaim", async () => {
+  let claimed = false;
+  let handoffMarks = 0;
+  let deliverableMarks = 0;
+  const tab = {
+    id: "turn-cleanup-tab",
+    async markDeliverable() { deliverableMarks += 1; },
+    async markHandoff() { handoffMarks += 1; },
+  };
+  const browser = {
+    tabs: {},
+    user: {
+      async claimTab() {
+        if (claimed) throw new Error("Tab turn-cleanup-tab is already part of browser session synthetic-session");
+        claimed = true;
+        return tab;
+      },
+    },
+  };
+  assert.deepEqual(normalizeBrowserLifecycleShape(browser, tab), {
+    shape: "finalize-absent-turn-cleanup",
+    existingTabRelease: "unavailable",
+    deliverable: "markDeliverable",
+  });
+  const first = await browser.user.claimTab();
+  assert.deepEqual(await cleanupBrowserClaim(browser, first), {
+    cleanupStatus: "unavailable",
+    cleanupReason: "turn-cleanup-unproven",
+    lifecycleShape: "finalize-absent-turn-cleanup",
+  });
+  assert.equal(handoffMarks, 0, "markHandoff is not a release primitive and must not be used as one");
+  assert.equal(deliverableMarks, 0, "markDeliverable is not an existing-tab release primitive");
+  await assert.rejects(
+    () => browser.user.claimTab(),
+    /already part of browser session/,
+    "without a real turn-end or explicit finalize, synthetic reclaim remains unproven"
+  );
+  assert.throws(
+    () => assertBrowserExistingTabReleaseAvailable(browser),
+    /TOOLWIRE_BROWSER_EXISTING_TAB_RELEASE_UNAVAILABLE:finalize-absent-release-unproven/
+  );
+});
+
+test("Browser API shape finalize-absent fresh new-tab uses markDeliverable", async () => {
+  let marked = 0;
+  const browser = { tabs: {} };
+  const tab = {
+    async markDeliverable() {
+      marked += 1;
+    },
+    async markHandoff() {},
+  };
+  assert.equal(await markBrowserDeliverable(browser, tab), "finalize-absent-turn-cleanup");
+  assert.equal(marked, 1);
+});
+
+function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeReplAvailable = true, skillPath = fakeSkillPath, browserBackends = null } = {}) {
   const calls = [];
   const state = {
+    skillPath,
+    browserBackends: browserBackends ?? (chromeConnected
+      ? [{ name: "Chrome", family: "chrome", type: "extension" }]
+      : [{ name: "Edge", family: "edge", type: "extension" }]),
+    expectedBrowserClientUrl: null,
     tabs: [{
       providerTabId: '["browser-instance","123"]',
       title: "Inbox - Example Mail",
@@ -158,6 +279,15 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
     }],
     stale: false,
     openTabsErrorText: null,
+    claimTabErrorText: null,
+    simulateClaimLifecycle: false,
+    syntheticClaimHeld: false,
+    syntheticClaimAttempts: 0,
+    cleanupReceipt: {
+      cleanupStatus: "released",
+      cleanupReason: "explicit-finalize",
+      cleanupError: null,
+    },
     locatorCount: 1,
     locatorVisible: true,
     locatorEnabled: true,
@@ -177,6 +307,7 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
     navigateUncertain: false,
     navigatePostDispatchFailure: false,
     navigateTransportThrow: false,
+    navigateGenerationChangeAfterDispatch: false,
     closeUncertain: false,
     closeTransportThrow: false,
     closeDispatches: 0,
@@ -216,6 +347,8 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
     fillStrategy: "fill",
     fillTargetMeta: { tag: "input", contentEditable: false, customHost: null },
     bumpGenerationBeforeMutationDispatch: false,
+    bumpGenerationBeforeReadDispatch: false,
+    skillPathAfterReadRestart: null,
   };
   return {
     generation: 1,
@@ -223,7 +356,7 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
     state,
     async catalog({ kind }) {
       if (kind === "skills") {
-        return { skills: skillAvailable ? [{ name: "chrome:control-chrome", path: fakeSkillPath, enabled: true }] : [] };
+        return { skills: skillAvailable ? [{ name: "chrome:control-chrome", path: state.skillPath, enabled: true }] : [] };
       }
       if (kind === "mcp") {
         return {
@@ -242,17 +375,41 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
       assert.equal(Object.hasOwn(input.meta ?? {}, "session_id"), false, "turn metadata must not be flat");
       assert.match(input.arguments?.code ?? "", /setupBrowserRuntime/);
       assert.match(input.arguments?.code ?? "", /scripts\/browser-client\.mjs/);
+      if (state.expectedBrowserClientUrl) {
+        assert.ok(
+          (input.arguments?.code ?? "").includes(JSON.stringify(state.expectedBrowserClientUrl)),
+          "Browser bootstrap must import the startup-bound canonical browser client URL"
+        );
+      }
       assert.match(input.arguments?.code ?? "", /\n\{\n/, "Browser body must be isolated in a block scope for persistent node_repl sessions");
 
       const code = input.arguments?.code ?? "";
       const title = input.arguments?.title ?? "";
       if (input.expectedGeneration !== null && input.expectedGeneration !== undefined) {
-        assert.equal(input.expectedGeneration, this.generation, "Browser must bind stateful Workbench calls to the current generation");
+        assert.equal(input.expectedGeneration, this.generation, "Browser must bind Workbench calls to the current generation");
+      }
+      if (state.bumpGenerationBeforeReadDispatch && title === "Check connected browser backends") {
+        state.bumpGenerationBeforeReadDispatch = false;
+        if (state.skillPathAfterReadRestart) state.skillPath = state.skillPathAfterReadRestart;
+        this.generation += 1;
+        throw new Error(`WORKBENCH_GENERATION_STALE: expected=${input.expectedGeneration} current=${this.generation}`);
       }
       if (state.bumpGenerationBeforeMutationDispatch && /^Execute prepared Chrome (navigate|click|download|fill|tab close)$/.test(title)) {
         state.bumpGenerationBeforeMutationDispatch = false;
         this.generation += 1;
         throw new Error(`WORKBENCH_GENERATION_STALE: expected=${input.expectedGeneration} current=${this.generation}`);
+      }
+      if (code.includes("user.claimTab(")) {
+        if (typeof state.claimTabErrorText === "string") {
+          return { isError: true, text: state.claimTabErrorText };
+        }
+        if (state.simulateClaimLifecycle) {
+          state.syntheticClaimAttempts += 1;
+          if (state.syntheticClaimHeld) {
+            return { isError: true, text: "Tab 123 is already part of browser session synthetic-session" };
+          }
+          if (state.cleanupReceipt?.cleanupStatus === "unavailable") state.syntheticClaimHeld = true;
+        }
       }
       if (title === "Read Codex Browser confirmation policy") {
         assert.match(code, /documentation\.get\("confirmations"\)/);
@@ -268,7 +425,7 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
         assert.match(code, /user\.openTabs\(\)/);
         assert.match(code, /user\.claimTab\(/);
         assert.match(code, /\.screenshot\(\{ fullPage: false \}\)/);
-        assert.match(code, /tabs\.finalize\(\{ keep: \[\] \}\)/);
+        assert.match(code, /cleanupBrowserClaim\(__twBrowser, __twTab\)/, "existing-tab screenshot must route cleanup through the capability-shape adapter");
         assert.doesNotMatch(code, /clip\s*:/);
         if (state.stale) return { isError: true, text: "TOOLWIRE_BROWSER_TAB_STALE" };
         state.screenshots += 1;
@@ -280,6 +437,7 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
             lastOpened: state.tabs[0].lastOpened,
             byteLength: Buffer.from(fakeJpegBase64, "base64").length + state.screenshotReportedByteLengthDelta,
             dataBase64: fakeJpegBase64,
+            ...state.cleanupReceipt,
           }),
         };
       }
@@ -310,8 +468,8 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
         assert.match(code, /TOOLWIRE_BROWSER_ACTION_URL_CHANGED/);
         assert.match(code, /__twDispatchAttempted = true/);
         assert.match(code, /TOOLWIRE_BROWSER_CLOSE_RESULT_UNCERTAIN/);
-        assert.match(code, /if \(__twTab && !__twDispatchAttempted\)/, "finalize is allowed only to release a pre-dispatch claim");
-        assert.doesNotMatch(code, /tabs\.finalize\(\{ keep: \[\] \}\)[\s\S]*__twTab\.close\(\)/, "close dispatch must not be implemented through finalize");
+        assert.match(code, /if \(__twTab && !__twDispatchAttempted\)/, "cleanup is allowed only for a pre-dispatch close claim");
+        assert.match(code, /cleanupBrowserClaim\(__twBrowser, __twTab\)/, "pre-dispatch close cleanup must route through the capability-shape adapter");
         const providerMatch = code.match(/providerTabId === ("(?:[^"\\]|\\.)*")/);
         assert.ok(providerMatch, "execute close must bind the prepared provider identity");
         const providerTabId = JSON.parse(providerMatch[1]);
@@ -354,7 +512,7 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
         assert.match(code, /TOOLWIRE_BROWSER_ACTION_URL_CHANGED/);
         assert.match(code, /__twDispatchAttempted = true/);
         assert.match(code, /TOOLWIRE_BROWSER_NAVIGATE_RESULT_UNCERTAIN/);
-        assert.match(code, /tabs\.finalize\(\{ keep: \[\] \}\)/);
+        assert.match(code, /cleanupBrowserClaim\(__twBrowser, __twTab\)/);
         if (state.pageChanged) return { isError: true, text: "TOOLWIRE_BROWSER_ACTION_URL_CHANGED" };
         if (state.navigateUncertain) return { isError: true, text: "TOOLWIRE_BROWSER_NAVIGATE_RESULT_UNCERTAIN:timeout after dispatch" };
         const targetMatch = code.match(/\.goto\(("(?:[^"\\]|\\.)*")\)/);
@@ -363,6 +521,10 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
         const beforeUrl = state.tabs[0].url;
         state.navigations += 1;
         state.tabs[0] = { ...state.tabs[0], url: targetUrl, title: "Navigated Page" };
+        if (state.navigateGenerationChangeAfterDispatch) {
+          this.generation += 1;
+          throw new Error("simulated transport loss after navigation dispatch and Workbench restart");
+        }
         if (state.navigateTransportThrow) throw new Error("simulated MCP transport lost after navigation dispatch");
         if (state.navigatePostDispatchFailure) {
           return { isError: true, text: "TOOLWIRE_BROWSER_NAVIGATE_RESULT_UNCERTAIN:domSnapshot failed after dispatch" };
@@ -375,15 +537,15 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
             afterUrl: targetUrl,
             afterTitle: state.tabs[0].title,
             snapshot: "POST_NAVIGATE_OK",
+            ...state.cleanupReceipt,
           }),
         };
       }
       if (title === "Execute prepared Chrome new tab") {
         assert.match(code, /\.tabs\.new\(\)/);
         assert.match(code, /\.goto\(/);
-        assert.match(code, /typeof __twBrowser\.tabs\?\.finalize === "function"/);
-        assert.match(code, /status: "deliverable"/);
-        assert.match(code, /__twTab\.markDeliverable\(\)/, "new Chrome runtimes without tabs.finalize must keep the exact created tab through Tab.markDeliverable()");
+        assert.match(code, /markBrowserDeliverable\(__twBrowser, __twTab\)/, "new-tab cleanup must route through the normalized lifecycle adapter");
+        assert.match(code, /await tab\.markDeliverable\(\)/, "finalize-absent new-tab shape must keep the exact created tab through Tab.markDeliverable()");
         assert.match(code, /TOOLWIRE_BROWSER_DELIVERABLE_API_UNAVAILABLE/, "unknown cleanup APIs must fail visibly after dispatch rather than guessing");
         assert.match(code, /TOOLWIRE_BROWSER_OPEN_TAB_RESULT_UNCERTAIN/);
         const targetMatch = code.match(/\.goto\(("(?:[^"\\]|\\.)*")\)/);
@@ -414,7 +576,7 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
         assert.match(code, /TOOLWIRE_BROWSER_SCROLL_RESULT_UNCERTAIN/);
         assert.match(code, /__twScrollReturned/);
         assert.doesNotMatch(code, /domSnapshot\(/, "scroll dispatch receipt must not depend on DOM readback");
-        assert.match(code, /tabs\.finalize\(\{ keep: \[\] \}\)/);
+        assert.match(code, /cleanupBrowserClaim\(__twBrowser, __twTab\)/);
         if (state.pageChanged) return { isError: true, text: "TOOLWIRE_BROWSER_ACTION_URL_CHANGED" };
         const keysMatch = code.match(/for \(const __twKey of (\[[^\]]*\])\)/);
         assert.ok(keysMatch, "scroll body must bind a fixed JSON key sequence");
@@ -437,8 +599,7 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
             keypresses: keys,
             settleCompleted: true,
             settleError: null,
-            cleanupStatus: "released",
-            cleanupError: null,
+            ...state.cleanupReceipt,
           }),
         };
       }
@@ -446,7 +607,7 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
         assert.match(code, /dom_cua\.keypress\(\{ keys: \[/);
         assert.match(code, /TOOLWIRE_BROWSER_ACTION_URL_CHANGED/);
         assert.match(code, /TOOLWIRE_BROWSER_KEYPRESS_RESULT_UNCERTAIN/);
-        assert.match(code, /tabs\.finalize\(\{ keep: \[\] \}\)/);
+        assert.match(code, /cleanupBrowserClaim\(__twBrowser, __twTab\)/);
         assert.doesNotMatch(code, /playwright\.locator\(/);
         assert.doesNotMatch(code, /__twTab\.cua\.keypress\(/, "P1b should use DOM CUA current-focus keypress, not coordinate CUA");
         assert.doesNotMatch(code, /domSnapshot\(/, "keypress dispatch receipt must not depend on DOM readback");
@@ -468,8 +629,7 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
             key,
             settleCompleted: true,
             settleError: null,
-            cleanupStatus: "released",
-            cleanupError: null,
+            ...state.cleanupReceipt,
           }),
         };
       }
@@ -502,7 +662,7 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
           assert.match(code, /getByRole/);
         }
         assert.match(code, /exact: true/);
-        assert.match(code, /tabs\.finalize\(\{ keep: \[\] \}\)/);
+        assert.match(code, /cleanupBrowserClaim\(__twBrowser, __twTab\)/);
         assert.equal(state.clicks, 0, "prepare must not dispatch a click");
         if (!scopedRoleMode && state.locatorCount !== 1) return { isError: true, text: "TOOLWIRE_BROWSER_LOCATOR_COUNT:" + state.locatorCount };
         if (!state.locatorVisible) return { isError: true, text: "TOOLWIRE_BROWSER_LOCATOR_NOT_VISIBLE" };
@@ -522,6 +682,7 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
               : exactTextMode && state.textSemanticKind === "thread-card-data"
                 ? state.textThreadCardBinding
                 : null,
+            ...state.cleanupReceipt,
           }),
         };
       }
@@ -552,7 +713,7 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
         assert.match(code, /editableDescendantCount/);
         assert.match(code, /outerHtmlByteLength/);
         assert.doesNotMatch(code, /targetStructure:[\s\S]*outerHTML/);
-        assert.match(code, /tabs\.finalize\(\{ keep: \[\] \}\)/);
+        assert.match(code, /cleanupBrowserClaim\(__twBrowser, __twTab\)/);
         assert.equal(state.fills, 0, "prepare fill must not mutate the field");
         if (placeholderFillMode && state.fillRoleBoundCount !== 1) return { isError: true, text: "TOOLWIRE_BROWSER_LOCATOR_COUNT:" + state.fillRoleBoundCount };
         if (!scopedFillMode && state.locatorCount !== 1) return { isError: true, text: "TOOLWIRE_BROWSER_LOCATOR_COUNT:" + state.locatorCount };
@@ -576,6 +737,7 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
             currentValue,
             fillStrategy: state.fillStrategy,
             targetMeta: state.fillTargetMeta,
+            ...state.cleanupReceipt,
           }),
         };
       }
@@ -619,13 +781,13 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
         assert.match(code, /__twActivationOnly = true/);
         assert.match(code, /__twRepairSettleMs = 750/);
         assert.match(code, /waitForTimeout\(__twRepairSettleMs\)/);
-        assert.match(code, /__twBrowser\.tabs\.finalize\(\{ keep: \[\] \}\)/);
+        assert.match(code, /cleanupBrowserClaim\(__twBrowser, __twTab\)/);
         assert.match(code, /TOOLWIRE_BROWSER_FILL_NOT_APPLIED/);
         assert.match(code, /TOOLWIRE_BROWSER_FILL_VERIFICATION_UNAVAILABLE/);
         assert.match(code, /__twDispatchAttempted = true/);
         assert.match(code, /__twFinalizeError/);
         assert.match(code, /TOOLWIRE_BROWSER_FILL_RESULT_UNCERTAIN/);
-        assert.match(code, /tabs\.finalize\(\{ keep: \[\] \}\)/);
+        assert.match(code, /cleanupBrowserClaim\(__twBrowser, __twTab\)/);
         if (state.pageChanged) return { isError: true, text: "TOOLWIRE_BROWSER_ACTION_URL_CHANGED" };
         if (!scopedFillMode && state.locatorCount !== 1) return { isError: true, text: "TOOLWIRE_BROWSER_LOCATOR_COUNT:" + state.locatorCount };
         if (!state.locatorVisible) return { isError: true, text: "TOOLWIRE_BROWSER_LOCATOR_NOT_VISIBLE" };
@@ -670,6 +832,7 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
               repairAttempted: false,
               repairReason: null,
               snapshot: "FIELD=",
+              ...state.cleanupReceipt,
             }),
           };
         }
@@ -703,6 +866,7 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
             afterValue,
             verificationSource: typeof state.fieldRenderedText === "string" ? "fresh-target-rendered-text" : state.fillVerificationSource,
             snapshot: typeof state.fieldRenderedText === "string" ? `FIELD_RENDERED=${state.fieldRenderedText}` : `FIELD=${state.fieldValue}`,
+            ...state.cleanupReceipt,
           }),
         };
       }
@@ -710,7 +874,7 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
         assert.match(code, /__twResolveTarget/);
         assert.match(code, /fresh repair target/);
         assert.match(code, /repairDispatched/);
-        assert.match(code, /tabs\.finalize\(\{ keep: \[\] \}\)/);
+        assert.match(code, /cleanupBrowserClaim\(__twBrowser, __twTab\)/);
         if (state.pageChanged) return { isError: true, text: "TOOLWIRE_BROWSER_ACTION_URL_CHANGED" };
         if (state.locatorCount !== 1) return { isError: true, text: "TOOLWIRE_BROWSER_LOCATOR_COUNT:" + state.locatorCount };
         if (!state.locatorVisible) return { isError: true, text: "TOOLWIRE_BROWSER_LOCATOR_NOT_VISIBLE" };
@@ -737,6 +901,7 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
             verificationSource: "fresh-target-rendered-text",
             repairDispatched,
             snapshot: `FIELD=${state.fieldValue}`,
+            ...state.cleanupReceipt,
           }),
         };
       }
@@ -752,7 +917,7 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
         assert.match(code, /waitForEvent\("filechooser"/);
         assert.match(code, /\.setFiles\(\[/);
         assert.match(code, /TOOLWIRE_BROWSER_UPLOAD_RESULT_UNCERTAIN/);
-        assert.match(code, /tabs\.finalize\(\{ keep: \[\] \}\)/);
+        assert.match(code, /cleanupBrowserClaim\(__twBrowser, __twTab\)/);
         if (state.pageChanged) return { isError: true, text: "TOOLWIRE_BROWSER_ACTION_URL_CHANGED" };
         if (state.locatorCount !== 1) return { isError: true, text: "TOOLWIRE_BROWSER_LOCATOR_COUNT:" + state.locatorCount };
         if (!state.locatorVisible) return { isError: true, text: "TOOLWIRE_BROWSER_LOCATOR_NOT_VISIBLE" };
@@ -771,8 +936,7 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
             multiple: false,
             setFilesReturned: true,
             readbackError: null,
-            cleanupStatus: "released",
-            cleanupError: null,
+            ...state.cleanupReceipt,
           }),
         };
       }
@@ -790,7 +954,7 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
         assert.match(code, /\.click\(\{ timeoutMs: 5000 \}\)/);
         assert.match(code, /download\.path|__twDownload\.path/);
         assert.match(code, /TOOLWIRE_BROWSER_DOWNLOAD_RESULT_UNCERTAIN/);
-        assert.match(code, /tabs\.finalize\(\{ keep: \[\] \}\)/);
+        assert.match(code, /cleanupBrowserClaim\(__twBrowser, __twTab\)/);
         if (state.pageChanged) return { isError: true, text: "TOOLWIRE_BROWSER_ACTION_URL_CHANGED" };
         if (exactTextMode && state.textBindingChanged) return { isError: true, text: "TOOLWIRE_BROWSER_TEXT_BINDING_CHANGED" };
         if (state.locatorCount !== 1) return { isError: true, text: "TOOLWIRE_BROWSER_LOCATOR_COUNT:" + state.locatorCount };
@@ -810,8 +974,7 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
             downloadPath: "C:\\Users\\Test\\Downloads\\fixture.txt",
             pathError: null,
             readbackError: null,
-            cleanupStatus: "released",
-            cleanupError: null,
+            ...state.cleanupReceipt,
           }),
         };
       }
@@ -850,7 +1013,7 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
         assert.match(code, /__twDispatchAttempted = true/);
         assert.match(code, /__twFinalizeError/);
         assert.match(code, /TOOLWIRE_BROWSER_CLICK_RESULT_UNCERTAIN/);
-        assert.match(code, /tabs\.finalize\(\{ keep: \[\] \}\)/);
+        assert.match(code, /cleanupBrowserClaim\(__twBrowser, __twTab\)/);
         if (state.pageChanged) return { isError: true, text: "TOOLWIRE_BROWSER_ACTION_URL_CHANGED" };
         if (exactTextMode && state.textBindingChanged) return { isError: true, text: "TOOLWIRE_BROWSER_TEXT_BINDING_CHANGED" };
         if (!scopedRoleMode && state.locatorCount !== 1) return { isError: true, text: "TOOLWIRE_BROWSER_LOCATOR_COUNT:" + state.locatorCount };
@@ -880,19 +1043,18 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
             afterUrl: state.tabs[0].url,
             afterTitle: state.tabs[0].title,
             snapshot: "POST_CLICK_OK",
+            ...state.cleanupReceipt,
           }),
         };
       }
       if (code.includes("browsers.list")) {
         return {
           isError: false,
-          text: JSON.stringify(chromeConnected
-            ? [{ name: "Chrome", family: "chrome", type: "extension" }]
-            : [{ name: "Edge", family: "edge", type: "extension" }]),
+          text: JSON.stringify(state.browserBackends),
         };
       }
       if (code.includes("domSnapshot")) {
-        assert.match(code, /tabs\.finalize\(\{ keep: \[\] \}\)/, "claimed user tabs must be finalized/released after read");
+        assert.match(code, /cleanupBrowserClaim\(__twBrowser, __twTab\)/, "claimed user-tab reads must route cleanup through the capability-shape adapter");
         if (state.stale) return { isError: true, text: "TOOLWIRE_BROWSER_TAB_STALE" };
         if (state.scrollReadbackFailure && state.scrolls > 0) {
           return { isError: true, text: "simulated post-scroll DOM readback failure" };
@@ -908,6 +1070,7 @@ function makeWorkbench({ chromeConnected = true, skillAvailable = true, nodeRepl
               : state.lastScrollDelta == null
                 ? "A".repeat(2500)
                 : `SCROLLED=${state.lastScrollDelta}`,
+            ...state.cleanupReceipt,
           }),
         };
       }
@@ -969,6 +1132,45 @@ test("Browser origin permission diagnosis separates saved deny, network policy, 
     return true;
   });
 
+  workbench.state.openTabsErrorText = "Browser extension protocol version mismatch";
+  await assert.rejects(() => browser.listTabs({}), (error) => {
+    assert.equal(error.code, "BROWSER_RUNTIME_PROTOCOL_MISMATCH");
+    assert.match((error.nextActions ?? []).join(" "), /matched bundle|compatibility/i);
+    return true;
+  });
+
+  workbench.state.openTabsErrorText = "transport closed during extension handshake";
+  await assert.rejects(() => browser.listTabs({}), (error) => {
+    assert.equal(error.code, "BROWSER_RUNTIME_ERROR");
+    return true;
+  });
+
+  workbench.state.openTabsErrorText = "Tab 123 is already part of browser session other-session";
+  await assert.rejects(() => browser.listTabs({}), (error) => {
+    assert.equal(error.code, "BROWSER_TAB_BUSY");
+    assert.deepEqual(error.diagnostic, {
+      claimStatus: "busy",
+      recovery: "bounded-no-automatic-mutation-replay",
+    });
+    assert.match((error.nextActions ?? []).join(" "), /fresh tab|different/i);
+    assert.match((error.nextActions ?? []).join(" "), /do not automatically replay/i);
+    assert.doesNotMatch((error.nextActions ?? []).join(" "), /reinstall|restart Chrome/i);
+    return true;
+  });
+
+  for (const [message, code] of [
+    ["Chrome extension is blocked by the administrator through ExtensionInstallBlocklist", "BROWSER_EXTENSION_POLICY_BLOCKED"],
+    ["AppLocker: this program was blocked by your system administrator", "BROWSER_ENTERPRISE_EXECUTION_POLICY_BLOCKED"],
+    ["net::ERR_BLOCKED_BY_ADMINISTRATOR", "BROWSER_ENTERPRISE_NETWORK_POLICY_BLOCKED"],
+  ]) {
+    workbench.state.openTabsErrorText = message;
+    await assert.rejects(() => browser.listTabs({}), (error) => {
+      assert.equal(error.code, code);
+      assert.match((error.nextActions ?? []).join(" "), /administrator|policy/i);
+      return true;
+    });
+  }
+
   workbench.state.openTabsErrorText = "Chrome extension is not connected";
   await assert.rejects(() => browser.listTabs({}), (error) => {
     assert.equal(error.code, "BROWSER_CHROME_NOT_CONNECTED");
@@ -980,6 +1182,58 @@ test("Browser origin permission diagnosis separates saved deny, network policy, 
   const listed = await browser.listTabs({});
   assert.equal(listed.tabs.length, 1);
   assert.equal(listed.tabs[0].url, "https://mail.example.test/inbox");
+});
+
+test("Browser finalize-absent existing-tab read reports turn-cleanup-unproven and bounded synthetic reclaim busy", async () => {
+  const workbench = makeWorkbench();
+  workbench.state.cleanupReceipt = {
+    cleanupStatus: "unavailable",
+    cleanupReason: "turn-cleanup-unproven",
+    cleanupError: null,
+  };
+  workbench.state.simulateClaimLifecycle = true;
+  const browser = new CodexBrowserExecutor({ workbench, defaultCwd: "C:\\workspace" });
+  const listed = await browser.listTabs({});
+  const tabRef = listed.tabs[0].tabRef;
+
+  const first = await browser.readTab({ tabRef });
+  assert.equal(first.cleanupStatus, "unavailable");
+  assert.equal(first.cleanupReason, "turn-cleanup-unproven");
+  assert.equal(first.cleanupError, null);
+  assert.equal(workbench.state.syntheticClaimAttempts, 1);
+
+  await assert.rejects(() => browser.readTab({ tabRef }), (error) => {
+    assert.equal(error.code, "BROWSER_TAB_BUSY");
+    assert.deepEqual(error.diagnostic, {
+      claimStatus: "busy",
+      recovery: "bounded-no-automatic-mutation-replay",
+    });
+    assert.match((error.nextActions ?? []).join(" "), /turn-end cleanup/i);
+    return true;
+  });
+  assert.equal(workbench.state.syntheticClaimAttempts, 2, "read reclaim remains one bounded claim attempt with no hidden retry loop");
+});
+
+test("Browser existing-tab mutation claim-busy is pre-dispatch diagnostic and is never auto-replayed", async () => {
+  const workbench = makeWorkbench();
+  const browser = new CodexBrowserExecutor({ workbench, defaultCwd: "C:\\workspace" });
+  const listed = await browser.listTabs({});
+  const prepared = await browser.prepareClick({
+    tabRef: listed.tabs[0].tabRef,
+    role: "button",
+    name: "Compose",
+  });
+  workbench.state.claimTabErrorText = "Tab 123 is already part of browser session synthetic-session";
+
+  await assert.rejects(() => browser.click({ actionApprovalRef: prepared.actionApprovalRef }), (error) => {
+    assert.equal(error.code, "BROWSER_TAB_BUSY");
+    assert.match(error.message, /cannot claim/i);
+    assert.match((error.nextActions ?? []).join(" "), /do not automatically replay/i);
+    return true;
+  });
+  assert.equal(workbench.state.clicks, 0, "claim-busy happens before click dispatch");
+  const executeCalls = workbench.calls.filter((call) => call.arguments?.title === "Execute prepared Chrome click");
+  assert.equal(executeCalls.length, 1, "mutation claim-busy must not trigger an automatic retry");
 });
 
 test("Browser tool errors surface only bounded permission diagnostics", async () => {
@@ -1219,6 +1473,37 @@ test("Browser Preview injects nested Codex turn metadata and exposes opaque read
   const metas = workbench.calls.map((call) => call.meta["x-codex-turn-metadata"]);
   assert.equal(new Set(metas.map((meta) => meta.session_id)).size, 1, "browser session_id must stay stable per executor");
   assert.equal(new Set(metas.map((meta) => meta.turn_id)).size, metas.length, "browser turn_id must be unique per call");
+});
+
+test("Browser backend topology accepts Chrome plus Edge but fails visibly on multiple Chrome backends without inventing a profile selector", async () => {
+  const mixedWorkbench = makeWorkbench({
+    browserBackends: [
+      { name: "Chrome", family: "chrome", type: "extension" },
+      { name: "Edge", family: "edge", type: "extension" },
+    ],
+  });
+  const mixedBrowser = new CodexBrowserExecutor({ workbench: mixedWorkbench, defaultCwd: "C:\\workspace" });
+  const mixedStatus = await mixedBrowser.status({});
+  assert.equal(mixedStatus.status, "ok");
+  assert.equal(mixedStatus.chrome.name, "Chrome");
+  assert.deepEqual(mixedStatus.connectedBrowsers.map((entry) => entry.family), ["chrome", "edge"]);
+
+  const ambiguousWorkbench = makeWorkbench({
+    browserBackends: [
+      { name: "Chrome profile A", family: "chrome", type: "extension" },
+      { name: "Chrome profile B", family: "chrome", type: "extension" },
+    ],
+  });
+  const ambiguousBrowser = new CodexBrowserExecutor({ workbench: ambiguousWorkbench, defaultCwd: "C:\\workspace" });
+  const ambiguousStatus = await ambiguousBrowser.status({});
+  assert.equal(ambiguousStatus.status, "unavailable");
+  assert.equal(ambiguousStatus.reason, "BROWSER_CHROME_BACKEND_AMBIGUOUS");
+  assert.match(ambiguousStatus.error, /no profile\/backend selector/i);
+  assert.match(ambiguousStatus.nextActions.join(" "), /Do not guess/i);
+  await assert.rejects(() => ambiguousBrowser.listTabs({}), (error) => {
+    assert.equal(error.code, "BROWSER_CHROME_BACKEND_AMBIGUOUS");
+    return true;
+  });
 });
 
 test("Browser screenshot captures one existing viewport as bounded MCP-ready JPEG metadata", async () => {
@@ -1746,6 +2031,24 @@ test("Browser navigation rejects unsafe URLs, page drift, and uncertain dispatch
   );
   assert.equal(uncertainWorkbench.state.navigations, 1, "uncertain failure happens after navigation dispatch");
   await assert.rejects(() => uncertainBrowser.navigate({ actionApprovalRef: uncertainPrepared.actionApprovalRef }), /invalid, expired, already consumed/i);
+
+  const generationWorkbench = makeWorkbench();
+  const generationBrowser = new CodexBrowserExecutor({ workbench: generationWorkbench, defaultCwd: "C:\\workspace" });
+  const generationTabs = await generationBrowser.listTabs({});
+  const generationPrepared = await generationBrowser.prepareNavigate({ tabRef: generationTabs.tabs[0].tabRef, url: "https://example.test/restarted" });
+  generationWorkbench.state.navigateGenerationChangeAfterDispatch = true;
+  await assert.rejects(
+    () => generationBrowser.navigate({ actionApprovalRef: generationPrepared.actionApprovalRef }),
+    (error) => {
+      assert.equal(error.code, "BROWSER_NAVIGATE_RESULT_UNCERTAIN");
+      assert.notEqual(error.code, "BROWSER_WORKBENCH_RESTARTED");
+      assert.match(error.message, /generation changed|result is uncertain/i);
+      assert.match(error.nextActions.join(" "), /Do not retry/i);
+      return true;
+    }
+  );
+  assert.equal(generationWorkbench.state.navigations, 1, "generation changed only after the navigation side effect was dispatched");
+  await assert.rejects(() => generationBrowser.navigate({ actionApprovalRef: generationPrepared.actionApprovalRef }), /invalid, expired, already consumed/i);
 });
 
 test("Browser Operate prepare/click is exact, one-shot, and read-back verified", async () => {
@@ -1980,6 +2283,7 @@ test("Browser prepared upload refuses authority escape before any browser mutati
 });
 
 test("Browser prepared upload refuses source drift before any browser dispatch", async () => {
+  await mkdir(path.join(projectRoot, "_work"), { recursive: true });
   const fixtureDir = await mkdtemp(path.join(projectRoot, "_work", "p1c-upload-pre-drift-"));
   const fixturePath = path.join(fixtureDir, "probe.txt");
   try {
@@ -2004,6 +2308,7 @@ test("Browser prepared upload refuses source drift before any browser dispatch",
 });
 
 test("Browser prepared upload detects source drift after setFiles and does not replay", async () => {
+  await mkdir(path.join(projectRoot, "_work"), { recursive: true });
   const fixtureDir = await mkdtemp(path.join(projectRoot, "_work", "p1c-upload-post-drift-"));
   const fixturePath = path.join(fixtureDir, "probe.txt");
   try {
@@ -2931,6 +3236,82 @@ test("Browser action refs cannot cross click/fill action kinds", async () => {
   assert.equal(filled.status, "filled");
 });
 
+test("Browser runtime compatibility binding uses the canonical client and rejects cache upgrade drift until main runtime restart", async () => {
+  const fixtureRoot = path.join(projectRoot, ".fixture-browser-cache");
+  const buildA = "99.1-A";
+  const buildB = "99.1-B";
+  const chromeRootA = path.join(fixtureRoot, "chrome", buildA);
+  const chromeRootB = path.join(fixtureRoot, "chrome", buildB);
+  const browserRootA = path.join(fixtureRoot, "browser", buildA);
+  const browserRootB = path.join(fixtureRoot, "browser", buildB);
+  const deepSkillA = path.join(chromeRootA, "skills", "control-chrome", "nested-layout", "SKILL.md");
+  const deepSkillB = path.join(chromeRootB, "skills", "control-chrome", "nested-layout", "SKILL.md");
+  const clientA = path.join(chromeRootA, "scripts", "browser-client.mjs");
+  const clientB = path.join(chromeRootB, "scripts", "browser-client.mjs");
+  const compatibilityA = {
+    status: "ok",
+    build: buildA,
+    chromeSkillPath: deepSkillA,
+    browserClientPath: clientA,
+    browserClientSha256: "a".repeat(64),
+    browserServicePath: path.join(browserRootA, "scripts", "browser-service.mjs"),
+  };
+  const compatibilityB = {
+    status: "ok",
+    build: buildB,
+    chromeSkillPath: deepSkillB,
+    browserClientPath: clientB,
+    browserClientSha256: "b".repeat(64),
+    browserServicePath: path.join(browserRootB, "scripts", "browser-service.mjs"),
+  };
+  const workbench = makeWorkbench({ skillPath: deepSkillA });
+  workbench.state.expectedBrowserClientUrl = pathToFileURL(clientA).href;
+  const bySkill = new Map([
+    [path.resolve(deepSkillA), compatibilityA],
+    [path.resolve(deepSkillB), compatibilityB],
+  ]);
+  const browser = new CodexBrowserExecutor({
+    workbench,
+    defaultCwd: "C:\\workspace",
+    runtimeCompatibility: compatibilityA,
+    runtimeCompatibilityResolver: async ({ chromeSkillPath }) => bySkill.get(path.resolve(chromeSkillPath)) ?? { status: "unavailable" },
+  });
+
+  const first = await browser.listTabs({});
+  assert.equal(first.count, 1);
+  const legacyDerivedClient = pathToFileURL(path.join(path.resolve(path.dirname(deepSkillA), "..", ".."), "scripts", "browser-client.mjs")).href;
+  assert.notEqual(legacyDerivedClient, workbench.state.expectedBrowserClientUrl);
+  assert.ok(workbench.calls.length > 0);
+  for (const call of workbench.calls) {
+    const code = call.arguments?.code ?? "";
+    assert.ok(code.includes(JSON.stringify(workbench.state.expectedBrowserClientUrl)));
+    assert.equal(code.includes(JSON.stringify(legacyDerivedClient)), false, "nested Skill layout must never drive a relative browser-client import when a canonical binding exists");
+  }
+
+  const callsBeforeUpgrade = workbench.calls.length;
+  workbench.state.bumpGenerationBeforeReadDispatch = true;
+  workbench.state.skillPathAfterReadRestart = deepSkillB;
+  await assert.rejects(
+    () => browser.listTabs({}),
+    (error) => {
+      assert.equal(error.code, "BROWSER_WORKBENCH_RESTARTED", "generation change between compatibility check and read dispatch must fail before crossing generations");
+      return true;
+    }
+  );
+  assert.equal(workbench.calls.length, callsBeforeUpgrade + 1, "the raced backend probe should be attempted once with an expected Workbench generation");
+
+  const callsAfterGenerationRace = workbench.calls.length;
+  await assert.rejects(
+    () => browser.listTabs({}),
+    (error) => {
+      assert.equal(error.code, "BROWSER_RUNTIME_COMPAT_CHANGED_RESTART_REQUIRED");
+      assert.match((error.nextActions ?? []).join(" "), /Restart the main Codexless household runtime/i);
+      return true;
+    }
+  );
+  assert.equal(workbench.calls.length, callsAfterGenerationRace, "cache/Skill B must not dispatch through child overrides or browser client bound to build A");
+});
+
 test("Browser refs and prepared mutations fail closed across Workbench generation changes", async () => {
   const workbench = makeWorkbench();
   const browser = new CodexBrowserExecutor({ workbench, defaultCwd: "C:\\workspace" });
@@ -2987,4 +3368,22 @@ test("Browser Preview diagnoses missing Skill, node_repl, and Chrome backend wit
   assert.equal(chromeStatus.status, "unavailable");
   assert.equal(chromeStatus.reason, "chrome_not_connected");
   assert.match(chromeStatus.nextActions.join(" "), /Do not fall back to Computer Use/i);
+
+  const manifestWorkbench = makeWorkbench();
+  const manifestMismatch = new CodexBrowserExecutor({
+    workbench: manifestWorkbench,
+    defaultCwd: "C:\\workspace",
+    runtimeCompatibility: {
+      status: "unavailable",
+      reason: "current_browser_plugin_manifest_mismatch",
+      build: "26.999.12345",
+    },
+  });
+  const manifestStatus = await manifestMismatch.status({});
+  assert.equal(manifestStatus.status, "unavailable");
+  assert.equal(manifestStatus.reason, "BROWSER_RUNTIME_MANIFEST_MISMATCH");
+  assert.equal(manifestStatus.compatibilityReason, "current_browser_plugin_manifest_mismatch");
+  assert.equal(manifestStatus.nodeRepl, "not_started");
+  assert.match(manifestStatus.nextActions.join(" "), /matching build/i);
+  assert.match(manifestStatus.nextActions.join(" "), /not.*disconnected Chrome/i);
 });

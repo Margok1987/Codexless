@@ -1,30 +1,29 @@
 import http from "node:http";
 import { createRequire } from "node:module";
-import { createPublicRuntime } from "./public-runtime.mjs";
-import { handleRecentCallHttpRequest } from "./recent-call-http.mjs";
+import { createCodexlessRuntime } from "./codexless-runtime.mjs";
 
 const require = createRequire(import.meta.url);
 const { createMcpHandler } = require("@modelcontextprotocol/server");
 const { localhostHostValidation, localhostOriginValidation, toNodeHandler } = require("@modelcontextprotocol/node");
 
-const host = process.env.CODEXLESS_HOST ?? "127.0.0.1";
-const port = Number.parseInt(process.env.CODEXLESS_PORT ?? "7690", 10);
+const host = process.env.CODEX_TOOLBOX_PUBLIC_HOST ?? "127.0.0.1";
+const port = Number.parseInt(process.env.CODEX_TOOLBOX_PUBLIC_PORT ?? "7690", 10);
 if (!["127.0.0.1", "localhost", "::1"].includes(host)) {
-  throw new Error("Codexless HTTP may bind only to loopback");
+  throw new Error("Codexless public HTTP may bind only to loopback");
 }
 if (!Number.isInteger(port) || port < 1 || port > 65535) {
-  throw new Error(`Invalid CODEXLESS_PORT: ${process.env.CODEXLESS_PORT}`);
+  throw new Error(`Invalid CODEX_TOOLBOX_PUBLIC_PORT: ${process.env.CODEX_TOOLBOX_PUBLIC_PORT}`);
 }
 
-const runtime = await createPublicRuntime();
+const runtime = await createCodexlessRuntime({ mode: "public" });
 const mcpHandler = createMcpHandler(runtime.createServer, {
   legacy: "stateless",
   maxSubscriptions: 0,
   keepAliveMs: 0,
-  onerror: (error) => console.error("[codexless-http-mcp]", error),
+  onerror: (error) => console.error("[codexless-public-mcp]", error),
 });
 const nodeMcpHandler = toNodeHandler(mcpHandler, {
-  onerror: (error) => console.error("[codexless-http-node]", error),
+  onerror: (error) => console.error("[codexless-public-node]", error),
 });
 const validateHost = localhostHostValidation();
 const validateOrigin = localhostOriginValidation();
@@ -34,26 +33,19 @@ const server = http.createServer(async (req, res) => {
     if (!validateHost(req, res)) return;
     if (!validateOrigin(req, res)) return;
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
-    if (handleRecentCallHttpRequest({ req, res, url, diagnostics: runtime.recentCallDiagnostics })) return;
     if (req.method === "GET" && (url.pathname === "/healthz" || url.pathname === "/readyz")) {
       res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
       res.end(JSON.stringify({
         ok: true,
-        service: "codexless-public-preview",
+        // Compatibility service id retained for health-check consumers; not the product name.
+        // Compatibility service id for existing public-preview health probes; not the product name.
+        service: "codexless-public",
         transport: "streamable-http",
+        publicPreview: true,
         version: runtime.version,
         surfaceVersion: runtime.surfaceVersion,
-        toolCount: runtime.toolNames.length,
-        health: {
-          core: { status: "ok" },
-          capabilities: {
-            browserReader: { status: "not_checked", reason: "use_codex_browser_status_or_doctor" },
-          },
-          optionalDependencies: { status: "not_checked" },
-        },
-        diagnostics: {
-          recentCalls: { persistence: runtime.recentCallDiagnostics.persistenceHealth() },
-        },
+        toolCount: runtime.toolAllowlist?.length ?? null,
+        defaultCwd: runtime.authorityValidation.defaultCwd ?? null,
       }));
       return;
     }
@@ -64,7 +56,7 @@ const server = http.createServer(async (req, res) => {
     }
     await nodeMcpHandler(req, res);
   } catch (error) {
-    console.error("[codexless-http]", error);
+    console.error("[codexless-public-http]", error);
     if (!res.headersSent) {
       res.writeHead(500, { "content-type": "application/json", "cache-control": "no-store" });
     }
@@ -81,7 +73,7 @@ await new Promise((resolve, reject) => {
   server.once("error", reject);
   server.listen(port, host, resolve);
 });
-console.error(`Codexless Public Preview listening on http://${host}:${port}/mcp; surface=${runtime.surfaceVersion}`);
+console.error(`Codexless public HTTP listening on http://${host}:${port}/mcp; surface=${runtime.surfaceVersion}`);
 
 let closing = false;
 async function shutdown(signal) {
@@ -92,7 +84,7 @@ async function shutdown(signal) {
     await new Promise((resolve) => server.close(() => resolve()));
   } finally {
     await runtime.close();
-    console.error(`Codexless Public Preview stopped (${signal})`);
+    console.error(`Codexless public HTTP stopped (${signal})`);
   }
 }
 

@@ -22,6 +22,8 @@ const buildA = "a".repeat(64);
 const buildB = "b".repeat(64);
 
 try {
+  await assertBootstrapGenerationImportClosure(projectRoot);
+
   const prepareOnly = await prepareBootstrapGeneration({ sourceRoot: projectRoot, bootstrapRoot: isolatedPrepareRoot, buildId: buildA });
   assert.equal(prepareOnly.reused, false);
   assert.equal(await exists(path.join(isolatedPrepareRoot, "run.mjs")), false, "prepare-only must not create the stable launcher before commit");
@@ -70,6 +72,18 @@ try {
   process.stdout.write("bootstrap persistence PASS\n");
 } finally {
   await rm(root, { recursive: true, force: true });
+}
+
+async function assertBootstrapGenerationImportClosure(sourceRoot) {
+  const generationFiles = new Set(BOOTSTRAP_GENERATION_FILES);
+  for (const relative of BOOTSTRAP_GENERATION_FILES.filter((entry) => entry.endsWith(".mjs"))) {
+    const source = await readFile(path.join(sourceRoot, ...relative.split("/")), "utf8");
+    const importPattern = /(?:\bfrom\s*|\bimport\s*(?:\(\s*)?)["'](\.{1,2}\/[^"']+)["']/g;
+    for (const match of source.matchAll(importPattern)) {
+      const imported = path.posix.normalize(path.posix.join(path.posix.dirname(relative), match[1]));
+      assert.equal(generationFiles.has(imported), true, relative + " relative import " + match[1] + " must be included in BOOTSTRAP_GENERATION_FILES as " + imported);
+    }
+  }
 }
 
 async function exists(target) {

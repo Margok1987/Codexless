@@ -1,73 +1,92 @@
 import assert from "node:assert/strict";
 import { MeteredConsentGate } from "../src/metered-consent.mjs";
 
-const quotaProvider = async () => ({
+const quota = {
   status: "ok",
-  observedAt: new Date().toISOString(),
-  usage: { status: "ok" },
-  rateLimits: { status: "ok", limits: [] },
-});
-
-const gate = new MeteredConsentGate({ mode: "always", quotaProvider });
-const payload = {
-  prompt: "consent hardening probe",
-  cwd: "/tmp/project",
-  model: null,
-  permissionProfile: ":read-only",
+  observedAt: "2026-08-13T00:00:00.000Z",
+  usage: { status: "ok", value: {} },
+  rateLimits: {
+    status: "ok",
+    value: {
+      limits: [{
+        key: "codex",
+        limitId: "codex",
+        limitName: "Codex",
+        planType: "plus",
+        windows: [{ kind: "primary", usedPercent: 37, resetsAt: 1800000000, windowDurationMins: 300 }],
+      }],
+    },
+  },
 };
 
-const first = await gate.authorize({
-  action: "start",
-  requestId: "req-consent-hardening-1",
-  payload,
-});
+const off = new MeteredConsentGate({ mode: "off" });
+assert.equal((await off.authorize({ action: "start", requestId: "off-1", payload: { prompt: "x" } })).authorized, true);
+
+let quotaCalls = 0;
+const always = new MeteredConsentGate({ mode: "always", quotaProvider: async () => { quotaCalls += 1; return quota; } });
+const first = await always.authorize({ action: "start", requestId: "req-1", payload: { prompt: "TASK", cwd: null } });
 assert.equal(first.authorized, false);
-assert.equal(first.duplicate, false);
 assert.equal(first.consent.status, "required");
 assert.match(first.consent.consentRef, /^consent_/);
-assert.match(first.consent.message, /does not authorize/i);
+assert.equal(first.consent.quota.rateLimits.limits[0].windows[0].remainingPercent, 63);
+assert.equal(quotaCalls, 1);
 
-const replayWithoutApproval = await gate.authorize({
-  action: "start",
-  requestId: "req-consent-hardening-1",
-  payload,
-  consentRef: first.consent.consentRef,
-});
-assert.equal(replayWithoutApproval.authorized, false, "replaying a consentRef through prepare/authorize must never self-approve");
-assert.equal(replayWithoutApproval.duplicate, true);
-assert.equal(replayWithoutApproval.consent.consentRef, first.consent.consentRef);
+const repeatedCard = await always.authorize({ action: "start", requestId: "req-1", payload: { prompt: "TASK", cwd: null } });
+assert.equal(repeatedCard.authorized, false);
+assert.equal(repeatedCard.duplicate, true);
+assert.equal(repeatedCard.consent.consentRef, first.consent.consentRef);
+assert.equal(quotaCalls, 1);
 
-assert.throws(
-  () => gate.approve({
-    action: "start",
-    requestId: "req-consent-hardening-1",
-    payload,
-    consentRef: "consent_wrong",
-  }),
-  /does not match/i,
+await assert.rejects(
+  () => always.authorize({ action: "start", requestId: "req-1", payload: { prompt: "DIFFERENT", cwd: null } }),
+  /different metered start request/
+);
+await assert.rejects(
+  () => always.authorize({ action: "start", requestId: "req-new", payload: { prompt: "TASK", cwd: null }, consentRef: first.consent.consentRef }),
+  /unknown or stale/
 );
 
-const approved = gate.approve({
+const approved = await always.authorize({
   action: "start",
-  requestId: "req-consent-hardening-1",
-  payload,
+  requestId: "req-1",
+  payload: { prompt: "TASK", cwd: null },
   consentRef: first.consent.consentRef,
 });
 assert.equal(approved.authorized, true);
 assert.equal(approved.duplicate, false);
 
-const approvedAgain = gate.approve({
+const safeRetry = await always.authorize({
   action: "start",
-  requestId: "req-consent-hardening-1",
-  payload,
+  requestId: "req-1",
+  payload: { prompt: "TASK", cwd: null },
   consentRef: first.consent.consentRef,
 });
-assert.equal(approvedAgain.authorized, true);
-assert.equal(approvedAgain.duplicate, true);
+assert.equal(safeRetry.authorized, true);
+assert.equal(safeRetry.duplicate, true);
+assert.equal(quotaCalls, 1);
 
-const offGate = new MeteredConsentGate({ mode: "off" });
-const off = await offGate.authorize({ action: "start", requestId: "req-off", payload });
-assert.equal(off.authorized, true);
-assert.equal(off.mode, "off");
+const missingRefAfterApproval = await always.authorize({ action: "start", requestId: "req-1", payload: { prompt: "TASK", cwd: null } });
+assert.equal(missingRefAfterApproval.authorized, false);
+assert.equal(missingRefAfterApproval.consent.consentRef, first.consent.consentRef);
 
-console.log("metered consent hardening PASS");
+const effortGate = new MeteredConsentGate({ mode: "always", quotaProvider: async () => quota });
+const effortPayload = { prompt: "EFFORT_TASK", cwd: null, model: "fake-default", reasoningEffort: "ultra" };
+const effortPrepared = await effortGate.authorize({ action: "start", requestId: "effort-1", payload: effortPayload });
+assert.equal(effortPrepared.authorized, false);
+await assert.rejects(
+  () => effortGate.authorize({
+    action: "start",
+    requestId: "effort-1",
+    payload: { ...effortPayload, reasoningEffort: "medium" },
+  }),
+  /different metered start request/
+);
+const effortApproved = await effortGate.authorize({
+  action: "start",
+  requestId: "effort-1",
+  payload: effortPayload,
+  consentRef: effortPrepared.consent.consentRef,
+});
+assert.equal(effortApproved.authorized, true);
+
+console.log("metered-consent: ok");
