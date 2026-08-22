@@ -132,7 +132,7 @@ For local file upload, the extension also needs **Allow access to file URLs** en
 
 ---
 
-## Install and update
+## Install
 
 **Make sure you already have Node.js 22+ and a working local Codex installation. The installer checks those prerequisites; it does not install Node/npm, and it does not install or replace that local Codex for you. Recommended setup also prepares Codexless's pinned official Codex runtime.**
 
@@ -140,7 +140,7 @@ If you would rather not inspect the environment yourself, give this repository t
 
 Final decisions about local execution, permissions, and trust are still yours.
 
-**Automatic update checks and one-command updates are supported starting with Codexless `0.1.1-preview.0`, released on August 19, 2026. If you installed an earlier build, download the latest release and run the installation command for your platform again to upgrade first.**
+**To install Codexless, check out or download the release/tag you want and run the installation command for your platform. To move to a newer preview later, get the newer release/tag and run the same installation command again. User state stored outside the install tree is preserved.**
 
 ### Windows
 
@@ -148,12 +148,6 @@ Install:
 
 ```powershell
 .\bin\codexless-install.cmd
-```
-
-Update:
-
-```powershell
-& "$env:LOCALAPPDATA\Codexless\bin\codexless-update.cmd"
 ```
 
 Default install directory:
@@ -190,12 +184,6 @@ Install:
 sh ./bin/codexless-install.sh
 ```
 
-Update:
-
-```sh
-"$HOME/Library/Application Support/Codexless/app/bin/codexless-update.sh"
-```
-
 Default install directory:
 
 ```text
@@ -226,7 +214,7 @@ On both platforms, the installer checks Node.js and the local Codex runtime, ins
 
 It does not install Chrome or the browser extension, configure a Tunnel, or silently widen Codex trust. Browser upload permissions also remain an explicit user-side setting.
 
-Codexless performs a low-frequency check for official releases. When a newer version is available, it can notify you, but it **does not install updates automatically**. An update is downloaded, verified, and checked before activation; a failed update does not replace the working install with a partial one.
+To move to a newer version, get the newer release/tag and run the same installation command again. Codexless does not check for or install updates automatically.
 
 ---
 
@@ -365,7 +353,7 @@ Codexless is built around Codex App Server and ChatGPT app/MCP integration surfa
 
 Windows and Apple Silicon macOS have both passed real-machine install / doctor / stdio acceptance.
 
-Browser work has also been dogfooded on real Windows and Apple Silicon Mac machines. Release-package validation is tracked separately from the source-level capability contract rather than inferred from it.
+Browser work has also been dogfooded on real Windows and Apple Silicon Mac machines. Release/source-candidate validation is tracked separately from the source-level capability contract rather than inferred from it.
 
 ### 6. Run from source
 

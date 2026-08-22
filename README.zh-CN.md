@@ -134,7 +134,7 @@ Codexless 除了使用本机 Codex 的工具箱，也可以在 Recommended 安�
 
 ---
 
-## 安装与更新
+## 安装
 
 **先确认电脑里有 Node.js 22+ 和可工作的本机 Codex。安装脚本会检查这些前提；它不会替你安装 Node/npm，也不会替你安装或替换这套本机 Codex。Recommended 安装还会为 Codexless 准备一套官方固定版本的 runtime。**
 
@@ -142,7 +142,7 @@ Codexless 除了使用本机 Codex 的工具箱，也可以在 Recommended 安�
 
 涉及本机执行、权限或 trust 的最终确认，仍然由你决定。
 
-**从 2026 年 8 月 19 日发布的 `0.1.1-preview.0` 开始，Codexless 支持自动检查和一键更新。更早安装的版本，请先下载最新版，并重新运行下面对应平台的安装命令完成升级。**
+**安装 Codexless 时，拉取或下载需要的 release/tag，然后运行对应平台的安装命令即可。以后切换到更新版本时，获取新的 release/tag，再运行同一个安装命令。安装目录之外的用户状态会保留。**
 
 ### Windows
 
@@ -150,12 +150,6 @@ Codexless 除了使用本机 Codex 的工具箱，也可以在 Recommended 安�
 
 ```powershell
 .\bin\codexless-install.cmd
-```
-
-更新：
-
-```powershell
-& "$env:LOCALAPPDATA\Codexless\bin\codexless-update.cmd"
 ```
 
 默认目录：
@@ -192,12 +186,6 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Codex
 sh ./bin/codexless-install.sh
 ```
 
-更新：
-
-```sh
-"$HOME/Library/Application Support/Codexless/app/bin/codexless-update.sh"
-```
-
 默认目录：
 
 ```text
@@ -228,7 +216,7 @@ sh ./bin/codexless-install.sh
 
 它不会替你安装 Chrome、浏览器扩展或配置 Tunnel，也不会自动扩大 Codex trust。Browser 上传所需的文件访问权限也需要用户自行打开。
 
-Codexless 会低频检查官方 Release。有新版时会提醒，但**不会自动安装**。更新会先下载、校验和自检，通过后才切换；中途失败不会用半成品覆盖当前可用版本。
+以后切换到更新版本时，获取新的 release/tag，再运行同一个安装命令即可。Codexless 不会自动检查或安装更新。
 
 ---
 
@@ -369,7 +357,7 @@ Codexless 基于 Codex App Server 和 ChatGPT app/MCP integration surface，不�
 
 Windows 和 Apple Silicon macOS 都已经用真实机器跑过安装 / doctor / stdio 验收。
 
-Browser 也已经在 Windows 和 Apple Silicon Mac 做过真实机器 dogfood；发布包仍按独立 release checklist 验收，不拿 source contract 代替实机证据。
+Browser 也已经在 Windows 和 Apple Silicon Mac 做过真实机器 dogfood；release/source 候选仍按独立 checklist 验收，不拿 source contract 代替实机证据。
 
 ### 6. 从源码运行
 

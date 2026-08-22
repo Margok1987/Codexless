@@ -56,7 +56,7 @@ R1 authority is explicit and fail-closed:
 - public `package.json` is generated from the immutable public base plus declarative canonical/overlay rules. Dirty public `package.json` bytes are not an input;
 - `config/release-manifest.json` is intentionally excluded because it is a later candidate/release generated identity file, not a hand-maintained overlay.
 
-The R1 receipt binds the canonical source commit, pinned public base commit, exporter version, policy/exporter source hashes, exact file list, per-file SHA-256/size/source authority, and deterministic content-tree SHA-256. A successful R1 receipt may truthfully report `fullDeterministicExporter=true`, but it must also state that candidate, installer, exact-artifact, and publication acceptance are not proven. Any exporter/policy/overlay/canonical source change invalidates the old R1 receipt.
+The R1 receipt binds the canonical source commit, pinned public base commit, exporter version, policy/exporter source hashes, exact file list, per-file SHA-256/size/source authority, and deterministic content-tree SHA-256. A successful R1 receipt may truthfully report `fullDeterministicExporter=true`, but it does not prove candidate, native fresh-install, or publication acceptance. Any exporter/policy/overlay/canonical source change invalidates the old R1 receipt.
 
 ## 3. Candidate materialization and R0 provenance gate
 
@@ -94,61 +94,60 @@ Normally include:
 npm run release:manifest
 npm run release:preflight
 npm test
-npm run release:check
-npm run release:verify
 npm pack --dry-run --json
-npm run release:artifacts
-npm run release:artifacts:verify
 ```
 
 The manifest must retain the same canonical `sourceRevision` proven by the R0 gate. If regenerating the manifest changes the candidate tree/build identity, rerun the canonical candidate gate and all contaminated downstream checks.
 
-The artifact verifier proves deterministic archive bytes, manifest/buildId binding, payload file hashes, and SHA256 receipts. It is not Windows/macOS exact-artifact acceptance.
+Check that the release tree contains no temporary caches, `_work`, `node_modules`, platform analysis caches, `nul`, generated platform archives, or other stray files.
 
-Check that the release tree contains no temporary caches, `_work`, `node_modules`, platform analysis caches, `nul`, or other stray files.
+## 5. Frozen public source identity
 
-## 5. Final release artifacts
+Codexless does not publish or maintain platform installer archives. The release unit is the exact public source tree/tag plus its release identity metadata.
 
-Produce the maintained public release set for the target version:
-
-```text
-codexless-<version>-windows-x64.zip
-codexless-<version>-macos-arm64.tar.gz
-codexless-<version>-release-manifest.json
-codexless-<version>-SHA256SUMS
-```
-
-Record frozen identity:
+Record:
 
 - canonical sourceRevision;
 - candidate snapshot SHA;
 - version;
 - buildId;
-- Windows SHA256 + byte size;
-- macOS SHA256 + byte size;
-- release-manifest SHA256.
+- release-manifest identity.
 
-Any source/candidate/packaging change requires contamination analysis, new identity as applicable, and fresh downstream acceptance.
+Any source/candidate/install-script change requires contamination analysis, new identity as applicable, and fresh downstream native-install acceptance.
 
-## 6. Windows exact-artifact acceptance
+## 6. Windows x64 native fresh-install acceptance
 
-Use a fresh temporary install extracted from the final Windows archive, not the source tree.
+On a native Windows x64 host, start from a clean checkout/export of the exact frozen public candidate/tag with no pre-existing `node_modules`. Use isolated fresh `HOME`/`USERPROFILE`, Codexless state root, and install directory. Run the documented public installer from repository root:
 
-Required evidence includes installer success, install receipt version/buildId match, doctor, expected public tool surface, Browser status when available, fresh tab open/read/close, and Browser-only isolation from unrelated configured MCP servers.
+```text
+.\\bin\\codexless-install.cmd
+```
 
-Do not patch user configuration merely to make the test pass.
+Required GREEN evidence:
 
-**Managed Runtime Preview addendum:** Managed Preview is a Windows x64 hard gate, not a Codexless-wide Windows-only claim. The canonical Acceptance registry owns MR-09..MR-14: an exact future Windows artifact must actually ship the pinned official Codex package/native binary before fresh isolated login, restart persistence, update/reinstall preservation, uninstall-state contract, and fresh standalone Chat E2E can be accepted. Source tests, household runtime evidence, or an R0 candidate snapshot cannot substitute for those receipts. This R0 integration does not implement the Managed installer/public candidate lifecycle and does not claim those external gates are proven.
+- installer exits 0 and returns the expected version/build identity;
+- installed doctor reports core OK and preserves any explicit onboarding/PENDING state without silent fallback;
+- installed public stdio exposes exactly the current public contract;
+- Browser status/open/read/close succeeds against `https://example.com/` and leaves no residual test tab;
+- no Household/Main Road/backend substitution and no patching user configuration merely to make the test pass.
 
-## 7. Apple Silicon macOS exact-artifact acceptance
+Do not hard-code a release-specific public tool count; derive the expected public contract from the frozen candidate/install itself.
 
-Transfer/download the exact final tarball, verify its SHA256, and install into a fresh temporary location. Required evidence mirrors Windows: SHA match, install receipt, version/buildId, doctor, public tool surface, Browser status, fresh open/read/close.
+**Managed Runtime Preview addendum:** Managed Preview remains a Windows x64 hard gate, not a Codexless-wide Windows-only claim. The canonical Acceptance registry owns the separate Managed runtime/login/persistence/uninstall/front-door evidence. Source tests or household runtime evidence cannot substitute for the required native receipts.
 
-Do not assume Windows and macOS Codex/ChatGPT Browser layouts are identical. Use current observed trusted runtime facts rather than weakening path/authority checks. Managed Preview being Windows-gated does **not** remove or weaken this Existing-runtime macOS release gate, and Mac Managed must not be reported GREEN until a later suite deliberately adds and proves it.
+## 7. Apple Silicon macOS native fresh-install acceptance
+
+On a native Apple Silicon macOS host, start from the same exact frozen public candidate/tag with no pre-existing `node_modules`, using isolated fresh user/state/install roots. Run the documented installer from repository root:
+
+```text
+./bin/codexless-install.sh
+```
+
+Require the same installed doctor, public stdio, Browser status/open/read/close/no-residual evidence as Windows. Do not assume Windows and macOS Codex/ChatGPT Browser layouts are identical. Use current observed trusted runtime facts rather than weakening path/authority checks. Managed Preview being Windows-gated does **not** remove or weaken this Existing-runtime macOS release gate, and Mac Managed must not be reported GREEN until a later suite deliberately adds and proves it.
 
 ## 8. Candidate → official sync and Git safety
 
-After candidate and both exact artifacts are fully green, synchronize the exact candidate into the official Git repository while preserving `.git` and excluding temporary/build-only directories. Verify recursive relative-path + SHA equivalence.
+After the candidate and both native fresh-install gates are fully green, synchronize the exact candidate into the official Git repository while preserving `.git` and excluding temporary/build-only directories. Verify recursive relative-path + SHA equivalence.
 
 Before commit/push:
 
@@ -168,37 +167,39 @@ Rules:
 
 ## 9. GitHub prerelease publication
 
-Only after Windows and macOS exact-artifact gates are GREEN and the user has authorized publication:
+Only after Windows and macOS native fresh-install gates are GREEN and the user has authorized publication:
 
 - commit the exact official release tree;
 - push `main`;
-- create target prerelease/tag;
-- upload Windows archive;
-- upload macOS archive;
-- upload release manifest;
-- upload SHA256SUMS.
+- create the target prerelease/tag;
+- publish source/tag release metadata and the release manifest if the release workflow uses it.
+
+Do not generate or upload Windows ZIP / macOS tar.gz installer packages or SHA256SUMS for platform packages.
 
 Release notes must describe verified facts only.
 
 ## 10. Post-publication verification
 
-From official:
+From official, verify Git/source identity directly:
 
 ```text
-npm run release:check
-npm run release:verify
+git fetch origin --tags
+git status --short
+git rev-parse HEAD
+git rev-parse origin/main
+git rev-list -n 1 <target-tag>
 ```
 
-Required publication state: target version/tag is latest/current, published digests match frozen local receipts, `HEAD == origin/main`, and working tree is clean.
+Required publication state: target version/tag is latest/current, the tag and `origin/main` resolve to the intended published source, the public release manifest (if present) retains the frozen `sourceRevision`/buildId, `HEAD == origin/main`, and working tree is clean.
 
-This proves publication metadata only. Do not report `RELEASE GREEN`, `INSTALL_COMPLETE`, or `UPDATE_COMPLETE` yet.
+This proves publication metadata only. Do not report `RELEASE GREEN` or `INSTALL_COMPLETE` yet.
 
 ## 11. Installed closeout and full Acceptance
 
 The release-owning mainline keeps ownership after publication. In the same closeout cycle:
 
-1. record actual installed version/build on Windows and Apple Silicon macOS before update;
-2. update/install only through the official updater/installer using the exact published artifact and verify resulting identity;
+1. record actual installed version/build on Windows and Apple Silicon macOS before reinstall/alignment;
+2. install or reinstall from the exact published public source/tag using the documented platform installer and verify resulting identity;
 3. restart the release-owned Codexless runtime/Tunnel path while preserving intended user state/Profile/Tunnel identity;
 4. refresh/reconnect Host/App as needed and prove the active front door exposes the intended contract;
 5. run the complete current Acceptance suite. For the machine runner, provide exact external evidence receipts:
@@ -211,22 +212,21 @@ The evidence file must declare a `subject` matching that exact version/buildId. 
 6. run a genuinely fresh standalone front-door/Temporary Chat smoke, not Household/Main Road;
 7. capture every required Host/UI Golden/visual canonical.
 
-Only after all seven are GREEN may the release owner report `RELEASE GREEN` and affected lines as `INSTALL_COMPLETE` / `UPDATE_COMPLETE`.
+Only after all seven are GREEN may the release owner report `RELEASE GREEN` and affected lines as `INSTALL_COMPLETE`.
 
 ## 12. Released-baseline gate before next-version work
 
-Do not use behavior from a stale installed release to drive a new source fix. First make the latest published baseline GREEN through installed closeout. Next-version source changes come from canonical and flow through a new candidate/provenance/acceptance chain. Installed-package hot edits remain diagnostic evidence only.
+Do not use behavior from a stale installed release to drive a new source fix. First make the latest published baseline GREEN through installed closeout. Next-version source changes come from canonical and flow through a new candidate/provenance/acceptance chain. Installed-tree hot edits remain diagnostic evidence only.
 
 ## Contamination map
 
 - documentation/release-notes-only change → recheck affected policy/metadata parity;
 - Release Supervisor/acceptance-registry change → rerun canonical anti-omission gates + candidate supervisor parity;
 - candidate file change → new candidate snapshot/provenance receipt + affected downstream gates;
-- archive/packaging-only change → rebuild artifacts, new SHA, repeat both exact-artifact acceptances;
 - source/test/package/manifest-input change → resume from canonical source gates and candidate provenance;
-- Browser runtime compatibility change → canonical tests + candidate parity + manifest/artifacts + Windows/macOS exact Browser acceptance;
-- installer/updater change → lifecycle/updater tests + fresh exact installs + downstream closeout;
-- Agent/card/reasoning change → focused deterministic suite + required Host Golden; if included in artifacts, rebuild/reaccept platforms.
+- Browser runtime compatibility change → canonical tests + candidate parity + Windows/macOS native fresh-install Browser acceptance;
+- installer change → lifecycle/install tests + fresh native installs + downstream closeout;
+- Agent/card/reasoning change → focused deterministic suite + required Host Golden; if it changes the public candidate, repeat affected native fresh-install acceptance.
 
 ## Gate receipt
 

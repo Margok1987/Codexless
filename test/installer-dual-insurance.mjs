@@ -107,12 +107,16 @@ test("Recommended pending doctor reports onboarding required with the exact offi
   assert.match(text, /official_chatgpt_login_required/);
   assert.match(text, /managed-codex-login\.mjs/);
   assert.match(text, /Run: \$\{managedLoginCommand\}/);
+  assert.match(text, /Run: \$\{managedLoginCommand\}`,[\s\S]*?false[\s\S]*?\);/);
+  assert.match(text, /required: Boolean\(required\)/);
+  assert.match(text, /check\.required \? \"FAIL\" : \"PENDING\"/);
   assert.doesNotMatch(text, /not_required/);
   assert.match(text, /managedProbe\.status === \"ready\"/);
   assert.match(text, /status: \"degraded\", probeStatus: managedProbe\.status/);
   assert.match(text, /Managed dual lane is degraded/);
   assert.match(text, /status: \"degraded\"/);
   assert.match(text, /Dual policy remains active/);
+  assert.match(text, /allowUntrustedReadOnlyBootstrap: !requestedCwd/);
 });
 
 test("projected doctor compatibility keeps the public home-path redaction export available", () => {

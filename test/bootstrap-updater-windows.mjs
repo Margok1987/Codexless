@@ -14,7 +14,7 @@ import {
 import { buildBootstrapFailureReceipt } from "../src/bootstrap-updater.mjs";
 import { releaseAssetContract } from "../src/release-discovery.mjs";
 import { buildReleaseManifest, serializeReleaseManifest } from "../src/release-identity.mjs";
-import { canonicalInstallDirIdentity, OWNERSHIP_MARKER_PREFIX, validateLifecycleReceipt } from "../src/lifecycle-contract.mjs";
+import { canonicalInstallDirIdentity, INSTALLER_LOCK_DIRNAME, INSTALLER_LOCK_METADATA_FILENAME, OWNERSHIP_MARKER_PREFIX, validateLifecycleReceipt } from "../src/lifecycle-contract.mjs";
 
 if (process.platform !== "win32") {
   process.stdout.write("bootstrap updater Windows E2E SKIP (not win32)\n");
@@ -27,6 +27,11 @@ const root = await mkdtemp(path.join(os.tmpdir(), "codexless-bootstrap-updater-"
 const fakeTools = path.join(root, "fake-tools");
 const stateHome = path.join(root, "home");
 const stateRoot = path.join(stateHome, ".config", "codexless");
+const realPowerShellHome = readRealPowerShellHome();
+const realStateRoot = path.join(realPowerShellHome, ".config", "codexless");
+const realActivationLock = path.join(realStateRoot, INSTALLER_LOCK_DIRNAME);
+assert.notEqual(path.resolve(stateRoot).toLowerCase(), path.resolve(realStateRoot).toLowerCase(), "fixture state root must be isolated from real PowerShell home");
+const realActivationLockBefore = await snapshotActivationLock(realActivationLock);
 const tempRoot = path.join(root, "download-temp");
 const stagingRoot = path.join(root, "staging-temp");
 const secret = "ghp_BOOTSTRAP_SECRET_MUST_NOT_LEAK";
@@ -258,6 +263,7 @@ try {
 
   const failureReceipt = buildBootstrapFailureReceipt(new Error(`${secret} https://example.com/evil ${path.join(root, "secret-path")}`));
   assertNoSecretOrPath(failureReceipt);
+  assert.deepEqual(await snapshotActivationLock(realActivationLock), realActivationLockBefore, "fixture must not mutate the real user activation lock");
 
   process.stdout.write(`bootstrap updater Windows E2E PASS ${targetRelease.manifest.buildId}\n`);
 } finally {
@@ -326,6 +332,21 @@ async function createFixtureRelease(version, sourceRevision, hostContractVersion
   await writeFile(path.join(releaseRoot, "scripts", "launch.mjs"), "// fixture\n", "utf8");
   await writeFile(path.join(releaseRoot, "bin", "fixture.txt"), "fixture\n", "utf8");
   await writeFile(path.join(releaseRoot, "config", "toolbox-method-registry.json"), "{}\n", "utf8");
+  await writeFile(path.join(releaseRoot, "scripts", "runtime-install-state.mjs"), [
+    "import process from 'node:process';",
+    "const command = process.argv[2] || 'status';",
+    "let value;",
+    "if (command === 'status') value = {ok:true,preference:{mode:null,persisted:false,updatedAt:null},routing:{activation:'existing_only_pending_managed',managedReady:false,persisted:false,updatedAt:null}};",
+    "else if (command === 'verify-managed') value = {ok:true,action:'managed-runtime-provisioned',activationChanged:false,activation:'existing_only_pending_managed',managedReady:false,managed:{packageName:'@openai/codex',packageVersion:'0.147.0',platformPackageName:'@openai/codex-win32-x64',platformPackageVersion:'0.147.0-win32-x64',binarySha256:'f'.repeat(64),codexHome:'fixture-managed-home',source:'fixture'},officialLoginRequiredBeforeFirstDualActivation:true,noExistingCredentialCopy:true,noExistingCodexHomeCopy:true,noSilentFallback:true};",
+    "else value = {ok:true,action:command,mode:process.argv.includes('--mode') ? process.argv[process.argv.indexOf('--mode') + 1] : null};",
+    "process.stdout.write(JSON.stringify(value) + '\\n');",
+    "",
+  ].join("\n"), "utf8");
+  await writeFile(path.join(releaseRoot, "scripts", "sync-codex-skills.mjs"), [
+    "import process from 'node:process';",
+    "process.stdout.write(JSON.stringify({ok:true,status:'current',action:'no-op',targetLane:'existing',transactionId:null}) + '\\n');",
+    "",
+  ].join("\n"), "utf8");
   await writeFile(path.join(releaseRoot, "skills", "codexless-browser-repair", "SKILL.md"), "---\nname: codexless-browser-repair\ndescription: fixture\n---\n", "utf8");
   await writeFile(path.join(releaseRoot, "package.json"), `${JSON.stringify({ name: "codexless", version, private: true, type: "module" }, null, 2)}\n`, "utf8");
   await writeFile(path.join(releaseRoot, "npm-shrinkwrap.json"), `${JSON.stringify({ name: "codexless", version, lockfileVersion: 3, requires: true, packages: { "": { name: "codexless", version } } }, null, 2)}\n`, "utf8");
@@ -352,12 +373,14 @@ function fixtureInstallerWrapper() {
     "[CmdletBinding()]",
     "param([string]$InstallDir,[switch]$Repair,[switch]$Json)",
     "$ErrorActionPreference='Stop'",
+    "Set-Variable -Name HOME -Scope Global -Value $env:USERPROFILE -Force",
+    "$fixtureStateRoot=[System.IO.Path]::GetFullPath((Join-Path (Join-Path $HOME '.config') 'codexless'))",
+    "if(([string]$HOME -ne [string]$env:HOME) -or ([string]$HOME -ne [string]$env:USERPROFILE) -or ($fixtureStateRoot -ne [System.IO.Path]::GetFullPath($env:CODEXLESS_BOOTSTRAP_FIXTURE_STATE_ROOT))){ throw 'fixture HOME isolation failed' }",
     "$invokeDir=$env:CODEXLESS_BOOTSTRAP_FIXTURE_INVOKE_DIR",
-    "if($invokeDir){ New-Item -ItemType Directory -Force -Path $invokeDir | Out-Null; $record=[ordered]@{repair=$Repair.IsPresent;pid=$PID} | ConvertTo-Json -Compress; [System.IO.File]::WriteAllText((Join-Path $invokeDir ('invoke-'+$PID+'.json')),$record) }",
+    "if($invokeDir){ New-Item -ItemType Directory -Force -Path $invokeDir | Out-Null; $record=[ordered]@{repair=$Repair.IsPresent;pid=$PID;home=[string]$HOME;envHome=[string]$env:HOME;userProfile=[string]$env:USERPROFILE;stateRoot=$fixtureStateRoot} | ConvertTo-Json -Compress; [System.IO.File]::WriteAllText((Join-Path $invokeDir ('invoke-'+$PID+'.json')),$record) }",
     "if($env:CODEXLESS_BOOTSTRAP_FIXTURE_BARRIER -eq '1' -and $invokeDir){ $deadline=[DateTime]::UtcNow.AddSeconds(10); while((Get-ChildItem -LiteralPath $invokeDir -Filter 'invoke-*.json' -ErrorAction SilentlyContinue).Count -lt 2){ if([DateTime]::UtcNow -gt $deadline){ throw 'fixture barrier timeout' }; Start-Sleep -Milliseconds 20 } }",
-    "$args=@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $PSScriptRoot 'install-real.ps1'),'-InstallDir',$InstallDir,'-Json')",
-    "if($Repair){ $args += '-Repair' }",
-    "& powershell.exe @args",
+    "if($Repair){ & (Join-Path $PSScriptRoot 'install-real.ps1') -InstallDir $InstallDir -Json -Repair }",
+    "else { & (Join-Path $PSScriptRoot 'install-real.ps1') -InstallDir $InstallDir -Json }",
     "exit $LASTEXITCODE",
     "",
   ].join("\r\n");
@@ -412,6 +435,7 @@ function fixtureEnv({ bootstrapRoot = null, invocations = null, barrier = false,
     PATH: `${fakeTools}${path.delimiter}${process.env.PATH ?? ""}`,
     HOME: stateHome,
     USERPROFILE: stateHome,
+    CODEXLESS_BOOTSTRAP_FIXTURE_STATE_ROOT: stateRoot,
     GITHUB_TOKEN: secret,
     CODEXLESS_FIXTURE_DOCTOR_DELAY_MS: String(doctorDelayMs),
   };
@@ -446,7 +470,16 @@ async function invocationDir(label) {
 
 async function readInvocationRecords(directory) {
   const names = (await readdir(directory)).filter((name) => name.startsWith("invoke-") && name.endsWith(".json"));
-  return Promise.all(names.map(async (name) => JSON.parse(await readFile(path.join(directory, name), "utf8"))));
+  const records = await Promise.all(names.map(async (name) => JSON.parse(await readFile(path.join(directory, name), "utf8"))));
+  const expectedHome = path.resolve(stateHome).toLowerCase();
+  const expectedStateRoot = path.resolve(stateRoot).toLowerCase();
+  for (const record of records) {
+    assert.equal(path.resolve(record.home).toLowerCase(), expectedHome, "fixture PowerShell $HOME must use isolated home");
+    assert.equal(path.resolve(record.envHome).toLowerCase(), expectedHome, "fixture env HOME must use isolated home");
+    assert.equal(path.resolve(record.userProfile).toLowerCase(), expectedHome, "fixture USERPROFILE must use isolated home");
+    assert.equal(path.resolve(record.stateRoot).toLowerCase(), expectedStateRoot, "fixture PowerShell StateRoot must stay under isolated home");
+  }
+  return records;
 }
 
 async function corruptInstallIdentity(installDir) {
@@ -465,6 +498,48 @@ async function markerFilePath(installDir) {
 
 async function readMarker(installDir) {
   return JSON.parse(await readFile(await markerFilePath(installDir), "utf8"));
+}
+
+function readRealPowerShellHome() {
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-Command", "[Console]::Out.Write([string]$HOME)"], {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 10_000,
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const home = result.stdout.trim();
+  assert.equal(path.isAbsolute(home), true, "real PowerShell $HOME must be absolute");
+  return home;
+}
+
+async function snapshotActivationLock(lockPath) {
+  let lockStat;
+  try {
+    lockStat = await stat(lockPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") return { exists: false };
+    throw error;
+  }
+  const metadataPath = path.join(lockPath, INSTALLER_LOCK_METADATA_FILENAME);
+  let metadata;
+  try {
+    const metadataStat = await stat(metadataPath);
+    metadata = {
+      exists: true,
+      mtimeMs: metadataStat.mtimeMs,
+      size: metadataStat.size,
+      sha256: sha256(await readFile(metadataPath)),
+    };
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    metadata = { exists: false };
+  }
+  return {
+    exists: true,
+    mtimeMs: lockStat.mtimeMs,
+    entries: (await readdir(lockPath)).sort(),
+    metadata,
+  };
 }
 
 function resetCounters() {

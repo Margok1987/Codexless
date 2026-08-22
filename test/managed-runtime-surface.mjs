@@ -339,6 +339,21 @@ test("managed public surface keeps model-free toolbox usable while Call Codex is
     assert.equal(blockedDirectFormal.isError, true);
     assert.equal(blockedDirectFormal.structuredContent?.errorCode, "FORMAL_CODEX_AGENT_REQUIRED");
 
+    const wrappedFormalCommand = process.platform === "win32"
+      ? ["powershell.exe", "-NoProfile", "-Command", `& '${path.join(tempHome, "must-not-exist", "codex.exe")}' exec MUST_NOT_RUN`]
+      : ["/bin/sh", "-lc", `'${path.join(tempHome, "must-not-exist", "codex")}' exec MUST_NOT_RUN`];
+    const blockedWrappedFormal = await client.callTool({
+      name: "codex.command_exec",
+      arguments: {
+        command: wrappedFormalCommand,
+        cwd: root,
+        access: "readOnly",
+        timeoutMs: 5_000,
+      },
+    });
+    assert.equal(blockedWrappedFormal.isError, true);
+    assert.equal(blockedWrappedFormal.structuredContent?.errorCode, "FORMAL_CODEX_AGENT_REQUIRED");
+
     const blocked = await client.callTool({
       name: "codex.agent_start",
       arguments: {

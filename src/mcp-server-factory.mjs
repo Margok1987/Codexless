@@ -135,7 +135,7 @@ export function createCodexToolboxServerFactory({
         },
       },
       async ({ command, access, timeoutMs, cwd }) => {
-        const directCodexGuard = guardDirectFormalCodex ? classifyDirectFormalCodexInvocation(command) : null;
+        const directCodexGuard = guardDirectFormalCodex ? classifyFormalCodexInvocation(command) : null;
         if (directCodexGuard) {
           return toolError(directCodexGuard.message, {
             errorCode: "FORMAL_CODEX_AGENT_REQUIRED",
@@ -199,7 +199,7 @@ export function createCodexToolboxServerFactory({
 
     if (workbench) {
       registerWorkbenchPreviewTools(registrationServer, workbench, {
-        directFormalCodexGuard: guardDirectFormalCodex ? classifyDirectFormalCodexInvocation : null,
+        directFormalCodexGuard: guardDirectFormalCodex ? classifyFormalCodexInvocation : null,
         processDescriptionSuffix: guardDirectFormalCodex
           ? " Direct Codex model/control invocation is not a supported fallback on this model-callable process lane: household formal Codex work must use codex.agent_start/codex.agent_send and the Portable Card exact short-ID decision flow. Rich Card v13 remains an app compatibility path. This is an accidental-routing guard, not a claim that a generic process/PTY is an inescapable sandbox against arbitrarily wrapped executables."
           : "",
@@ -234,6 +234,53 @@ export function createCodexToolboxServerFactory({
 
     return server;
   };
+}
+
+const WRAPPED_CODEX_COMMAND_TOKEN_RE = /(?:^|[\s\"'`;&|(),])(?:[^\s\"'`;&|(),]*[\\/])?codex(?:\.(?:exe|com|cmd|bat|ps1))?(?=$|[\s\"'`;&|(),])/i;
+const COMMAND_STRING_CODEX_WRAPPERS = new Set(["cmd", "powershell", "pwsh", "sh", "bash", "zsh", "fish"]);
+const INLINE_CODEX_WRAPPERS = new Set(["node", "nodejs", "python", "python3", "py", "ruby", "perl", "deno", "bun"]);
+const EXECUTABLE_CODEX_WRAPPERS = new Set(["env", "sudo", "wsl", "nohup", "timeout", "nice", "stdbuf", "xargs", "npx", "npm", "pnpm", "yarn"]);
+
+function classifyFormalCodexInvocation(command) {
+  if (!Array.isArray(command) || command.length < 1) return null;
+  const executable = commandExecutableStem(command[0]);
+  if (["codex", "codex.exe", "codex.cmd", "codex.bat"].includes(commandExecutableBasename(command[0]))) {
+    return classifyDirectFormalCodexInvocation(command);
+  }
+  if (!wrapperCarriesCodexInvocation(command, executable)) return null;
+  return directFormalCodexRejection(`wrapped-${executable}`);
+}
+
+function wrapperCarriesCodexInvocation(command, wrapper) {
+  const args = command.slice(1).map((value) => String(value));
+  if (COMMAND_STRING_CODEX_WRAPPERS.has(wrapper)) {
+    return args.some((arg) => WRAPPED_CODEX_COMMAND_TOKEN_RE.test(arg));
+  }
+  if (INLINE_CODEX_WRAPPERS.has(wrapper)) {
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index];
+      const prior = args[index - 1];
+      const inlineCode = ["-e", "--eval", "-c", "-Command", "--command", "-p", "--print"].includes(prior)
+        || /^-(?:e|c|p)=/.test(arg)
+        || /^--(?:eval|command|print)=/.test(arg)
+        || (wrapper === "deno" && prior === "eval");
+      if (inlineCode && WRAPPED_CODEX_COMMAND_TOKEN_RE.test(arg)) return true;
+    }
+    return false;
+  }
+  if (EXECUTABLE_CODEX_WRAPPERS.has(wrapper)) {
+    return args.some((arg) => commandExecutableStem(arg) === "codex" || WRAPPED_CODEX_COMMAND_TOKEN_RE.test(arg));
+  }
+  return false;
+}
+
+function commandExecutableBasename(value) {
+  const normalized = String(value ?? "").trim().replaceAll("\\", "/");
+  return normalized.slice(normalized.lastIndexOf("/") + 1).toLowerCase();
+}
+
+function commandExecutableStem(value) {
+  return commandExecutableBasename(value).replace(/\.(?:exe|com|cmd|bat|ps1)$/i, "");
 }
 
 const DIRECT_CODEX_BLOCKED_SUBCOMMANDS = new Set([

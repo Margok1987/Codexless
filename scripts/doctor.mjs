@@ -15,7 +15,6 @@ import { readJsonFile } from "../src/json-file.mjs";
 import { CodexPublicContextExecutor } from "../src/public-context-executor.mjs";
 import { createRecentCallDiagnostics, recentCallOptionsFromEnv } from "../src/recent-call-diagnostics.mjs";
 import { STOCK_RUNTIME_KIND } from "../src/stock-prompt-input-skill-routing.mjs";
-import { opportunisticCodexlessUpdateCheck } from "../src/public-update-check.mjs";
 import { effectiveRuntimeRouting } from "../src/runtime-routing-policy.mjs";
 import { PUBLIC_SERVER_VERSION, PUBLIC_SURFACE_VERSION, PUBLIC_TOOL_NAMES } from "../src/surface-contracts.mjs";
 
@@ -49,7 +48,7 @@ record(
 );
 const nodeMajor = Number.parseInt(process.versions.node.split(".")[0], 10);
 record("node", Number.isInteger(nodeMajor) && nodeMajor >= 22, `Node ${process.version}`, nodeMajor >= 22 ? null : "Node.js 22+ is required");
-record("public-surface", PUBLIC_TOOL_NAMES.length === 40, `${PUBLIC_SURFACE_VERSION}; ${PUBLIC_TOOL_NAMES.length} tools`);
+record("public-surface", PUBLIC_TOOL_NAMES.length === 42, `${PUBLIC_SURFACE_VERSION}; ${PUBLIC_TOOL_NAMES.length} tools`);
 
 for (const spec of ["@modelcontextprotocol/node", "@modelcontextprotocol/server", "zod"]) {
   try {
@@ -78,7 +77,8 @@ try {
       "managed-runtime-readiness",
       false,
       "Managed dual activation is pending official ChatGPT login.",
-      `Run: ${managedLoginCommand}`
+      `Run: ${managedLoginCommand}`,
+      false
     );
   } else if (runtimeRouting.activation === "dual_ready") {
     try {
@@ -129,6 +129,7 @@ if (codexResolution?.path && codexProbe?.ok) {
       codexBin: codexResolution.path,
       defaultCwd: runtimeCwd,
       acceptedCodexVersions: null,
+      allowUntrustedReadOnlyBootstrap: !requestedCwd,
     });
     const compatibility = await compatibilityAuthority.validate();
     record("codex-contract-gate", true, `Codex App Server authority contract accepted ${compatibility.codexVersion ?? "current build"}`);
@@ -266,17 +267,6 @@ const health = buildDoctorHealth({
   optionalWarnings: finalWarnings.filter((warning) => warning.kind === "configured-mcp"),
 });
 const status = health.core.status;
-let updateAdvisory = null;
-try {
-  const updateCheck = await opportunisticCodexlessUpdateCheck({ currentRoot: projectRoot });
-  if (updateCheck.advisory) {
-    const launcher = process.platform === "win32" ? "codexless-update.cmd" : "codexless-update.sh";
-    updateAdvisory = {
-      ...updateCheck.advisory,
-      command: path.join(projectRoot, "bin", launcher),
-    };
-  }
-} catch {}
 const result = {
   status,
   health,
@@ -316,7 +306,6 @@ const result = {
   diagnostics: {
     recentCalls,
   },
-  ...(updateAdvisory ? { updateAdvisory } : {}),
   checks,
   warnings: finalWarnings,
   notes,
@@ -344,8 +333,8 @@ function parseArgs(argv) {
   return parsed;
 }
 
-function record(name, ok, detail, action = null) {
-  checks.push({ name, ok: Boolean(ok), required: true, detail: sanitizeText(detail), ...(action ? { action: sanitizeText(action) } : {}) });
+function record(name, ok, detail, action = null, required = true) {
+  checks.push({ name, ok: Boolean(ok), required: Boolean(required), detail: sanitizeText(detail), ...(action ? { action: sanitizeText(action) } : {}) });
 }
 
 function parseCodexVersion(text) {
@@ -398,13 +387,13 @@ function dedupeWarnings(rows) {
 }
 
 function printHuman(result) {
-  const mark = (ok) => ok ? "PASS" : "FAIL";
+  const mark = (check) => check.ok ? "PASS" : check.required ? "FAIL" : "PENDING";
   process.stdout.write(`Codexless doctor: ${result.status.toUpperCase()}\n`);
   process.stdout.write(`Version ${result.codexless.packageVersion} | ${result.codexless.surfaceVersion} | ${result.codexless.publicToolCount} public tools\n`);
   if (result.runtimeRouting?.activation) process.stdout.write(`Runtime ${result.runtimeRouting.installMode}/${result.runtimeRouting.activation} | modelFree=${result.runtimeRouting.routes?.stableModelFree ?? "unknown"} | Browser/Call Codex=${result.runtimeRouting.routes?.browser ?? "unknown"}/${result.runtimeRouting.routes?.formalAgent ?? "unknown"}\n`);
   process.stdout.write("\n");
   for (const check of result.checks) {
-    process.stdout.write(`[${mark(check.ok)}] ${check.name}: ${check.detail}\n`);
+    process.stdout.write(`[${mark(check)}] ${check.name}: ${check.detail}\n`);
     if (!check.ok && check.action) process.stdout.write(`       -> ${check.action}\n`);
   }
   process.stdout.write(`\nCore health: ${result.health.core.status}\n`);
@@ -426,11 +415,6 @@ function printHuman(result) {
   if (result.warnings.length) {
     process.stdout.write("\nWarnings:\n");
     for (const warning of result.warnings) process.stdout.write(`- ${warning.kind}: ${warning.message}\n`);
-  }
-  if (result.updateAdvisory) {
-    const latest = result.updateAdvisory.latestVersion ? ` ${result.updateAdvisory.latestVersion}` : "";
-    process.stdout.write(`\nUpdate available:${latest}\n`);
-    process.stdout.write(`Run: ${result.updateAdvisory.command}\n`);
   }
   process.stdout.write("\nNo Codex model turn was started.\n");
 }

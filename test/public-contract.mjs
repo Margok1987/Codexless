@@ -42,7 +42,7 @@ function createIsolatedPublicTestEnv(extra = {}) {
 }
 
 assert.equal(PUBLIC_SURFACE_VERSION, "codexless-public-preview-v1");
-assert.equal(PUBLIC_TOOL_NAMES.length, 39);
+assert.equal(PUBLIC_TOOL_NAMES.length, 42);
 for (const relative of [
   "src/browser-tools.mjs",
   "src/codex-browser-executor.mjs",
@@ -69,7 +69,7 @@ if (process.env.MCP_TEST_NEGOTIATION === "modern") client.setVersionNegotiation(
 
 const transport = new StdioClientTransport({
   command: process.execPath,
-  args: [path.join(projectRoot, "src", "mcp-stdio.mjs")],
+  args: [path.join(projectRoot, "src", "mcp-stdio-public.mjs")],
   cwd: projectRoot,
   env: createIsolatedPublicTestEnv(),
   stderr: "pipe",
@@ -82,7 +82,7 @@ try {
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name);
   assert.deepEqual([...names].sort(), [...PUBLIC_TOOL_NAMES].sort());
-  assert.equal(names.length, 39);
+  assert.equal(names.length, 42);
 
   for (const name of forbiddenNames) {
     assert.equal(names.includes(name), false, `${name} must not be exposed by the public preview`);
@@ -97,7 +97,8 @@ try {
   const commandTool = tools.tools.find((tool) => tool.name === "codex.command_exec");
   const preciseEditTool = tools.tools.find((tool) => tool.name === "codex.precise_edit");
   const skillListTool = tools.tools.find((tool) => tool.name === "codex.skill_list");
-  const appOnlyCardToolNames = ["codex.agent_card_state"];
+  const appOnlyCardToolNames = ["codex.agent_card_state", "codex.agent_commit", "codex.agent_decline"];
+  const portableCardToolNames = ["codex.agent_portable_commit", "codex.agent_portable_decline"];
   assert.equal(commandTool?.annotations?.destructiveHint, true);
   assert.match(commandTool?.description ?? "", /must not launch Codex CLI|refuses nested Codex/i);
   const nestedCodexCommand = await client.callTool({
@@ -114,8 +115,9 @@ try {
     const tool = tools.tools.find((candidate) => candidate.name === name);
     assert.deepEqual(tool?._meta?.ui?.visibility, ["app"], `${name} must remain app-only`);
   }
-  for (const name of ["codex.agent_commit", "codex.agent_decline"]) {
+  for (const name of portableCardToolNames) {
     const tool = tools.tools.find((candidate) => candidate.name === name);
+    assert.equal(names.includes(name), true, `${name} must be registered on the public runtime`);
     assert.equal(tool?._meta?.ui?.visibility, undefined, `${name} must remain model-callable for Portable Card fallback`);
   }
 
@@ -355,7 +357,7 @@ try {
     await httpClient.connect(httpTransport);
     const httpTools = await httpClient.listTools();
     const httpNames = httpTools.tools.map((tool) => tool.name);
-    assert.equal(httpNames.length, 39);
+    assert.equal(httpNames.length, 42);
     assert.deepEqual([...httpNames].sort(), [...PUBLIC_TOOL_NAMES].sort());
     for (const name of forbiddenNames) {
       assert.equal(httpNames.includes(name), false, `${name} must not be exposed by the public HTTP preview`);

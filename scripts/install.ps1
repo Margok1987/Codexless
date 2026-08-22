@@ -9,6 +9,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = $Utf8NoBom
+$OutputEncoding = $Utf8NoBom
 $SourceRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
 $StateRoot = Join-Path $HOME ".config\codexless"
@@ -596,8 +599,28 @@ try {
       try {
         $rollbackText = if ($RollbackPerformed) { "true" } else { "false" }
         $schemaText = if ($StateSchemaCompatible) { "true" } else { "false" }
-        $failureArgs = @((Join-Path $SourceRoot "scripts\lifecycle.mjs"), "failure", "--action", $LifecycleAction, "--install-dir", $InstallDir, "--error-stage", $ErrorStage, "--error-code", $ErrorCode, "--error", $failureMessage, "--rollback-performed", $rollbackText, "--state-schema-compatible", $schemaText)
-        $failureOutput = (& $node @failureArgs | Out-String).Trim()
+        $failureMessageLimit = 65536
+        $failureSuffix = "`n...[failure detail truncated at $failureMessageLimit characters]"
+        if ($failureMessage.Length -gt $failureMessageLimit) {
+          $failureMessage = $failureMessage.Substring(0, $failureMessageLimit - $failureSuffix.Length) + $failureSuffix
+        }
+        $failurePayload = [ordered]@{
+          lifecycle = Join-Path $SourceRoot "scripts\lifecycle.mjs"
+          action = $LifecycleAction
+          installDir = $InstallDir
+          errorStage = $ErrorStage
+          errorCode = $ErrorCode
+          error = $failureMessage
+          rollbackPerformed = $rollbackText
+          stateSchemaCompatible = $schemaText
+        } | ConvertTo-Json -Compress
+        $failurePayloadBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($failurePayload))
+        $failureBridgeTemplateBase64 = "aW1wb3J0e3BhdGhUb0ZpbGVVUkx9ZnJvbSJub2RlOnVybCI7Y29uc3QgcD1KU09OLnBhcnNlKEJ1ZmZlci5mcm9tKCJfX1BBWUxPQURfXyIsImJhc2U2NCIpLnRvU3RyaW5nKCJ1dGY4IikpO2xldCBvPSIiO2NvbnN0IHc9cHJvY2Vzcy5zdGRvdXQud3JpdGUuYmluZChwcm9jZXNzLnN0ZG91dCk7cHJvY2Vzcy5zdGRvdXQud3JpdGU9KGMpPT57bys9QnVmZmVyLmlzQnVmZmVyKGMpP2MudG9TdHJpbmcoInV0ZjgiKTpTdHJpbmcoYyk7cmV0dXJuIHRydWV9O3Byb2Nlc3MuYXJndj1bcHJvY2Vzcy5leGVjUGF0aCxwLmxpZmVjeWNsZSwiZmFpbHVyZSIsIi0tYWN0aW9uIixwLmFjdGlvbiwiLS1pbnN0YWxsLWRpciIscC5pbnN0YWxsRGlyLCItLWVycm9yLXN0YWdlIixwLmVycm9yU3RhZ2UsIi0tZXJyb3ItY29kZSIscC5lcnJvckNvZGUsIi0tZXJyb3IiLHAuZXJyb3IsIi0tcm9sbGJhY2stcGVyZm9ybWVkIixwLnJvbGxiYWNrUGVyZm9ybWVkLCItLXN0YXRlLXNjaGVtYS1jb21wYXRpYmxlIixwLnN0YXRlU2NoZW1hQ29tcGF0aWJsZV07dHJ5e2F3YWl0IGltcG9ydChwYXRoVG9GaWxlVVJMKHAubGlmZWN5Y2xlKS5ocmVmKX1maW5hbGx5e3Byb2Nlc3Muc3Rkb3V0LndyaXRlPXc7dyhCdWZmZXIuZnJvbShvLCJ1dGY4IikudG9TdHJpbmcoImJhc2U2NCIpKX0="
+        $failureBridge = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($failureBridgeTemplateBase64)).Replace("__PAYLOAD__", $failurePayloadBase64)
+        $failureOutputBase64 = ($failureBridge | & $node --input-type=module | Out-String).Trim()
+        if ($LASTEXITCODE -eq 0 -and $failureOutputBase64) {
+          $failureOutput = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($failureOutputBase64)).Trim()
+        }
       } catch {}
     }
     if ($failureOutput) { Write-Output $failureOutput }

@@ -445,7 +445,6 @@ chmod +x \
   "$STAGE_DIR/bin/codexless-http.sh" \
   "$STAGE_DIR/bin/codexless-stdio.sh" \
   "$STAGE_DIR/bin/codexless-uninstall.sh" \
-  "$STAGE_DIR/bin/codexless-update.sh" \
   || fail "Failed to mark Mac lifecycle launchers executable in staging."
 
 ERROR_STAGE="dependency-install"

@@ -743,6 +743,21 @@ export function registerAgentPreviewTools(server, {
     throw error;
   }
 
+  function isAmbiguousInheritedAuthority(error) {
+    return /activePermissionProfile is null and config\/read provides no explicit default_permissions provenance/.test(
+      error instanceof Error ? error.message : String(error)
+    );
+  }
+
+  async function resolveFormalAgentStartAuthority(cwd) {
+    try {
+      return await authorityExecutor.resolveAuthority({ cwd, access: "inherit" });
+    } catch (error) {
+      if (!isAmbiguousInheritedAuthority(error)) throw error;
+      return authorityExecutor.resolveAuthority({ cwd, access: "readOnly" });
+    }
+  }
+
   function summaryFor(action, payload) {
     const text = action === "start" ? payload.prompt : payload.message;
     const clean = String(text ?? "").replace(/\s+/g, " ").trim();
@@ -1362,7 +1377,7 @@ export function registerAgentPreviewTools(server, {
       throw new Error("Codex task was not started because durable Task Card state could not be recorded safely");
     }
     if (record.action === "start") {
-      const currentAuthority = await authorityExecutor.resolveAuthority({ cwd: record.cwd, access: "inherit" });
+      const currentAuthority = await resolveFormalAgentStartAuthority(record.cwd);
       if (currentAuthority.effectiveCwd !== record.cwd || currentAuthority.permissionProfile !== record.permissionProfile) {
         throw new Error("prepared Codex task authority changed; prepare and approve a new task card");
       }
@@ -1626,7 +1641,7 @@ export function registerAgentPreviewTools(server, {
         : null;
       const boundProfile = callProfileSnapshot(activeProfile);
 
-      const authority = await authorityExecutor.resolveAuthority({ cwd: cwd ?? null, access: "inherit" });
+      const authority = await resolveFormalAgentStartAuthority(cwd ?? null);
       const callerPayload = {
         prompt,
         callerCwd: cwd ?? null,

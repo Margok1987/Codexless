@@ -116,10 +116,24 @@ try {
   assert.equal((await readReleaseManifest(mainInstall)).sourceRevision, "release-b");
   await assertBootstrapPointsTo(defaultBootstrapRoot, sameReceipt.artifactBuildId, "installed doctor failure");
 
-  const stageFailure = runInstaller(releaseC, mainInstall, { doctorFail: "stage" });
+  const doctorFailureDetail = [
+    "doctor line one",
+    'quoted \"hello world\"',
+    String.raw`backslash C:\fixture\doctor`,
+    "Unicode 狐🦊",
+  ].join("\n");
+  const stageFailure = runInstaller(releaseC, mainInstall, { doctorFail: "stage", doctorFailureDetail });
   assert.notEqual(stageFailure.status, 0);
   const stageFailureReceipt = parseReceipt(stageFailure.stdout);
+  validateLifecycleReceipt(stageFailureReceipt, { expectOk: false });
   assert.equal(stageFailureReceipt.errorStage, "staging-doctor");
+  assert.equal(stageFailureReceipt.errorCode, "STAGING_DOCTOR_FAILED");
+  const expectedDoctorFailure = JSON.stringify({ status: "error", errorClass: "FixtureDoctorError", errorCode: "FIXTURE_DOCTOR_FAILED", message: doctorFailureDetail }, null, 2);
+  assert.ok(stageFailureReceipt.error.replace(/\r\n/g, "\n").endsWith(expectedDoctorFailure), stageFailureReceipt.error);
+  assert.equal(`${stageFailure.stdout}\n${stageFailure.stderr}`.includes("unexpected lifecycle argument"), false, "multiline doctor failure must not be reparsed as positional lifecycle argv");
+  const strayLifecycleArg = spawnSync(process.execPath, [path.join(projectRoot, "scripts", "lifecycle.mjs"), "failure", "unexpected-positional"], { encoding: "utf8", windowsHide: true });
+  assert.notEqual(strayLifecycleArg.status, 0, "genuine positional lifecycle argv must remain fail-closed");
+  assert.match(strayLifecycleArg.stderr, /unexpected lifecycle argument: unexpected-positional/);
   await assertBootstrapPointsTo(defaultBootstrapRoot, sameReceipt.artifactBuildId, "staging doctor failure");
   const afterStageFailure = runInstaller(releaseC, mainInstall);
   assert.equal(afterStageFailure.status, 0, "a failure/exception path must release the activation lock for the next installer");
@@ -348,7 +362,9 @@ async function createFixtureRelease(name, marker, hostContractVersion, { incompa
     "if (delay > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);",
     "const stage = process.cwd().toLowerCase().includes('codexless-stage-');",
     "const fail = (mode === 'stage' && stage) || (mode === 'installed' && !stage);",
-    "process.stdout.write(JSON.stringify({status: fail ? 'error' : 'ok'}) + '\\n');",
+    "const detail = process.env.CODEXLESS_FIXTURE_DOCTOR_DETAIL || '';",
+    "const payload = fail ? {status:'error',errorClass:'FixtureDoctorError',errorCode:'FIXTURE_DOCTOR_FAILED',message:detail} : {status:'ok'};",
+    "process.stdout.write(JSON.stringify(payload, null, fail ? 2 : 0) + '\\n');",
     "process.exitCode = fail ? 1 : 0;",
     "",
   ].join("\n"), "utf8");
@@ -394,13 +410,14 @@ function computeBuildIdForIncompatibleFixture(manifest) {
   return "f".repeat(64);
 }
 
-function installerEnv({ doctorFail = "", doctorDelayMs = 0, bootstrapRoot = null } = {}) {
+function installerEnv({ doctorFail = "", doctorFailureDetail = "", doctorDelayMs = 0, bootstrapRoot = null } = {}) {
   const env = {
     ...process.env,
     PATH: `${fakeTools}${path.delimiter}${process.env.PATH ?? ""}`,
     HOME: stateHome,
     USERPROFILE: stateHome,
     CODEXLESS_FIXTURE_DOCTOR_FAIL: doctorFail,
+    CODEXLESS_FIXTURE_DOCTOR_DETAIL: doctorFailureDetail,
     CODEXLESS_FIXTURE_DOCTOR_DELAY_MS: String(doctorDelayMs),
     CODEXLESS_TEST_SECRET: secret,
   };

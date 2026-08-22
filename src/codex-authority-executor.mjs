@@ -108,6 +108,15 @@ function explicitDefaultPermissionProfile(config) {
   return unique[0] ?? null;
 }
 
+function supportedLegacyPermissionProfile(config) {
+  const sandboxMode = config?.sandbox_mode ?? config?.sandboxMode ?? null;
+  const approvalPolicy = config?.approval_policy ?? config?.approvalPolicy ?? null;
+  if (sandboxMode === "workspace-write" && approvalPolicy === "on-request") {
+    return ":workspace";
+  }
+  return null;
+}
+
 export function normalizeCodexAuthorityProjection({
   started,
   effectiveConfig,
@@ -131,11 +140,18 @@ export function normalizeCodexAuthorityProjection({
     throw new Error("authority resolver failed closed: activePermissionProfile is present without a usable id");
   }
 
-  const explicitProfileId = explicitDefaultPermissionProfile(effectiveConfig);
+  const explicitDefaultProfileId = explicitDefaultPermissionProfile(effectiveConfig);
+  const legacyProfileId = explicitDefaultProfileId ? null : supportedLegacyPermissionProfile(effectiveConfig);
+  const explicitProfileId = explicitDefaultProfileId ?? legacyProfileId;
+  const explicitProfileProvenance = explicitDefaultProfileId
+    ? "config/read:default_permissions"
+    : legacyProfileId
+      ? "config/read:sandbox_mode+approval_policy"
+      : null;
   if (!explicitProfileId) {
     if (!allowTrustedReadOnlyDownscope) {
       throw new Error(
-        "authority resolver capability gate failed closed: activePermissionProfile is null and config/read provides no explicit default_permissions provenance"
+        "authority resolver capability gate failed closed: activePermissionProfile is null and config/read provides neither explicit default_permissions nor supported sandbox_mode/approval_policy provenance"
       );
     }
     if (!allowed.has(":read-only")) {
@@ -186,7 +202,7 @@ export function normalizeCodexAuthorityProjection({
     );
   }
 
-  return { profileId: explicitProfileId, provenance: "config/read:default_permissions" };
+  return { profileId: explicitProfileId, provenance: explicitProfileProvenance };
 }
 
 function truncateUtf8(text, byteCap) {

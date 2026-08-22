@@ -194,34 +194,47 @@ export async function createCodexlessRuntime({
   const codexBin = modelFreeRuntime.bin;
   const modelFreeLaunchEnv = modelFreeRuntime.launchEnv;
 
-  const defaultCwd = envString(env, "CODEX_TOOLBOX_DEFAULT_CWD", process.cwd());
-  const profileOverride = envString(env, "CODEX_TOOLBOX_PROFILE", null);
-  const configOverridesFile = envString(env, "CODEX_TOOLBOX_CONFIG_OVERRIDES_FILE", null);
+  const envNames = publicPreview
+    ? {
+        defaultCwd: "CODEXLESS_DEFAULT_CWD",
+        profile: "CODEXLESS_PROFILE",
+        configOverridesFile: "CODEXLESS_CONFIG_OVERRIDES_FILE",
+        meteredConsent: "CODEXLESS_AGENT_METERED_CONSENT",
+        agentTaskStateFile: "CODEXLESS_AGENT_TASK_STATE_FILE",
+      }
+    : {
+        defaultCwd: "CODEX_TOOLBOX_DEFAULT_CWD",
+        profile: "CODEX_TOOLBOX_PROFILE",
+        configOverridesFile: "CODEX_TOOLBOX_CONFIG_OVERRIDES_FILE",
+        meteredConsent: "CODEX_TOOLBOX_AGENT_METERED_CONSENT",
+        agentTaskStateFile: "CODEX_TOOLBOX_AGENT_TASK_STATE_FILE",
+      };
+  const defaultCwd = envString(env, envNames.defaultCwd, process.cwd());
+  const profileOverride = envString(env, envNames.profile, null);
+  const configOverridesFile = envString(env, envNames.configOverridesFile, null);
   const configOverrides = configOverridesFile
-    ? (await readJsonFile(configOverridesFile, "CODEX_TOOLBOX_CONFIG_OVERRIDES_FILE"))?.overrides
+    ? (await readJsonFile(configOverridesFile, envNames.configOverridesFile))?.overrides
     : [];
   if (!Array.isArray(configOverrides) || !configOverrides.every((value) => typeof value === "string" && value.trim())) {
-    throw new Error("CODEX_TOOLBOX_CONFIG_OVERRIDES_FILE must contain { overrides: [\"key=value\", ...] }");
+    throw new Error(`${envNames.configOverridesFile} must contain { overrides: [\"key=value\", ...] }`);
   }
 
   const cuaHelper = privateConstruction || publicPreview ? null : envString(env, "CODEX_TOOLBOX_CUA_HELPER", null);
-  const meteredConsentMode = envString(env, "CODEX_TOOLBOX_AGENT_METERED_CONSENT", "off");
+  const meteredConsentMode = envString(env, envNames.meteredConsent, publicPreview ? "always" : "off");
   if (!["off", "always"].includes(meteredConsentMode)) {
-    throw new Error("CODEX_TOOLBOX_AGENT_METERED_CONSENT must be off or always");
+    throw new Error(`${envNames.meteredConsent} must be off or always`);
   }
   const agentTaskStateFile = envString(
     env,
-    "CODEX_TOOLBOX_AGENT_TASK_STATE_FILE",
-    path.join(
-      os.homedir(),
-      ".config",
-      "codex-toolbox",
-      publicPreview
-        ? "agent-task-cards-public-preview.json"
-        : privateConstruction
-          ? "agent-task-cards-private.json"
-          : "agent-task-cards-workbench.json"
-    )
+    envNames.agentTaskStateFile,
+    publicPreview
+      ? path.join(os.homedir(), ".config", "codexless", "agent-task-cards.json")
+      : path.join(
+          os.homedir(),
+          ".config",
+          "codex-toolbox",
+          privateConstruction ? "agent-task-cards-private.json" : "agent-task-cards-workbench.json"
+        )
   );
   const maxConcurrent = 1;
   const recentCallStore = privateConstruction ? createRecentCallReceiptStore() : null;
@@ -580,7 +593,7 @@ export async function createCodexlessRuntime({
       meteredConsentMode,
       meteredQuotaProvider: resourceSnapshotProvider,
       agentPreviewState,
-      agentPortableCard: privateConstruction,
+      agentPortableCard: privateConstruction || publicPreview,
       agentReasoningEffort: privateConstruction || publicPreview,
       codexCallProfile: privateConstruction || publicPreview,
       codexCallProfileFile: (privateConstruction || publicPreview) && typeof env.CODEXLESS_CALL_PROFILE_FILE === "string" && env.CODEXLESS_CALL_PROFILE_FILE.trim()
