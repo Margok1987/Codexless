@@ -80,6 +80,8 @@ When it really is time to call Codex, Codexless **asks first**:
 
 If the current Chat cannot render the Task Card, Codexless falls back to a plain-text confirmation. You still have to answer Yes or No; it never auto-approves the call.
 
+Once an approved Codex turn is running, ChatGPT can supervise it without opening the full Codex transcript: `codex.agent_show` exposes a bounded latest agent message, current plan, and active item identity. The projection excludes reasoning text, command output, file diffs, and prior message history.
+
 <p align="center">
   <img src="docs/images/codex-task-card-flow.gif" width="100%" alt="Codex Task Card showing call, running, and completed states">
 </p>

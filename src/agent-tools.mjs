@@ -25,6 +25,49 @@ function publicEvent(event) {
   return Object.fromEntries(Object.entries(event).filter(([key]) => EVENT_KEYS.has(key)));
 }
 
+function publicProgress(progress) {
+  if (!progress || typeof progress !== "object") {
+    return { latestAgentMessage: null, plan: null, activeItem: null };
+  }
+
+  const latest = progress.latestAgentMessage && typeof progress.latestAgentMessage === "object"
+    ? {
+        itemId: typeof progress.latestAgentMessage.itemId === "string" ? progress.latestAgentMessage.itemId : null,
+        phase: typeof progress.latestAgentMessage.phase === "string" ? progress.latestAgentMessage.phase : null,
+        text: typeof progress.latestAgentMessage.text === "string" ? progress.latestAgentMessage.text.slice(-8_192) : "",
+        truncated: progress.latestAgentMessage.truncated === true,
+        status: typeof progress.latestAgentMessage.status === "string" ? progress.latestAgentMessage.status : null,
+        updatedAt: Number.isFinite(progress.latestAgentMessage.updatedAt) ? progress.latestAgentMessage.updatedAt : null,
+      }
+    : null;
+
+  const rawPlan = progress.plan && typeof progress.plan === "object" ? progress.plan : null;
+  const plan = rawPlan
+    ? {
+        explanation: typeof rawPlan.explanation === "string" ? rawPlan.explanation.slice(0, 8_192) : null,
+        plan: Array.isArray(rawPlan.plan)
+          ? rawPlan.plan.slice(0, 64).map((entry) => ({
+              step: typeof entry?.step === "string" ? entry.step.slice(0, 2_048) : "",
+              status: typeof entry?.status === "string" ? entry.status : null,
+            }))
+          : [],
+        truncated: rawPlan.truncated === true || (Array.isArray(rawPlan.plan) && rawPlan.plan.length > 64),
+        updatedAt: Number.isFinite(rawPlan.updatedAt) ? rawPlan.updatedAt : null,
+      }
+    : null;
+
+  const active = progress.activeItem && typeof progress.activeItem === "object"
+    ? {
+        id: typeof progress.activeItem.id === "string" ? progress.activeItem.id : null,
+        type: typeof progress.activeItem.type === "string" ? progress.activeItem.type : "unknown",
+        status: typeof progress.activeItem.status === "string" ? progress.activeItem.status : null,
+        updatedAt: Number.isFinite(progress.activeItem.updatedAt) ? progress.activeItem.updatedAt : null,
+      }
+    : null;
+
+  return { latestAgentMessage: latest, plan, activeItem: active };
+}
+
 function publicPendingApproval(pendingApproval) {
   if (!pendingApproval || typeof pendingApproval !== "object") return null;
   const projected = Object.fromEntries(Object.entries(pendingApproval).filter(([key]) => PENDING_APPROVAL_KEYS.has(key)));
@@ -544,6 +587,7 @@ function publicAgentSnapshot(snapshot, taskCard = null, { suppressManualFallback
     canSend: snapshot?.canSend === true,
     pendingApproval,
     finalResult: snapshot?.finalResult ?? null,
+    progress: publicProgress(snapshot?.progress),
     resourceReceipt: snapshot?.resourceReceipt ?? null,
     timing: snapshot?.timing ?? { startedAt: null, endedAt: null, durationMs: null },
     execution: snapshot?.execution ?? { requestedModel: null, resolvedModel: null, modelProvider: null, serviceTier: null, reasoningEffort: null },
@@ -1847,7 +1891,7 @@ export function registerAgentPreviewTools(server, {
     {
       title: "Show Codex Agent",
       description:
-        "Experimental Preview. Read the bounded operational state of one Codexless-owned Codex agent by opaque agentRef. Returns status, sendability, minimal pending-approval summary, a conservative approvalRiskReference, final result, and a bounded event tail; it does not duplicate the Codex transcript. approvalRiskReference is internal default guidance for the common 'handle routine low-risk actions for me' instruction, not a server-side decision and not an override of a more specific user-authored Profile rule. The caller must apply the bound Profile instruction to each pending action. If the user expresses a durable preference such as 'don't ask me about this kind next time' or 'always ask me before this kind', offer to update the Profile and persist only after explicit confirmation.",
+        "Experimental Preview. Read the bounded operational state of one Codexless-owned Codex agent by opaque agentRef. Returns status, sendability, minimal pending-approval summary, a conservative approvalRiskReference, final result, bounded native progress (latest agent message, latest plan, and active item identity), and a bounded event tail. Progress is deliberately not a Codex transcript: it excludes reasoning text, command output, file diffs, and prior message history. approvalRiskReference is internal default guidance for the common 'handle routine low-risk actions for me' instruction, not a server-side decision and not an override of a more specific user-authored Profile rule. The caller must apply the bound Profile instruction to each pending action. If the user expresses a durable preference such as 'don't ask me about this kind next time' or 'always ask me before this kind', offer to update the Profile and persist only after explicit confirmation.",
       inputSchema: z.object({
         agentRef: z.string().min(1).max(512),
         afterSeq: z.number().int().min(0).optional(),

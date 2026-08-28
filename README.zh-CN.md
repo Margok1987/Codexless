@@ -80,6 +80,8 @@ Codexless 除了使用本机 Codex 的工具箱，也可以在 Recommended 安�
 
 如果当前 Chat 显示不了这张卡，也会退回普通文本确认；一样要你明确回答 Yes / No，不会自动放行。
 
+已经获批的 Codex turn 运行后，ChatGPT 可以在不打开完整 Codex transcript 的情况下继续监督：`codex.agent_show` 会给出有界的最新 Agent 消息、当前 plan 和 active item 标识；该投影不包含 reasoning 文本、command output、file diff 或完整历史消息。
+
 <p align="center">
   <img src="docs/images/codex-task-card-flow.gif" width="100%" alt="Codex Task Card：调用、执行、完成三种状态">
 </p>

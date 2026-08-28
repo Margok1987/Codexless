@@ -69,6 +69,10 @@ Where quota context is available, it may be shown to the user; absence of quota 
 
 Approval of a Codex Agent task does not grant a new local permission universe. Local Codex authority remains the ceiling.
 
+### Active-turn progress
+
+`codex.agent_show` exposes only bounded supervisory progress from native Codex App Server state: the latest agent message, latest plan, and active item identity/status. It does not expose raw reasoning, command output, file diffs, or full prior message history. Agent commentary can still contain project-sensitive information, so it remains part of the connected ChatGPT trust boundary.
+
 ## Browser
 
 The public Browser surface is intentionally bounded around user-intent actions rather than exposing Browser internals. It includes Reader, current-viewport screenshot, dynamic stock confirmation-policy read, prepared exact single-tab close, prepared open/navigate/click/fill/download/upload, bounded scroll, and only the fixed `Enter` / `Tab` / `Escape` keypresses.

@@ -7,6 +7,42 @@ import { projectCodexModel } from "./codex-model-catalog.mjs";
 const TERMINAL_TURN_STATUSES = new Set(["completed", "failed", "interrupted"]);
 const DEFAULT_MAX_EVENTS = 128;
 const MAX_EVENT_TEXT_CHARS = 2_048;
+const MAX_PROGRESS_MESSAGE_CHARS = 8_192;
+const MAX_PROGRESS_PLAN_STEPS = 64;
+const MAX_PROGRESS_STEP_CHARS = 2_048;
+
+function boundedProgressText(value, maxChars = MAX_PROGRESS_MESSAGE_CHARS) {
+  if (typeof value !== "string") return { text: "", truncated: false };
+  if (value.length <= maxChars) return { text: value, truncated: false };
+  return { text: value.slice(-maxChars), truncated: true };
+}
+
+function boundedPlan(params) {
+  if (!params || typeof params !== "object") return null;
+  const rawPlan = Array.isArray(params.plan) ? params.plan : [];
+  const plan = rawPlan.slice(0, MAX_PROGRESS_PLAN_STEPS).map((entry) => ({
+    step: typeof entry?.step === "string" ? entry.step.slice(0, MAX_PROGRESS_STEP_CHARS) : "",
+    status: typeof entry?.status === "string" ? entry.status : null,
+  }));
+  return {
+    explanation: typeof params.explanation === "string"
+      ? params.explanation.slice(0, MAX_PROGRESS_MESSAGE_CHARS)
+      : null,
+    plan,
+    truncated: rawPlan.length > plan.length,
+    updatedAt: Date.now(),
+  };
+}
+
+function compactActiveItem(item) {
+  if (!item || typeof item !== "object") return null;
+  return {
+    id: typeof item.id === "string" ? item.id : null,
+    type: typeof item.type === "string" ? item.type : "unknown",
+    status: typeof item.status === "string" ? item.status : "inProgress",
+    updatedAt: Date.now(),
+  };
+}
 
 function hashRequest(cwd, task, model = null, reasoningEffort = null) {
   const base = `${cwd}\0${task}\0${model ?? ""}`;
@@ -331,6 +367,9 @@ export class CodexAgentExecutor {
       pendingRequestHandle: null,
       approvalItems: new Map(),
       latestTokenUsage: null,
+      progressPlan: null,
+      progressAgentMessage: null,
+      progressActiveItem: null,
       resourceReceipt: null,
       resourceReceiptTurnId: null,
       resourceReceiptPromise: null,
@@ -655,6 +694,9 @@ export class CodexAgentExecutor {
     state.currentTurnId = null;
     state.latestTurnStatus = null;
     state.latestTokenUsage = null;
+    state.progressPlan = null;
+    state.progressAgentMessage = null;
+    state.progressActiveItem = null;
     state.resourceReceipt = null;
     state.resourceReceiptTurnId = null;
     state.resourceReceiptPromise = null;
@@ -825,7 +867,9 @@ export class CodexAgentExecutor {
     if (!state) return;
 
     const turn = notificationTurn(message);
-    if (["turn/started", "turn/completed"].includes(message.method) && turnId && state.currentTurnId && turnId !== state.currentTurnId) {
+    const turnScopedProgressEvent = message.method === "turn/plan/updated" || message.method.startsWith("item/");
+    if ((["turn/started", "turn/completed"].includes(message.method) || turnScopedProgressEvent)
+      && turnId && state.currentTurnId && turnId !== state.currentTurnId) {
       state.updatedAt = Date.now();
       this.#appendEvent(state, { type: "stale-turn-notification-ignored", method: message.method, turnId, currentTurnId: state.currentTurnId, at: Date.now() });
       return;
@@ -834,15 +878,63 @@ export class CodexAgentExecutor {
     if (message.method === "thread/tokenUsage/updated" && message?.params?.tokenUsage) {
       state.latestTokenUsage = structuredClone(message.params.tokenUsage);
     }
+    if (message.method === "turn/plan/updated") {
+      state.progressPlan = boundedPlan(message.params);
+    }
     if (message.method === "item/started" && message?.params?.item?.id) {
-      state.approvalItems.set(message.params.item.id, structuredClone(message.params.item));
+      const item = message.params.item;
+      state.approvalItems.set(item.id, structuredClone(item));
       if (state.approvalItems.size > 32) {
         const oldest = state.approvalItems.keys().next().value;
         state.approvalItems.delete(oldest);
       }
+      state.progressActiveItem = compactActiveItem(item);
+      if (item.type === "agentMessage") {
+        const bounded = boundedProgressText(item.text ?? "");
+        state.progressAgentMessage = {
+          itemId: item.id,
+          phase: typeof item.phase === "string" ? item.phase : null,
+          text: bounded.text,
+          truncated: bounded.truncated,
+          status: "inProgress",
+          updatedAt: Date.now(),
+        };
+      }
+    }
+    if (message.method === "item/agentMessage/delta") {
+      const delta = message?.params?.delta;
+      if (typeof delta === "string") {
+        const itemId = typeof message?.params?.itemId === "string"
+          ? message.params.itemId
+          : state.progressAgentMessage?.itemId ?? null;
+        const sameItem = state.progressAgentMessage?.itemId === itemId;
+        const priorText = sameItem ? state.progressAgentMessage?.text ?? "" : "";
+        const bounded = boundedProgressText(priorText + delta);
+        state.progressAgentMessage = {
+          itemId,
+          phase: sameItem ? state.progressAgentMessage?.phase ?? null : null,
+          text: bounded.text,
+          truncated: (sameItem && state.progressAgentMessage?.truncated === true) || bounded.truncated,
+          status: "inProgress",
+          updatedAt: Date.now(),
+        };
+      }
     }
     if (message.method === "item/completed" && message?.params?.item?.id) {
-      state.approvalItems.delete(message.params.item.id);
+      const item = message.params.item;
+      state.approvalItems.delete(item.id);
+      if (state.progressActiveItem?.id === item.id) state.progressActiveItem = null;
+      if (item.type === "agentMessage") {
+        const bounded = boundedProgressText(item.text ?? state.progressAgentMessage?.text ?? "");
+        state.progressAgentMessage = {
+          itemId: item.id,
+          phase: typeof item.phase === "string" ? item.phase : state.progressAgentMessage?.phase ?? null,
+          text: bounded.text,
+          truncated: bounded.truncated,
+          status: "completed",
+          updatedAt: Date.now(),
+        };
+      }
     }
     if (message.method === "serverRequest/resolved") {
       if (state.pendingApproval && String(state.pendingApproval.requestId) === String(requestId)) {
@@ -994,6 +1086,11 @@ export class CodexAgentExecutor {
       canSend: state.status === "idle" && !state.pendingApproval,
       pendingApproval: state.pendingApproval ? { ...state.pendingApproval } : null,
       finalResult: state.finalResult,
+      progress: {
+        latestAgentMessage: state.progressAgentMessage ? structuredClone(state.progressAgentMessage) : null,
+        plan: state.progressPlan ? structuredClone(state.progressPlan) : null,
+        activeItem: state.progressActiveItem ? structuredClone(state.progressActiveItem) : null,
+      },
       resourceReceipt: state.resourceReceipt ? structuredClone(state.resourceReceipt) : null,
       latestError: state.latestError,
       lastCompletedTurnId: state.lastCompletedTurnId,
@@ -1028,6 +1125,7 @@ export class CodexAgentExecutor {
       canSend: false,
       pendingApproval: null,
       finalResult: null,
+      progress: { latestAgentMessage: null, plan: null, activeItem: null },
       resourceReceipt: null,
       latestError: message,
       lastCompletedTurnId: null,

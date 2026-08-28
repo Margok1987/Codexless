@@ -130,7 +130,10 @@ try {
   assert.match(taskCardResource.contents?.[0]?.text ?? "", /commitToken/);
 
   const startTool = tools.tools.find((tool) => tool.name === "codex.agent_start");
+  const showTool = tools.tools.find((tool) => tool.name === "codex.agent_show");
   const sendTool = tools.tools.find((tool) => tool.name === "codex.agent_send");
+  assert.match(showTool?.description ?? "", /bounded native progress/i);
+  assert.match(showTool?.description ?? "", /excludes reasoning text, command output, file diffs/i);
   assert.match(startTool?.description ?? "", /consentRef identifies.*never proof of approval/i);
   assert.match(sendTool?.description ?? "", /consentRef identifies.*never proof of approval/i);
   assert.match(startTool?.inputSchema?.properties?.consentRef?.description ?? "", /never authorizes/i);
