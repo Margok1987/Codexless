@@ -80,6 +80,8 @@ Codexless 除了使用本机 Codex 的工具箱，也可以在 Recommended 安�
 
 如果当前 Chat 显示不了这张卡，也会退回普通文本确认；一样要你明确回答 Yes / No，不会自动放行。
 
+如果已获批的 Codex turn 仍在运行且需要中途纠偏，`codex.agent_steer` 会通过 Codex App Server 原生 `turn/steer` 把精确指令送进同一个 active turn；它要求当前 turn ID，不会另起替代 turn。需要立即硬中断时，仍使用 `codex.agent_cancel`。
+
 <p align="center">
   <img src="docs/images/codex-task-card-flow.gif" width="100%" alt="Codex Task Card：调用、执行、完成三种状态">
 </p>
@@ -271,7 +273,7 @@ Codexless 还可以按动作继续收窄权限。
 
 Codexless 只公开已经验收过的能力，不是把整个 Codex 环境无条件暴露出去。
 
-当前公开服务合同是 **39 个工具**，其中模型直接看到 **36 个**；另外 3 个 Task Card 动作只供 App 界面使用。
+当前公开服务合同是 **43 个工具**，其中模型直接看到 **40 个**；另外 3 个 Task Card 动作只供 App 界面使用。
 
 真正需要调用 Codex 模型时，会走单独的 Agent / 审批流程；普通本地工具动作不是另一条隐藏的 Codex 调用通道。
 
@@ -321,7 +323,7 @@ Tunnel / endpoint 的凭据不要进仓库，也不要贴进公开截图。
 
 ### 1. 公开合同
 
-当前公开服务合同为 **39 个工具**；模型直接看到 **36 个**，另 3 个 Task Card 动作只供 App 界面使用。
+当前公开服务合同为 **43 个工具**；模型直接看到 **40 个**，另 3 个 Task Card 动作只供 App 界面使用。
 
 Metered Agent 的 consent 是服务器侧状态：任务身份不是审批本身；真正 dispatch Codex 还必须经过对应的审批 / commit 路径。拒绝后不能靠重放旧请求把任务重新启动。
 

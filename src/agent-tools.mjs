@@ -744,7 +744,7 @@ export function registerAgentPreviewTools(server, {
   }
 
   function isAmbiguousInheritedAuthority(error) {
-    return /activePermissionProfile is null and config\/read provides no explicit default_permissions provenance/.test(
+    return /activePermissionProfile is null and config\/read provides (?:no explicit default_permissions provenance|neither explicit default_permissions nor supported sandbox_mode\/approval_policy provenance)/.test(
       error instanceof Error ? error.message : String(error)
     );
   }
@@ -1862,6 +1862,35 @@ export function registerAgentPreviewTools(server, {
         && (record?.suppressTerminalFallback === true || record?.terminalSnapshot?.suppressManualFallback === true)
         && (!record?.turnId || !snapshot?.turnId || record.turnId === snapshot.turnId);
       return publicAgentSnapshot(snapshot, card, { suppressManualFallback: suppress });
+    })
+  );
+
+  server.registerTool(
+    "codex.agent_steer",
+    {
+      title: "Steer Active Codex Agent",
+      description:
+        "Experimental Preview. Steer the currently active turn of one Codexless-owned Codex agent through official turn/steer without starting a new turn. expectedTurnId is required and must match the active turn so stale supervision fails closed. Steering changes only the in-flight user instruction; it cannot change model, reasoning effort, cwd, sandbox, permissions, or output schema. requestId is a caller-stable idempotency key and MUST be reused for retries of the same logical steer. A confirmed duplicate is never dispatched twice. If transport acceptance is uncertain, Codexless reports controlAcceptance=unknown and MUST NOT replay the steer automatically; inspect agent_show before deciding what to do next. Use agent_cancel for an immediate hard interrupt instead.",
+      inputSchema: z.object({
+        agentRef: z.string().min(1).max(512),
+        message: z.string().min(1).max(200_000),
+        expectedTurnId: z.string().min(1).max(512)
+          .describe("Exact active turnId from codex.agent_show. Steering fails closed if the agent has advanced or the turn is no longer active."),
+        requestId: z.string().min(1).max(512)
+          .describe("Stable caller-generated idempotency key for this logical steer. Reuse this exact value after an uncertain response; never invent a new retry id for the same steer."),
+      }).strict(),
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ agentRef, message, expectedTurnId, requestId }) => structured(async () => {
+      assertFormalAgentAvailable();
+      const snapshot = await agentExecutor.steer({
+        agentRef,
+        message,
+        expectedTurnId,
+        clientRequestId: requestId,
+      });
+      const card = cardForAgent(snapshot?.agentRef ?? agentRef);
+      return publicAgentSnapshot(snapshot, card);
     })
   );
 

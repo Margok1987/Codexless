@@ -1,13 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
-import { CodexAppServerClient } from "./codex-app-server-client.mjs";
+import { CodexAppServerClient, CodexRpcError } from "./codex-app-server-client.mjs";
 import { buildAgentResourceReceipt } from "./agent-resource.mjs";
 import { projectCodexModel } from "./codex-model-catalog.mjs";
 
 const TERMINAL_TURN_STATUSES = new Set(["completed", "failed", "interrupted"]);
 const DEFAULT_MAX_EVENTS = 128;
 const MAX_EVENT_TEXT_CHARS = 2_048;
-
 function hashRequest(cwd, task, model = null, reasoningEffort = null) {
   const base = `${cwd}\0${task}\0${model ?? ""}`;
   const material = reasoningEffort === null ? base : `${base}\0reasoningEffort=${reasoningEffort}`;
@@ -81,6 +80,12 @@ function notificationRequestId(message) {
 
 function controlRequestHash(action, agentRef, targetId) {
   return createHash("sha256").update(`${action}\0${agentRef}\0${targetId ?? ""}`, "utf8").digest("hex");
+}
+
+function steerRequestHash(agentRef, targetTurnId, message) {
+  return createHash("sha256")
+    .update(`steer\0${agentRef}\0${targetTurnId ?? ""}\0${message}`, "utf8")
+    .digest("hex");
 }
 
 function approvalResponseFor(handle, decision) {
@@ -527,6 +532,135 @@ export class CodexAgentExecutor {
     return { ...snapshot, duplicate: false };
   }
 
+  async steer({ agentRef, message, clientRequestId, expectedTurnId }) {
+    this.#assertOpen();
+    if (typeof message !== "string" || !message.trim()) throw new Error("message must be a non-empty string");
+    if (typeof clientRequestId !== "string" || !clientRequestId.trim()) {
+      throw new Error("clientRequestId must be a non-empty string");
+    }
+    if (typeof expectedTurnId !== "string" || !expectedTurnId.trim()) {
+      throw new Error("expectedTurnId must be a non-empty string");
+    }
+
+    const state = this.#agents.get(agentRef);
+    if (!state) return this.#unknown(agentRef, "unknown agentRef");
+    await this.#refreshFromOfficial(state);
+    if (state.pendingApproval) throw new Error(`agent ${agentRef} has a pending Codex approval`);
+    const targetTurnId = state.currentTurnId;
+    if (targetTurnId !== expectedTurnId) {
+      throw new Error(`agent task turn changed: expected ${expectedTurnId}, current ${String(targetTurnId ?? "none")}`);
+    }
+
+    const hash = steerRequestHash(agentRef, targetTurnId, message);
+    const prior = this.#controlRequestIds.get(clientRequestId);
+    if (prior) {
+      if (prior.requestHash !== hash) {
+        throw new Error(`clientRequestId was already used for a different agent control action: ${clientRequestId}`);
+      }
+      if (prior.acceptance === "rejected") {
+        throw new Error(prior.error ?? `turn/steer was rejected for agent ${agentRef}`);
+      }
+      await this.#refreshFromOfficial(state);
+      if (prior.acceptance === "unknown" && prior.error) {
+        const refreshError = state.latestError && state.latestError !== prior.error ? state.latestError : null;
+        state.latestError = refreshError ? `${prior.error}; official refresh also failed: ${refreshError}` : prior.error;
+      }
+      return {
+        ...this.#snapshot(state, 0),
+        duplicate: true,
+        controlAcceptance: prior.acceptance ?? "unknown",
+      };
+    }
+
+    if (!state.threadId || state.status !== "running") {
+      throw new Error(`agent has no steerable active turn: ${agentRef} (${state.status})`);
+    }
+
+    const record = {
+      agentRef,
+      requestHash: hash,
+      action: "steer",
+      targetId: targetTurnId,
+      acceptance: "dispatching",
+      error: null,
+    };
+    this.#controlRequestIds.set(clientRequestId, record);
+    this.#appendEvent(state, {
+      type: "turn/steer-dispatched",
+      turnId: targetTurnId,
+      requestId: clientRequestId,
+      at: Date.now(),
+    });
+
+    try {
+      const accepted = await this.#client.request("turn/steer", {
+        threadId: state.threadId,
+        clientUserMessageId: clientRequestId,
+        input: [{ type: "text", text: message }],
+        expectedTurnId: targetTurnId,
+      });
+      if (accepted?.turnId !== targetTurnId) {
+        record.acceptance = "unknown";
+        record.error = `turn/steer returned unexpected turn id ${String(accepted?.turnId ?? "missing")}; do not replay automatically`;
+        state.latestError = record.error;
+        state.updatedAt = Date.now();
+        this.#appendEvent(state, {
+          type: "turn/steer-acceptance-unknown",
+          turnId: targetTurnId,
+          requestId: clientRequestId,
+          text: state.latestError,
+          at: Date.now(),
+        });
+        return { ...this.#snapshot(state, 0), duplicate: false, controlAcceptance: "unknown" };
+      }
+      record.acceptance = "accepted";
+      state.latestError = null;
+      state.updatedAt = Date.now();
+      this.#appendEvent(state, {
+        type: "turn/steer-accepted",
+        turnId: targetTurnId,
+        requestId: clientRequestId,
+        at: Date.now(),
+      });
+      return { ...this.#snapshot(state, 0), duplicate: false, controlAcceptance: "accepted" };
+    } catch (error) {
+      if (error instanceof CodexRpcError) {
+        record.acceptance = "rejected";
+        record.error = error.message;
+        state.latestError = null;
+        state.updatedAt = Date.now();
+        this.#appendEvent(state, {
+          type: "turn/steer-rejected",
+          turnId: targetTurnId,
+          requestId: clientRequestId,
+          text: error.message,
+          at: Date.now(),
+        });
+        throw error;
+      }
+
+      record.acceptance = "unknown";
+      const acceptanceUnknown = `turn/steer acceptance unknown; do not replay automatically: ${error instanceof Error ? error.message : String(error)}`;
+      record.error = acceptanceUnknown;
+      state.latestError = acceptanceUnknown;
+      state.updatedAt = Date.now();
+      this.#appendEvent(state, {
+        type: "turn/steer-acceptance-unknown",
+        turnId: targetTurnId,
+        requestId: clientRequestId,
+        text: acceptanceUnknown,
+        at: Date.now(),
+      });
+      await this.#refreshFromOfficial(state);
+      if (state.latestError && state.latestError !== acceptanceUnknown) {
+        state.latestError = `${acceptanceUnknown}; official refresh also failed: ${state.latestError}`;
+      } else {
+        state.latestError = acceptanceUnknown;
+      }
+      return { ...this.#snapshot(state, 0), duplicate: false, controlAcceptance: "unknown" };
+    }
+  }
+
   async cancel({ agentRef, clientRequestId, expectedTurnId = null }) {
     this.#assertOpen();
     if (typeof clientRequestId !== "string" || !clientRequestId.trim()) {
@@ -835,10 +969,30 @@ export class CodexAgentExecutor {
       state.latestTokenUsage = structuredClone(message.params.tokenUsage);
     }
     if (message.method === "item/started" && message?.params?.item?.id) {
-      state.approvalItems.set(message.params.item.id, structuredClone(message.params.item));
+      const item = message.params.item;
+      state.approvalItems.set(item.id, structuredClone(item));
       if (state.approvalItems.size > 32) {
         const oldest = state.approvalItems.keys().next().value;
         state.approvalItems.delete(oldest);
+      }
+      if (item.type === "userMessage" && typeof item.clientId === "string" && item.clientId) {
+        const control = this.#controlRequestIds.get(item.clientId);
+        if (
+          control?.action === "steer" &&
+          control.agentRef === state.agentRef &&
+          control.targetId === (turnId ?? state.currentTurnId) &&
+          control.acceptance !== "rejected" &&
+          control.consumption !== "consumed"
+        ) {
+          control.consumption = "consumed";
+          control.consumedAt = Date.now();
+          this.#appendEvent(state, {
+            type: "turn/steer-consumed",
+            turnId: turnId ?? state.currentTurnId,
+            requestId: item.clientId,
+            at: control.consumedAt,
+          });
+        }
       }
     }
     if (message.method === "item/completed" && message?.params?.item?.id) {
