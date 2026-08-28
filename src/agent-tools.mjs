@@ -788,7 +788,7 @@ export function registerAgentPreviewTools(server, {
   }
 
   function isAmbiguousInheritedAuthority(error) {
-    return /activePermissionProfile is null and config\/read provides no explicit default_permissions provenance/.test(
+    return /activePermissionProfile is null and config\/read provides (?:no explicit default_permissions provenance|neither explicit default_permissions nor supported sandbox_mode\/approval_policy provenance)/.test(
       error instanceof Error ? error.message : String(error)
     );
   }

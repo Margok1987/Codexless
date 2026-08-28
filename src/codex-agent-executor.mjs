@@ -1023,6 +1023,25 @@ export class CodexAgentExecutor {
         const oldest = state.approvalItems.keys().next().value;
         state.approvalItems.delete(oldest);
       }
+      if (item.type === "userMessage" && typeof item.clientId === "string" && item.clientId) {
+        const control = this.#controlRequestIds.get(item.clientId);
+        if (
+          control?.action === "steer" &&
+          control.agentRef === state.agentRef &&
+          control.targetId === (turnId ?? state.currentTurnId) &&
+          control.acceptance !== "rejected" &&
+          control.consumption !== "consumed"
+        ) {
+          control.consumption = "consumed";
+          control.consumedAt = Date.now();
+          this.#appendEvent(state, {
+            type: "turn/steer-consumed",
+            turnId: turnId ?? state.currentTurnId,
+            requestId: item.clientId,
+            at: control.consumedAt,
+          });
+        }
+      }
       state.progressActiveItem = compactActiveItem(item);
       if (item.type === "agentMessage") {
         const bounded = boundedProgressText(item.text ?? "");

@@ -184,6 +184,32 @@ assert.deepEqual(nativeSteer.params, {
   expectedTurnId: started.turnId,
 });
 
+fake.emit("item/started", {
+  threadId: fake.threadId,
+  turnId: fake.currentTurnId,
+  item: {
+    id: "user-steer-accepted-1",
+    type: "userMessage",
+    clientId: "steer-accepted-1",
+    content: [{ type: "text", text: "Finish the current safe step, summarize the facts obtained, then end the turn." }],
+  },
+});
+fake.emit("item/started", {
+  threadId: fake.threadId,
+  turnId: fake.currentTurnId,
+  item: {
+    id: "user-steer-accepted-1",
+    type: "userMessage",
+    clientId: "steer-accepted-1",
+    content: [{ type: "text", text: "Finish the current safe step, summarize the facts obtained, then end the turn." }],
+  },
+});
+const consumed = await executor.show({ agentRef: started.agentRef });
+const consumedEvents = consumed.events.filter((event) => event.type === "turn/steer-consumed");
+assert.equal(consumedEvents.length, 1, "correlated userMessage lifecycle must emit exactly one consumed receipt");
+assert.equal(consumedEvents[0].requestId, "steer-accepted-1");
+assert.equal(consumedEvents[0].turnId, started.turnId);
+
 const acceptedDuplicate = await executor.steer({
   agentRef: started.agentRef,
   message: "Finish the current safe step, summarize the facts obtained, then end the turn.",

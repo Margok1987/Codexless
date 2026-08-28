@@ -280,7 +280,7 @@ test("Portable start conservatively falls back to trusted read-only only for amb
     async resolveAuthority({ cwd, access }) {
       calls.push(access);
       if (access === "inherit") {
-        throw new Error("authority resolver capability gate failed closed: activePermissionProfile is null and config/read provides no explicit default_permissions provenance");
+        throw new Error("authority resolver capability gate failed closed: activePermissionProfile is null and config/read provides neither explicit default_permissions nor supported sandbox_mode/approval_policy provenance");
       }
       assert.equal(access, "readOnly");
       return {
