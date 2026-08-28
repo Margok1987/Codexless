@@ -16,7 +16,7 @@ A user who has deliberately granted broad local Codex authority should expect Co
 
 ## Public surface boundary
 
-The current public **service contract** exposes exactly 39 tools, enforced by `src/surface-contracts.mjs` and `test/public-contract.mjs`. Runtime registration is fail-closed too: registrations outside `PUBLIC_TOOL_NAMES` are skipped rather than exposed, while startup fails if any of the 39 required tools is missing or registered twice; CI also exercises a strict unknown-tool mode. Twenty-one of those tools are the accepted Browser slice. In the current ChatGPT App shape, three Task Card actions (`codex.agent_card_state`, `codex.agent_decline`, `codex.agent_commit`) are app-only, so the model may directly see 36 tools while the service contract remains exact 39. Making those card-internal actions model-visible is not required for correctness.
+The current public **service contract** exposes exactly 43 tools, enforced by `src/surface-contracts.mjs` and `test/public-contract.mjs`. Runtime registration is fail-closed too: registrations outside `PUBLIC_TOOL_NAMES` are skipped rather than exposed, while startup fails if any of the 43 required tools is missing or registered twice; CI also exercises a strict unknown-tool mode. Twenty-one of those tools are the accepted Browser slice. In the current ChatGPT App shape, three Task Card actions (`codex.agent_card_state`, `codex.agent_decline`, `codex.agent_commit`) are app-only, so the model may directly see 40 tools while the service contract remains exact 43. Making those card-internal actions model-visible is not required for correctness.
 
 The public package intentionally excludes private/internal capabilities such as:
 
@@ -68,6 +68,14 @@ This is a defense for the supported ChatGPT App / compliant-host path, not crypt
 Where quota context is available, it may be shown to the user; absence of quota context must not be represented as unlimited or free usage.
 
 Approval of a Codex Agent task does not grant a new local permission universe. Local Codex authority remains the ceiling.
+
+### Active-turn supervision and steering
+
+`codex.agent_show` exposes only bounded supervisory progress from native Codex App Server state: the latest agent message, latest plan, and active item identity/status. It does not expose raw reasoning, command output, file diffs, or full prior message history. Agent commentary can still contain project-sensitive information, so it remains part of the connected ChatGPT trust boundary.
+
+`codex.agent_steer` is a narrow wrapper around official App Server `turn/steer`. It requires the exact current `expectedTurnId`, refuses a pre-existing pending approval, and cannot change model, reasoning effort, cwd, sandbox, permission profile, or output schema. It does not start a replacement turn. A stale or already-terminal turn fails closed.
+
+Steering uses a caller-stable `requestId`. A confirmed duplicate must not dispatch a second steer. If transport fails after dispatch and acceptance cannot be proven, Codexless reports the result as unknown and must not replay the steer automatically. The caller should inspect current agent state before choosing a different action. `codex.agent_cancel` remains the separate immediate hard-interrupt path.
 
 ## Browser
 

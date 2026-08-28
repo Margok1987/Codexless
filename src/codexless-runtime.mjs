@@ -149,6 +149,7 @@ function createManagedFormalAgentExecutor() {
     resolvePendingRequest: blocked,
     rejectPendingRequest: blocked,
     resolveApproval: blocked,
+    steer: blocked,
     cancel: blocked,
     send: blocked,
   };

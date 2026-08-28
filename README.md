@@ -80,6 +80,8 @@ When it really is time to call Codex, Codexless **asks first**:
 
 If the current Chat cannot render the Task Card, Codexless falls back to a plain-text confirmation. You still have to answer Yes or No; it never auto-approves the call.
 
+Once an approved Codex turn is running, ChatGPT can supervise it without opening the full Codex transcript: `codex.agent_show` exposes a bounded latest agent message, current plan, and active item identity. If the task needs a course correction, `codex.agent_steer` sends an exact instruction into that same active turn through Codex App Server `turn/steer`; it requires the current turn ID and does not start a replacement turn. `codex.agent_cancel` remains the immediate hard-interrupt path.
+
 <p align="center">
   <img src="docs/images/codex-task-card-flow.gif" width="100%" alt="Codex Task Card showing call, running, and completed states">
 </p>
@@ -267,7 +269,7 @@ See [`SECURITY.md`](SECURITY.md) for the full boundary.
 
 Codexless exposes only capabilities that have been reviewed and accepted for the public surface; it does not expose the entire Codex environment.
 
-The current public service contract contains **39 tools**. The model directly sees **36** of them; three Task Card actions are app-only.
+The current public service contract contains **43 tools**. The model directly sees **40** of them; three Task Card actions are app-only.
 
 Actual Codex model work uses the dedicated Agent + approval flow. Ordinary local tool actions are not a hidden second route into metered Codex work.
 
@@ -317,7 +319,7 @@ Do not put Tunnel / endpoint credentials in the repository or public screenshots
 
 ### 1. Public contract
 
-The current public service contract contains **39 tools**. The model directly sees **36**; three Task Card actions are app-only.
+The current public service contract contains **43 tools**. The model directly sees **40**; three Task Card actions are app-only.
 
 Metered Agent consent is server-side state: task identity is not approval. Codex dispatch still requires the matching approval / commit path, and a declined task cannot be revived by replaying an older request.
 

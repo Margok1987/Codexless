@@ -42,7 +42,7 @@ function createIsolatedPublicTestEnv(extra = {}) {
 }
 
 assert.equal(PUBLIC_SURFACE_VERSION, "codexless-public-preview-v1");
-assert.equal(PUBLIC_TOOL_NAMES.length, 42);
+assert.equal(PUBLIC_TOOL_NAMES.length, 43);
 for (const relative of [
   "src/browser-tools.mjs",
   "src/codex-browser-executor.mjs",
@@ -82,7 +82,7 @@ try {
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name);
   assert.deepEqual([...names].sort(), [...PUBLIC_TOOL_NAMES].sort());
-  assert.equal(names.length, 42);
+  assert.equal(names.length, 43);
 
   for (const name of forbiddenNames) {
     assert.equal(names.includes(name), false, `${name} must not be exposed by the public preview`);
@@ -130,7 +130,27 @@ try {
   assert.match(taskCardResource.contents?.[0]?.text ?? "", /commitToken/);
 
   const startTool = tools.tools.find((tool) => tool.name === "codex.agent_start");
+  const showTool = tools.tools.find((tool) => tool.name === "codex.agent_show");
+  const steerTool = tools.tools.find((tool) => tool.name === "codex.agent_steer");
   const sendTool = tools.tools.find((tool) => tool.name === "codex.agent_send");
+  assert.ok(steerTool, "public preview must expose codex.agent_steer");
+  assert.equal(steerTool?.annotations?.destructiveHint, true);
+  assert.equal(steerTool?.annotations?.idempotentHint, true);
+  assert.deepEqual(
+    Object.keys(steerTool?.inputSchema?.properties ?? {}).sort(),
+    ["agentRef", "expectedTurnId", "message", "requestId"]
+  );
+  assert.deepEqual(
+    [...(steerTool?.inputSchema?.required ?? [])].sort(),
+    ["agentRef", "expectedTurnId", "message", "requestId"]
+  );
+  for (const forbidden of ["model", "reasoningEffort", "cwd", "permissionProfile", "sandbox", "outputSchema"]) {
+    assert.equal(Object.hasOwn(steerTool?.inputSchema?.properties ?? {}, forbidden), false, `agent_steer must not accept ${forbidden}`);
+  }
+  assert.match(steerTool?.description ?? "", /official turn\/steer/i);
+  assert.match(steerTool?.description ?? "", /uncertain.*must not replay|must not replay.*uncertain/i);
+  assert.match(showTool?.description ?? "", /bounded native progress/i);
+  assert.match(showTool?.description ?? "", /excludes reasoning text, command output, file diffs/i);
   assert.match(startTool?.description ?? "", /consentRef identifies.*never proof of approval/i);
   assert.match(sendTool?.description ?? "", /consentRef identifies.*never proof of approval/i);
   assert.match(startTool?.inputSchema?.properties?.consentRef?.description ?? "", /never authorizes/i);
@@ -357,7 +377,7 @@ try {
     await httpClient.connect(httpTransport);
     const httpTools = await httpClient.listTools();
     const httpNames = httpTools.tools.map((tool) => tool.name);
-    assert.equal(httpNames.length, 42);
+    assert.equal(httpNames.length, 43);
     assert.deepEqual([...httpNames].sort(), [...PUBLIC_TOOL_NAMES].sort());
     for (const name of forbiddenNames) {
       assert.equal(httpNames.includes(name), false, `${name} must not be exposed by the public HTTP preview`);
