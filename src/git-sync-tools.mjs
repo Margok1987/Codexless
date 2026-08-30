@@ -36,7 +36,7 @@ export function registerGitSyncTools(server, { workbench, authorityExecutor }) {
   );
 }
 
-export async function gitSyncAuthorized({ workbench, authorityExecutor, cwd, gitExecutable = null }) {
+export async function gitSyncAuthorized({ workbench, authorityExecutor, cwd, fastForward = false, gitExecutable = null }) {
   if (!workbench || typeof workbench.processAction !== "function") {
     throw new Error("codex.git_sync requires the existing Workbench host-process path");
   }
@@ -44,6 +44,12 @@ export async function gitSyncAuthorized({ workbench, authorityExecutor, cwd, git
     throw new Error("codex.git_sync requires the Codex authority resolver");
   }
   if (typeof cwd !== "string" || !cwd.trim()) throw new Error("codex.git_sync requires cwd");
+  if (fastForward !== false) {
+    throw gitError(
+      "GIT_SYNC_FAST_FORWARD_UNSUPPORTED",
+      "codex.git_sync is fetch/freshness-only; fastForward=true is not supported"
+    );
+  }
 
   const authority = await authorityExecutor.resolveAuthority({ cwd, access: "inherit" });
   const permissionCeiling = authority?.permissionCeiling ?? authority?.permissionProfile ?? null;
@@ -95,6 +101,7 @@ export async function gitSyncAuthorized({ workbench, authorityExecutor, cwd, git
 
   return {
     status: "freshness_checked",
+    fastForward: false,
     cwd: repoRoot,
     trustedAncestor: authority.trustedAncestor,
     permissionProfile: authority.permissionProfile,
