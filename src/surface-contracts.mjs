@@ -9,9 +9,10 @@ export const WORKBENCH_SOURCE_TOOL_COUNT_WITH_CUA = 49;
 export const WORKBENCH_SOURCE_TOOL_COUNT_WITHOUT_CUA = 44;
 
 export const PUBLIC_SERVER_VERSION = "0.1.1-preview.5";
-export const PUBLIC_SURFACE_VERSION = "codexless-public-preview-v1";
+export const PUBLIC_SURFACE_VERSION = "codexless-public-preview-v2";
 export const PUBLIC_TOOL_ALLOWLIST = Object.freeze([
   "codex.command_exec",
+  "codex.git_sync",
   "codex.project_context",
   "codex.account_preflight",
   "codex.skill_list",
@@ -45,6 +46,7 @@ export const PUBLIC_TOOL_ALLOWLIST = Object.freeze([
   "codex.agent_card_render",
   "codex.agent_card_state",
   "codex.agent_show",
+  "codex.agent_steer",
   "codex.agent_send",
   "codex.agent_decline",
   "codex.agent_commit",
@@ -103,6 +105,7 @@ export const HOUSEHOLD_TOOL_ALLOWLIST = Object.freeze([
   "codex.agent_card_render",
   "codex.agent_card_state",
   "codex.agent_show",
+  "codex.agent_steer",
   "codex.agent_send",
   "codex.agent_decline",
   "codex.agent_commit",

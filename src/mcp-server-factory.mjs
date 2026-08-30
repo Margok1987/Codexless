@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import { registerAgentPreviewTools } from "./agent-tools.mjs";
 import { registerBrowserPreviewTools } from "./browser-tools.mjs";
 import { registerConstructionTools } from "./construction-tools.mjs";
+import { registerGitSyncTools } from "./git-sync-tools.mjs";
 import { registerPublicTools } from "./public-tools.mjs";
 import { wrapToolHandlerWithRecentCallReceipt } from "./recent-call-receipts.mjs";
 import { registerWorkbenchPreviewTools } from "./workbench-tools.mjs";
@@ -206,6 +207,7 @@ export function createCodexToolboxServerFactory({
       });
       registerConstructionTools(registrationServer, { authorityExecutor });
       if (publicPreview) registerPublicTools(registrationServer, { workbench });
+      if (publicPreview) registerGitSyncTools(registrationServer, { workbench, authorityExecutor });
     }
     if (browserPreview) registerBrowserPreviewTools(registrationServer, browserPreview, {
       elicitationBridge: browserElicitationBridge,
