@@ -36,6 +36,7 @@ assert.equal(explicitOverride.source, "CODEX_BIN");
 const contractFirst = new CodexAuthorityExecutor({
   codexBin: resolved.path,
   defaultCwd: projectRoot,
+  allowUntrustedReadOnlyBootstrap: true,
 });
 const contractValidation = await contractFirst.validate();
 assert.equal(contractValidation.codexVersion, resolved.version);
@@ -49,6 +50,7 @@ const explicitReject = new CodexAuthorityExecutor({
   codexBin: resolved.path,
   defaultCwd: projectRoot,
   acceptedCodexVersions: ["9.9.9-not-current"],
+  allowUntrustedReadOnlyBootstrap: true,
 });
 await assert.rejects(
   () => explicitReject.validate(),
@@ -59,6 +61,7 @@ const explicitAccept = new CodexAuthorityExecutor({
   codexBin: resolved.path,
   defaultCwd: projectRoot,
   acceptedCodexVersions: [resolved.version],
+  allowUntrustedReadOnlyBootstrap: true,
 });
 const explicitValidation = await explicitAccept.validate();
 assert.equal(explicitValidation.versionPolicy, "allowlist+contract");
@@ -75,5 +78,6 @@ console.log(JSON.stringify({
     contractFirstDefault: true,
     readOnlyCommandExecProbe: true,
     explicitNarrowAllowlistStillAvailable: true,
+    untrustedScratchDoesNotRequirePersistentTrust: true,
   },
 }, null, 2));
