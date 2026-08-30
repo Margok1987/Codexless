@@ -383,7 +383,7 @@ test("Portable quota mirrors every returned window with duration, remaining, and
   assert.match(text, /7d/);
   assert.match(text, /59%/);
   assert.match(text, /reset|重置|リセット/i);
-  assert.match(text, /unavailable|未提供|提供なし/i);
+  assert.match(text, /not provided|unavailable|未提供|提供なし/i);
   assert.equal(prepared.structuredContent.manualFallback.modelSelection.selectedModel, "fake-default");
 });
 
