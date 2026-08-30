@@ -106,6 +106,7 @@ async function run(overrides = {}, options = {}) {
     workbench,
     authorityExecutor: options.authorityExecutor ?? authorityFor(),
     cwd: options.cwd ?? projectRoot,
+    fastForward: options.fastForward ?? false,
     gitExecutable: process.execPath,
   });
   return { result, workbench };
@@ -113,8 +114,13 @@ async function run(overrides = {}, options = {}) {
 
 const current = await run();
 assert.equal(current.result.status, "freshness_checked");
+assert.equal(current.result.fastForward, false);
 assert.equal(current.result.postState.head, current.result.preState.head);
-assert.equal(current.workbench.commands.some((command) => command.at(-3) === "fetch" && command.at(-2) === "--prune" && command.at(-1) === "origin"), true);
+assert.equal(current.workbench.commands.some((command) => command.slice(1).join(" ") === "fetch --prune origin"), true);
+
+const compatibleFalse = await run({}, { fastForward: false });
+assert.equal(compatibleFalse.result.status, "freshness_checked");
+assert.equal(compatibleFalse.result.fastForward, false);
 
 const staleRemote = await run({
   fetchOriginMain: "2222222222222222222222222222222222222222",
@@ -157,11 +163,16 @@ await assert.rejects(
   () => run({ remote: "https://user:secret@github.com/example/homelab.git" }),
   (error) => error.code === "GIT_SYNC_REMOTE_UNSUPPORTED"
 );
+await assert.rejects(
+  () => run({}, { fastForward: true }),
+  (error) => error.code === "GIT_SYNC_FAST_FORWARD_UNSUPPORTED"
+);
 
 const schema = createGitSyncInputSchema();
 assert.equal(schema.safeParse({ cwd: projectRoot }).success, true);
+assert.equal(schema.safeParse({ cwd: projectRoot, fastForward: false }).success, true);
+assert.equal(schema.safeParse({ cwd: projectRoot, fastForward: true }).success, false);
 for (const injection of [
-  { cwd: projectRoot, fastForward: true },
   { cwd: projectRoot, command: ["push"] },
   { cwd: projectRoot, remote: "evil" },
   { cwd: projectRoot, ref: "main" },
@@ -180,9 +191,10 @@ assert.deepEqual(registrations.map(([name]) => name), ["codex.git_sync"]);
 
 console.log(JSON.stringify({
   ok: true,
-  positive: 2,
-  negative: 8,
+  positive: 3,
+  negative: 9,
   fetchOnly: true,
+  fastForwardCompatibilityFalseOnly: true,
   absoluteExecutable: true,
   schemaInjectionRejected: true,
   publicTool: "codex.git_sync",
