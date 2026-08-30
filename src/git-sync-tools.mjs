@@ -14,6 +14,8 @@ const WRITABLE_PERMISSION_PROFILES = new Set([":workspace", ":danger-full-access
 export function createGitSyncInputSchema() {
   return z.object({
     cwd: z.string().min(1).max(32_768),
+    fastForward: z.literal(false).default(false)
+      .describe("Deprecated compatibility field. The bounded lane is fetch/freshness only; true is rejected."),
   }).strict();
 }
 
@@ -26,7 +28,7 @@ export function registerGitSyncTools(server, { workbench, authorityExecutor }) {
     {
       title: "Bounded Git Freshness",
       description:
-        "Run one explicit model-free Git freshness check for an already-authorized writable project root. The service resolves Codex project authority for cwd, requires the Git repository root to equal that trusted root, requires main with origin/main and an HTTPS origin, then runs only git fetch --prune origin through the existing host-process substrate. Callers cannot provide an executable, Git arguments, remotes, refs, force flags, shells, or another root. No working-tree, HEAD, branch, commit, push, reset, checkout, rebase, or merge mutation is supported.",
+        "Run one explicit model-free Git freshness check for an already-authorized writable project root. The service resolves Codex project authority for cwd, requires the Git repository root to equal that trusted root, requires main with origin/main and an HTTPS origin, then runs only git fetch --prune origin through the existing host-process substrate. The legacy fastForward field is accepted only as false and performs no merge. Callers cannot provide an executable, Git arguments, remotes, refs, force flags, shells, or another root. No working-tree, HEAD, branch, commit, push, reset, checkout, rebase, or merge mutation is supported.",
       inputSchema: createGitSyncInputSchema(),
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     },
