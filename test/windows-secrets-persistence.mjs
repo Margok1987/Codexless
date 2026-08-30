@@ -31,19 +31,17 @@ try {
 param([string]$InstallerPath, [string]$UninstallerPath, [string]$Root)
 $ErrorActionPreference = "Stop"
 
-function Import-Functions([string]$Path, [string[]]$Names) {
+function Read-FunctionDefinition([string]$Path, [string]$Name) {
   $tokens = $null
   $parseErrors = $null
   $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$parseErrors)
   if ($parseErrors.Count -ne 0) { throw ($parseErrors | ForEach-Object Message | Out-String) }
-  foreach ($name in $Names) {
-    $fn = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
-    if (-not $fn) { throw "missing function $name in $Path" }
-    Invoke-Expression $fn.Extent.Text
-  }
+  $fn = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $Name }, $true)
+  if (-not $fn) { throw "missing function $Name in $Path" }
+  return $fn.Extent.Text
 }
 
-Import-Functions $InstallerPath @(
+foreach ($name in @(
   "Normalize-LocalPath",
   "Get-SecretsLinkTarget",
   "Get-SecretsPreState",
@@ -52,7 +50,9 @@ Import-Functions $InstallerPath @(
   "Mount-PersistentSecrets",
   "Dismount-PersistentSecrets",
   "Restore-PersistentSecretsPreState"
-)
+)) {
+  Invoke-Expression (Read-FunctionDefinition $InstallerPath $name)
+}
 
 function Assert-True([bool]$Value, [string]$Message) {
   if (-not $Value) { throw $Message }
@@ -126,12 +126,14 @@ Assert-True $conflict "conflicting legacy and persistent state did not fail clos
 Assert-True (Test-Path -LiteralPath $legacyFile) "conflict handling changed legacy data"
 Assert-True (Test-Path -LiteralPath $persistentFile) "conflict handling changed persistent data"
 
-Import-Functions $UninstallerPath @(
+foreach ($name in @(
   "Normalize-LocalPath",
   "Get-SecretsLinkTarget",
   "Prepare-SecretsForUninstall",
   "Restore-SecretsAfterFailedUninstall"
-)
+)) {
+  Invoke-Expression (Read-FunctionDefinition $UninstallerPath $name)
+}
 
 function Reset-UninstallScenario([string]$Name) {
   $base = Join-Path $Root $Name
