@@ -10,10 +10,6 @@ const GIT_TIMEOUT_MS = 30_000;
 const GIT_POLL_INTERVAL_MS = 50;
 const MAX_DIAGNOSTIC_CHARS = 8_000;
 const WRITABLE_PERMISSION_PROFILES = new Set([":workspace", ":danger-full-access"]);
-const SAFE_GIT_CONFIG_ARGS = Object.freeze([
-  "-c", "core.hooksPath=/dev/null",
-  "-c", "credential.helper=",
-]);
 
 export function createGitSyncInputSchema() {
   return z.object({
@@ -168,7 +164,7 @@ async function gitText(workbench, executable, cwd, args, operation) {
 async function gitRun(workbench, executable, cwd, args, operation) {
   const start = await workbench.processAction({
     action: "start",
-    command: [executable, ...SAFE_GIT_CONFIG_ARGS, ...args],
+    command: [executable, ...args],
     cwd,
     tty: false,
     timeoutMs: GIT_TIMEOUT_MS,
