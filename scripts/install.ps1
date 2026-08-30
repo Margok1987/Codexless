@@ -15,6 +15,8 @@ $OutputEncoding = $Utf8NoBom
 $SourceRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
 $StateRoot = Join-Path $HOME ".config\codexless"
+$PersistentSecretsDir = Join-Path $StateRoot "secrets"
+$InstallSecretsDir = Join-Path $InstallDir "secrets"
 $BootstrapRoot = if ($env:CODEXLESS_BOOTSTRAP_ROOT) { [System.IO.Path]::GetFullPath($env:CODEXLESS_BOOTSTRAP_ROOT) } else { Join-Path $StateRoot "bootstrap" }
 $ParentDir = Split-Path -Parent $InstallDir
 $StageDir = Join-Path $ParentDir ("Codexless-stage-" + [guid]::NewGuid().ToString("N"))
@@ -45,6 +47,9 @@ $RuntimePreferenceChanged = $false
 $ManagedProvisioning = $null
 $ManagedOnboardingRequired = $false
 $ManagedOnboardingCommand = $null
+$SecretsPreState = "absent"
+$SecretsPrepared = $false
+$SecretsMounted = $false
 
 function Invoke-Checked {
   param(
@@ -140,6 +145,105 @@ function Run-DoctorJson {
     throw "Codexless doctor failed in $Root.`n$text"
   }
   return $parsed
+}
+
+function Normalize-LocalPath {
+  param([Parameter(Mandatory=$true)][string]$Path)
+  return [System.IO.Path]::GetFullPath($Path).TrimEnd([char[]]@('\','/')).ToLowerInvariant()
+}
+
+function Get-SecretsLinkTarget {
+  param([Parameter(Mandatory=$true)]$Item)
+  if (($Item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) { return $null }
+  $raw = @($Item.Target) | Select-Object -First 1
+  if ([string]::IsNullOrWhiteSpace([string]$raw)) { throw "Existing secrets reparse point has no readable target." }
+  $target = [string]$raw
+  if (-not [System.IO.Path]::IsPathRooted($target)) { $target = Join-Path $Item.Parent.FullName $target }
+  return [System.IO.Path]::GetFullPath($target)
+}
+
+function Get-SecretsPreState {
+  if (-not (Test-Path -LiteralPath $InstallSecretsDir)) { return "absent" }
+  $item = Get-Item -LiteralPath $InstallSecretsDir -Force
+  if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+    $target = Get-SecretsLinkTarget -Item $item
+    if ((Normalize-LocalPath $target) -ne (Normalize-LocalPath $PersistentSecretsDir)) {
+      throw "Existing install secrets reparse point targets an unsupported location."
+    }
+    return "persistent-junction"
+  }
+  if (-not $item.PSIsContainer) { throw "Existing install secrets path is not a directory." }
+  return "legacy-directory"
+}
+
+function Remove-SecretsCompatibilityLink {
+  if (-not (Test-Path -LiteralPath $InstallSecretsDir)) { return }
+  $item = Get-Item -LiteralPath $InstallSecretsDir -Force
+  if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) {
+    throw "Refusing to remove a non-reparse secrets directory as a compatibility link."
+  }
+  $target = Get-SecretsLinkTarget -Item $item
+  if ((Normalize-LocalPath $target) -ne (Normalize-LocalPath $PersistentSecretsDir)) {
+    throw "Refusing to remove a secrets reparse point that targets an unsupported location."
+  }
+  Remove-Item -LiteralPath $InstallSecretsDir -Force
+}
+
+function Prepare-PersistentSecrets {
+  $script:SecretsPreState = Get-SecretsPreState
+  switch ($SecretsPreState) {
+    "legacy-directory" {
+      if (Test-Path -LiteralPath $PersistentSecretsDir) {
+        throw "Both legacy install secrets and persistent secrets exist; refusing to guess which state is authoritative."
+      }
+      New-Item -ItemType Directory -Force -Path $StateRoot | Out-Null
+      Move-Item -LiteralPath $InstallSecretsDir -Destination $PersistentSecretsDir
+    }
+    "persistent-junction" {
+      Remove-SecretsCompatibilityLink
+    }
+  }
+  $script:SecretsPrepared = $true
+}
+
+function Mount-PersistentSecrets {
+  if (-not (Test-Path -LiteralPath $PersistentSecretsDir)) { return }
+  if (Test-Path -LiteralPath $InstallSecretsDir) { throw "Installed release unexpectedly contains a secrets path." }
+  New-Item -ItemType Junction -Path $InstallSecretsDir -Target $PersistentSecretsDir | Out-Null
+  $script:SecretsMounted = $true
+  $item = Get-Item -LiteralPath $InstallSecretsDir -Force
+  $target = Get-SecretsLinkTarget -Item $item
+  if ((Normalize-LocalPath $target) -ne (Normalize-LocalPath $PersistentSecretsDir)) {
+    throw "Installed secrets compatibility junction failed verification."
+  }
+}
+
+function Dismount-PersistentSecrets {
+  if (-not (Test-Path -LiteralPath $InstallSecretsDir)) {
+    $script:SecretsMounted = $false
+    return
+  }
+  Remove-SecretsCompatibilityLink
+  $script:SecretsMounted = $false
+}
+
+function Restore-PersistentSecretsPreState {
+  if (-not $SecretsPrepared) { return }
+  switch ($SecretsPreState) {
+    "legacy-directory" {
+      if (-not (Test-Path -LiteralPath $InstallDir)) { throw "Secrets rollback requires the previous install root." }
+      if (Test-Path -LiteralPath $InstallSecretsDir) { throw "Secrets rollback found an unexpected install secrets path." }
+      if (-not (Test-Path -LiteralPath $PersistentSecretsDir)) { throw "Secrets rollback cannot find the migrated persistent directory." }
+      Move-Item -LiteralPath $PersistentSecretsDir -Destination $InstallSecretsDir
+    }
+    "persistent-junction" {
+      if (-not (Test-Path -LiteralPath $InstallDir)) { throw "Secrets rollback requires the previous install root." }
+      if (Test-Path -LiteralPath $InstallSecretsDir) { throw "Secrets rollback found an unexpected install secrets path." }
+      if (-not (Test-Path -LiteralPath $PersistentSecretsDir)) { throw "Secrets rollback cannot find the persistent directory." }
+      New-Item -ItemType Junction -Path $InstallSecretsDir -Target $PersistentSecretsDir | Out-Null
+    }
+  }
+  $script:SecretsPrepared = $false
 }
 
 function Release-ActivationLock {
@@ -355,6 +459,10 @@ try {
   $ErrorCode = "SKILL_SYNC_PREPARE_FAILED"
   $skillPrepared = Prepare-BrowserRepairSkillTransaction
 
+  $ErrorStage = "secrets-persistence-prepare"
+  $ErrorCode = "SECRETS_PERSISTENCE_PREPARE_FAILED"
+  Prepare-PersistentSecrets
+
   if ($HadExistingInstall) {
     $ErrorStage = "backup"
     $ErrorCode = "BACKUP_FAILED"
@@ -367,6 +475,10 @@ try {
     $ErrorCode = "ACTIVATE_FAILED"
     Move-Item -LiteralPath $StageDir -Destination $InstallDir
     $Installed = $true
+
+    $ErrorStage = "secrets-persistence-mount"
+    $ErrorCode = "SECRETS_PERSISTENCE_MOUNT_FAILED"
+    Mount-PersistentSecrets
 
     $ErrorStage = "installed-doctor"
     $ErrorCode = "INSTALLED_DOCTOR_FAILED"
@@ -455,13 +567,29 @@ try {
     $transactionFailure = $_.Exception.Message
     if (-not $TransactionCommitted) {
       if ($Installed -and (Test-Path -LiteralPath $InstallDir)) {
-        Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
-        $Installed = $false
+        try {
+          Dismount-PersistentSecrets
+        } catch {
+          $ErrorStage = "secrets-persistence-rollback"
+          $ErrorCode = "SECRETS_PERSISTENCE_DISMOUNT_FAILED"
+          $transactionFailure = "Lifecycle rollback could not detach the persistent secrets compatibility junction."
+        }
+        if (-not $SecretsMounted) {
+          Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
+          $Installed = $false
+        }
       }
       if ($BackupDir -and (Test-Path -LiteralPath $BackupDir) -and -not (Test-Path -LiteralPath $InstallDir)) {
         Move-Item -LiteralPath $BackupDir -Destination $InstallDir
         $BackupDir = $null
         $RollbackPerformed = $true
+      }
+      if ($SecretsPrepared -and (Test-Path -LiteralPath $InstallDir)) {
+        try { Restore-PersistentSecretsPreState } catch {
+          $ErrorStage = "secrets-persistence-rollback"
+          $ErrorCode = "SECRETS_PERSISTENCE_ROLLBACK_FAILED"
+          $transactionFailure = "Lifecycle rollback could not restore the previous secrets path state."
+        }
       }
       if ($PreviousBackupStashDir) {
         try { Restore-PreviousBackupStash } catch {
@@ -549,6 +677,13 @@ try {
     if ($BackupDir -and (Test-Path -LiteralPath $BackupDir) -and -not (Test-Path -LiteralPath $InstallDir)) {
       Move-Item -LiteralPath $BackupDir -Destination $InstallDir -ErrorAction SilentlyContinue
       if (Test-Path -LiteralPath $InstallDir) { $BackupDir = $null; $RollbackPerformed = $true }
+    }
+    if ($SecretsPrepared -and (Test-Path -LiteralPath $InstallDir)) {
+      try { Restore-PersistentSecretsPreState } catch {
+        $ErrorStage = "secrets-persistence-rollback"
+        $ErrorCode = "SECRETS_PERSISTENCE_ROLLBACK_FAILED"
+        $failureMessage = "Lifecycle rollback could not restore the previous secrets path state."
+      }
     }
     if ($PreviousBackupStashDir) {
       try { Restore-PreviousBackupStash } catch {
