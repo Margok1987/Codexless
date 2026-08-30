@@ -43,16 +43,11 @@ function workbenchFor(state) {
       if (input.action === "poll") {
         const args = processes.get(input.processRef);
         assert.ok(args, `unknown process ${input.processRef}`);
-        return { status: "exited", exit: responseFor(state, stripFixedConfig(args)) };
+        return { status: "exited", exit: responseFor(state, args) };
       }
       throw new Error(`unexpected process action ${input.action}`);
     },
   };
-}
-
-function stripFixedConfig(args) {
-  assert.deepEqual(args.slice(0, 4), ["-c", "core.hooksPath=/dev/null", "-c", "credential.helper="]);
-  return args.slice(4);
 }
 
 function responseFor(state, args) {
