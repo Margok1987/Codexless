@@ -10,6 +10,8 @@ const PROMPT_INPUT_LOCATOR_KINDS = new Set([
   "file",
   "environment resource",
   "orchestrator resource",
+  "executor package",
+  "orchestrator package",
   "custom resource",
 ]);
 const execFileAsync = promisify(execFile);
@@ -112,7 +114,7 @@ function parseRenderedSkillLine(line) {
     throw Object.assign(new Error("Available skills bullet is missing the current stock name separator"), { code: "IMPLICIT_SKILLS_STRUCTURE_MISMATCH" });
   }
   const name = line.slice(2, separator);
-  const locatorMatch = line.match(/ \((file|environment resource|orchestrator resource|custom resource): (.+)\)$/);
+  const locatorMatch = line.match(/ \(([^:]+): (.+)\)$/);
   if (!locatorMatch || !PROMPT_INPUT_LOCATOR_KINDS.has(locatorMatch[1])) {
     throw Object.assign(new Error("Available skills bullet is missing the current stock source locator"), { code: "IMPLICIT_SKILLS_STRUCTURE_MISMATCH" });
   }
@@ -183,12 +185,46 @@ export function parsePromptInputSkillCatalog(stdout) {
     throw Object.assign(new Error("### Available skills heading is outside the accepted Skills block"), { code: "IMPLICIT_SKILLS_STRUCTURE_MISMATCH" });
   }
   const preludeLines = lines.slice(1, availableIndex);
-  if (!preludeLines.length || preludeLines.some((line) => !line || line.startsWith("#") || line.startsWith("- "))) {
+  if (!preludeLines.length || !preludeLines[0] || preludeLines[0].startsWith("#") || preludeLines[0].startsWith("- ")) {
     throw Object.assign(new Error("Skills prelude structure changed before ### Available skills"), { code: "IMPLICIT_SKILLS_STRUCTURE_MISMATCH" });
   }
-  const renderedLines = lines.slice(availableIndex + 1);
+  let preludeIndex = 1;
+  if (preludeLines[preludeIndex] === "### Skill roots") {
+    preludeIndex += 1;
+    const rootsStart = preludeIndex;
+    while (preludeIndex < preludeLines.length && /^- `r\d+` = `[^`]+`$/.test(preludeLines[preludeIndex])) preludeIndex += 1;
+    if (preludeIndex === rootsStart) {
+      throw Object.assign(new Error("Skill roots section contains no accepted root aliases"), { code: "IMPLICIT_SKILLS_STRUCTURE_MISMATCH" });
+    }
+  }
+  if (preludeIndex < preludeLines.length) {
+    const packageInstruction = preludeLines[preludeIndex];
+    if (preludeIndex !== preludeLines.length - 1
+      || !packageInstruction.startsWith("Read a skill package directly with `skills.read(")
+      || !packageInstruction.endsWith("use `skills.list` to find it.")) {
+      throw Object.assign(new Error("Skills prelude structure changed before ### Available skills"), { code: "IMPLICIT_SKILLS_STRUCTURE_MISMATCH" });
+    }
+    preludeIndex += 1;
+  }
+  if (preludeIndex !== preludeLines.length) {
+    throw Object.assign(new Error("Skills prelude structure changed before ### Available skills"), { code: "IMPLICIT_SKILLS_STRUCTURE_MISMATCH" });
+  }
+
+  const followingLines = lines.slice(availableIndex + 1);
+  const howToIndexes = followingLines.map((line, index) => line === "### How to use skills" ? index : -1).filter((index) => index >= 0);
+  if (howToIndexes.length > 1 || followingLines.some((line) => line.startsWith("### ") && line !== "### How to use skills")) {
+    throw Object.assign(new Error("Available skills section structure changed"), { code: "IMPLICIT_SKILLS_STRUCTURE_MISMATCH" });
+  }
+  const howToIndex = howToIndexes.length === 1 ? howToIndexes[0] : -1;
+  const renderedLines = howToIndex >= 0 ? followingLines.slice(0, howToIndex) : followingLines;
   if (renderedLines.some((line) => line === "" || line.startsWith("### "))) {
     throw Object.assign(new Error("Available skills section structure changed"), { code: "IMPLICIT_SKILLS_STRUCTURE_MISMATCH" });
+  }
+  if (howToIndex >= 0) {
+    const howToLines = followingLines.slice(howToIndex + 1);
+    if (!howToLines.length || howToLines.some((line) => line === "" || line.startsWith("### "))) {
+      throw Object.assign(new Error("How to use skills section structure changed"), { code: "IMPLICIT_SKILLS_STRUCTURE_MISMATCH" });
+    }
   }
 
   const skills = renderedLines.map(parseRenderedSkillLine);

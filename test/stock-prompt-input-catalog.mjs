@@ -342,4 +342,37 @@ function facts({ method = "thread/start", params = {}, result = {} } = {}) {
   assert.equal(parsed[0].source.kind, "file");
 }
 
+// Codex 0.153.4 adds host root aliases before Available skills and usage instructions after it.
+{
+  const stock01534 = JSON.stringify([
+    {
+      type: "message",
+      role: "developer",
+      content: [{
+        type: "input_text",
+        text: [
+          "<skills_instructions>",
+          "## Skills",
+          "A skill is a set of local instructions to follow that is stored in a `SKILL.md` file.",
+          "### Skill roots",
+          "- `r0` = `/Users/test/.codex/skills`",
+          "Read a skill package directly with `skills.read({\\\"package\\\":\\\"<package>\\\"})` to read its `SKILL.md`; root aliases are resolved automatically. To read another file from that skill, use the same `package` and pass the file's complete `skill://` identifier as `resource`. If the package is not provided, use `skills.list` to find it.",
+          "### Available skills",
+          "- alpha: Alpha skill. (file: r0/alpha/SKILL.md)",
+          "- executor-demo: Executor skill. (executor package: pkg/executor-demo)",
+          "- orchestrator-demo: Orchestrator skill. (orchestrator package: pkg/orchestrator-demo)",
+          "### How to use skills",
+          "- Discovery: The list above is the skills available in this session.",
+          "- Safety and fallback: If a skill cannot be applied cleanly, continue with the best fallback.",
+          "</skills_instructions>",
+        ].join("\n"),
+      }],
+    },
+    { type: "message", role: "user", content: [{ type: "input_text", text: "fixture" }] },
+  ]);
+  const parsed = parsePromptInputSkillCatalog(stock01534);
+  assert.deepEqual(parsed.map((skill) => skill.name), ["alpha", "executor-demo", "orchestrator-demo"]);
+  assert.deepEqual(parsed.map((skill) => skill.source.kind), ["file", "executor package", "orchestrator package"]);
+}
+
 console.log("stock debug prompt-input production consumer contract PASS");
