@@ -358,7 +358,7 @@ function facts({ method = "thread/start", params = {}, result = {} } = {}) {
           "- `r0` = `/Users/test/.codex/skills`",
           "Read a skill package directly with `skills.read({\\\"package\\\":\\\"<package>\\\"})` to read its `SKILL.md`; root aliases are resolved automatically. To read another file from that skill, use the same `package` and pass the file's complete `skill://` identifier as `resource`. If the package is not provided, use `skills.list` to find it.",
           "### Available skills",
-          "- alpha: Alpha skill. (file: r0/alpha/SKILL.md)",
+          "- alpha: Alpha skill (note: description contains a colon). (file: r0/alpha/SKILL.md)",
           "- executor-demo: Executor skill. (executor package: pkg/executor-demo)",
           "- orchestrator-demo: Orchestrator skill. (orchestrator package: pkg/orchestrator-demo)",
           "### How to use skills",
