@@ -114,7 +114,7 @@ function parseRenderedSkillLine(line) {
     throw Object.assign(new Error("Available skills bullet is missing the current stock name separator"), { code: "IMPLICIT_SKILLS_STRUCTURE_MISMATCH" });
   }
   const name = line.slice(2, separator);
-  const locatorMatch = line.match(/ \(([^:]+): (.+)\)$/);
+  const locatorMatch = line.match(/ \((file|environment resource|orchestrator resource|executor package|orchestrator package|custom resource): (.+)\)$/);
   if (!locatorMatch || !PROMPT_INPUT_LOCATOR_KINDS.has(locatorMatch[1])) {
     throw Object.assign(new Error("Available skills bullet is missing the current stock source locator"), { code: "IMPLICIT_SKILLS_STRUCTURE_MISMATCH" });
   }

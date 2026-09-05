@@ -17,7 +17,7 @@
       }
     }
   },
-  "buildId": "2070ec7808625941421335da78c196cf9e9121669fdc206d0b4a864868c4786d",
+  "buildId": "84c998028afe3af34ad819f65768259ad6ea951cf2efe43da9e6ac9869f859cb",
   "files": [
     { "path": "EXPORT_SYNC.md", "sha256": "2016ca37f280451a76cdb95f7223e0aa60f4a4743a41df0e11d6b4157231a839" },
     { "path": "LICENSE", "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4" },
@@ -113,7 +113,7 @@
     { "path": "src/release-discovery.mjs", "sha256": "927f450fe6a8c0f0697bd38883aaf7bb4c241d4c0be97ce9b3a72f9732ccdf7c" },
     { "path": "src/release-identity.mjs", "sha256": "607229b737a53e4ea0359bc382ee3de2e53815b5cbc811b346e050cdb22e1797" },
     { "path": "src/runtime-routing-policy.mjs", "sha256": "ad63e4616af3617627c43c1770a1190a36a086fd8cd755dee0dbcac2f9bad3be" },
-    { "path": "src/stock-prompt-input-skill-routing.mjs", "sha256": "4092ed34a9500ef7de0194d8c14d7bd35dbe4d8b455542ce7cf6a72b328691e2" },
+    { "path": "src/stock-prompt-input-skill-routing.mjs", "sha256": "e0d502d38a40648ded8658ae5bf1a9c48f5534b0d82c6695fda1799666732edf" },
     { "path": "src/surface-contracts.mjs", "sha256": "f20311c1d75eb0deaa9991281fa5d40514778844fc5fe35db371fb2555bf9ef5" },
     { "path": "src/toolbox-method-registry.mjs", "sha256": "3ee4e246c1ece6ef52468f9122776d6278e56066408dc8d419707f531e12f4c5" },
     { "path": "src/upstream-compatibility-fingerprint.mjs", "sha256": "286a437ce722bfee98056e783ec30d60a3f226f6304a75f6aefe3650ccfdcb3c" },
