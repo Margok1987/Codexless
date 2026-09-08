@@ -26,10 +26,12 @@ export function normalizeThreadTokenUsage(value) {
 function projectError(error) {
   if (!error || typeof error !== "object") return null;
   return {
-    name: typeof error.name === "string" ? error.name : null,
-    message: typeof error.message === "string" ? error.message : String(error),
+    // Upstream auth/transport diagnostics can contain account identifiers or
+    // credential fragments. Keep structured status, never arbitrary text.
+    name: "Unavailable",
+    message: "Codex account telemetry is unavailable",
     rpcCode: Number.isInteger(error.rpcCode) ? error.rpcCode : null,
-    rpcMessage: typeof error.rpcMessage === "string" ? error.rpcMessage : null,
+    rpcMessage: null,
   };
 }
 

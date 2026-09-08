@@ -73,11 +73,28 @@ function agentSnapshot({ agentRef, turnId, finalResult, model, reasoningEffort =
   };
 }
 
-function createHarness({ agentReasoningEffort = true, quotaProvider = async () => quotaSnapshot(), authorityExecutor: authorityExecutorOverride = null } = {}) {
+function createHarness({ agentReasoningEffort = true, quotaProvider = async () => quotaSnapshot(), authorityExecutor: authorityExecutorOverride = null, accounts = null } = {}) {
   const server = captureServer();
   const starts = [];
   const sends = [];
   const agents = new Map();
+  const agentAccounts = new Map();
+  const configuredAccounts = Array.isArray(accounts) ? [...accounts] : null;
+  const resolveConfiguredAccount = (account = null) => {
+    if (!configuredAccounts) return account;
+    if (!account && configuredAccounts.length > 1) {
+      const error = new Error("account is required when multiple Codex accounts are configured");
+      error.code = "CODEX_ACCOUNT_REQUIRED";
+      throw error;
+    }
+    const selected = account ?? configuredAccounts[0];
+    if (!configuredAccounts.includes(selected)) {
+      const error = new Error("unknown Codex account");
+      error.code = "CODEX_ACCOUNT_UNKNOWN";
+      throw error;
+    }
+    return selected;
+  };
   let sequence = 0;
   const models = [
     {
@@ -97,7 +114,10 @@ function createHarness({ agentReasoningEffort = true, quotaProvider = async () =
     },
   };
   const agentExecutor = {
-    async listModels() { return { models: structuredClone(models), nextCursor: null }; },
+    async listModels({ account = null } = {}) {
+      if (configuredAccounts) resolveConfiguredAccount(account);
+      return { models: structuredClone(models), nextCursor: null };
+    },
     async start(args) {
       starts.push(structuredClone(args));
       sequence += 1;
@@ -119,6 +139,10 @@ function createHarness({ agentReasoningEffort = true, quotaProvider = async () =
         snapshot.execution.reasoningEffort = null;
         snapshot.timing = { startedAt: Date.now() - 2500, endedAt: Date.now(), durationMs: 2500 };
       }
+      if (args.account) {
+        snapshot.account = args.account;
+        agentAccounts.set(snapshot.agentRef, args.account);
+      }
       agents.set(snapshot.agentRef, snapshot);
       return structuredClone(snapshot);
     },
@@ -139,12 +163,17 @@ function createHarness({ agentReasoningEffort = true, quotaProvider = async () =
         requestedReasoningEffort: args.reasoningEffort ?? null,
         reasoningEffort: prior?.execution?.reasoningEffort ?? null,
       });
+      if (prior?.account) snapshot.account = prior.account;
       agents.set(snapshot.agentRef, snapshot);
       return structuredClone(snapshot);
     },
     async resolveApproval() { throw new Error("not used"); },
     async cancel() { throw new Error("not used"); },
   };
+  if (configuredAccounts) {
+    agentExecutor.resolveAccountId = (account = null) => resolveConfiguredAccount(account);
+    agentExecutor.accountForAgent = (agentRef) => agentAccounts.get(agentRef) ?? null;
+  }
   registerAgentPreviewTools(server, {
     agentExecutor,
     authorityExecutor,
@@ -158,10 +187,10 @@ function createHarness({ agentReasoningEffort = true, quotaProvider = async () =
     assert.ok(entry, `missing tool ${name}`);
     return entry.handler(args);
   }
-  return { server, starts, sends, invoke };
+  return { server, starts, sends, agents, invoke };
 }
 
-function assertPreparedApproval(result, { task, modelLabel = "Fake Default", model = "fake-default", effort = "medium" } = {}) {
+function assertPreparedApproval(result, { task, modelLabel = "Fake Default", model = "fake-default", effort = "medium", account = null } = {}) {
   assert.equal(result.isError, false, JSON.stringify(result.structuredContent));
   const payload = result.structuredContent;
   const text = result.content?.[0]?.text ?? "";
@@ -172,6 +201,7 @@ function assertPreparedApproval(result, { task, modelLabel = "Fake Default", mod
   assert.match(text, new RegExp(task));
   assert.match(text, new RegExp(modelLabel));
   assert.match(text, new RegExp(effort));
+  if (account) assert.match(text, new RegExp(`Account[：:]\\s*${account}`));
   assert.match(text, /63%/);
   assert.equal(text.includes(payload.taskId), true);
   assert.equal(text, payload.chatPresentation?.text, "Call Approval content must exactly equal the server-fixed presentation text");
@@ -184,7 +214,9 @@ function assertPreparedApproval(result, { task, modelLabel = "Fake Default", mod
   assert.equal(delivery?.allowReorder, false);
   assert.equal(delivery?.allowTranslation, false);
   assert.equal(delivery?.textSha256, createHash("sha256").update(text, "utf8").digest("hex"));
-  assert.deepEqual(delivery?.requiredFields, ["task", "whyCodex", "model", "reasoningEffort", "quota", "taskId", "yesNo"]);
+  assert.deepEqual(delivery?.requiredFields, account
+    ? ["task", "whyCodex", "model", "reasoningEffort", "quota", "taskId", "yesNo", "account"]
+    : ["task", "whyCodex", "model", "reasoningEffort", "quota", "taskId", "yesNo"]);
   assert.deepEqual(payload.chatPresentation?.choices, ["Yes", "No"]);
   assert.equal(payload.chatPresentation?.binding?.approveTool, "codex.agent_commit");
   assert.equal(payload.chatPresentation?.binding?.declineTool, "codex.agent_decline");
@@ -206,6 +238,76 @@ test("fixed-text prepared approval resolves default and explicit model/effort wi
 
   const explicit = await invoke("codex.agent_start", { prompt: "PREPARED_EXPLICIT", requestId: "prepared-explicit", cwd: projectRoot, model: "fake-default", reasoningEffort: "ultra" });
   assertPreparedApproval(explicit, { task: "PREPARED_EXPLICIT", modelLabel: "Fake Default", effort: "ultra" });
+});
+
+test("multi-account fixed approval visibly binds the selected account and follow-ups cannot switch it", async () => {
+  const { server, starts, invoke } = createHarness({ accounts: ["dennis", "pia"] });
+  const modelList = server.tools.get("codex.model_list")?.definition;
+  const startDef = server.tools.get("codex.agent_start")?.definition;
+  const sendDef = server.tools.get("codex.agent_send")?.definition;
+  assert.equal(modelList.inputSchema.safeParse({ account: "pia" }).success, true);
+  assert.equal(startDef.inputSchema.safeParse({ prompt: "x", account: "pia", requestId: "x" }).success, true);
+  assert.equal(Object.hasOwn(sendDef.inputSchema.shape ?? {}, "account"), false);
+
+  const missing = await invoke("codex.agent_start", { prompt: "ACCOUNT_REQUIRED", requestId: "account-required", cwd: projectRoot });
+  assert.equal(missing.isError, true);
+  assert.equal(missing.structuredContent.errorCode, "CODEX_ACCOUNT_REQUIRED");
+
+  const prepared = await invoke("codex.agent_start", { prompt: "ACCOUNT_PIA", account: "pia", requestId: "account-pia", cwd: projectRoot });
+  const taskId = assertPreparedApproval(prepared, { task: "ACCOUNT_PIA", account: "pia" });
+  assert.equal(prepared.structuredContent.account ?? null, null);
+  const changedIntent = await invoke("codex.agent_start", { prompt: "ACCOUNT_PIA", account: "dennis", requestId: "account-pia", cwd: projectRoot });
+  assert.equal(changedIntent.isError, true);
+  assert.match(changedIntent.structuredContent.error, /different Codex caller intent/i);
+
+  const committed = await invoke("codex.agent_commit", { taskId });
+  assert.equal(committed.isError, false);
+  assert.equal(committed.structuredContent.account, "pia");
+  assert.equal(starts.length, 1);
+  assert.equal(starts[0].account, "pia");
+
+  const follow = await invoke("codex.agent_send", { agentRef: committed.structuredContent.agentRef, message: "FOLLOW_PIA", requestId: "follow-pia" });
+  assertPreparedApproval(follow, { task: "FOLLOW_PIA", account: "pia" });
+});
+
+test("fixed approval can prepare and dispatch a follow-up after an interrupted parent", async () => {
+  const { starts, sends, agents, invoke } = createHarness();
+  const prepared = await invoke("codex.agent_start", { prompt: "INTERRUPT_PARENT", requestId: "interrupt-parent", cwd: projectRoot });
+  const startTaskId = assertPreparedApproval(prepared, { task: "INTERRUPT_PARENT" });
+  const committed = await invoke("codex.agent_commit", { taskId: startTaskId });
+  assert.equal(starts.length, 1);
+  const agentRef = committed.structuredContent.agentRef;
+  const interrupted = agents.get(agentRef);
+  interrupted.status = "interrupted";
+  interrupted.canSend = true;
+  interrupted.finalResult = "PARTIAL_RESULT";
+
+  const follow = await invoke("codex.agent_send", {
+    agentRef,
+    message: "CONTINUE_SAME_THREAD",
+    requestId: "interrupt-follow",
+  });
+  const followTaskId = assertPreparedApproval(follow, { task: "CONTINUE_SAME_THREAD" });
+  const sent = await invoke("codex.agent_commit", { taskId: followTaskId });
+  assert.equal(sent.isError, false);
+  assert.equal(sends.length, 1);
+  assert.equal(sends[0].agentRef, agentRef);
+  assert.equal(sends[0].message, "CONTINUE_SAME_THREAD");
+});
+
+test("concurrent commits of one multi-account Task ID dispatch exactly once", async () => {
+  const { starts, invoke } = createHarness({ accounts: ["dennis", "pia"] });
+  const prepared = await invoke("codex.agent_start", { prompt: "ACCOUNT_CONCURRENT", account: "pia", requestId: "account-concurrent", cwd: projectRoot });
+  const taskId = assertPreparedApproval(prepared, { task: "ACCOUNT_CONCURRENT", account: "pia" });
+  const [left, right] = await Promise.all([
+    invoke("codex.agent_commit", { taskId }),
+    invoke("codex.agent_commit", { taskId }),
+  ]);
+  assert.equal(left.isError, false);
+  assert.equal(right.isError, false);
+  assert.equal(starts.length, 1);
+  assert.equal(starts[0].account, "pia");
+  assert.equal(left.structuredContent.agentRef, right.structuredContent.agentRef);
 });
 
 test("neutral agent_commit is exact server-bound for start and send; duplicate exact Task ID never redispatches", async () => {

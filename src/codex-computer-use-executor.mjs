@@ -10,6 +10,8 @@ const execFileAsync = promisify(execFile);
 const CUA_CAPABILITY = "computer-use-preview";
 const APPROVED_APP_META_KEY = "x-oai-cua-approved-app";
 const REQUEST_BUDGET_META_KEY = "x-oai-cua-request-budget-ms";
+// This opt-in Workbench preview remains pinned to its separately qualified 0.147 helper contract.
+// Do not widen it to the package's 0.153.4 runtime without requalifying the exact CUA helper + Sky bundle.
 const DEFAULT_CODEX_VERSION = "0.147.0";
 const DEFAULT_SKY_VERSION = "0.6.17-202608171537-pr-1300023-7efba775c041";
 const DEFAULT_HELPER_SHA256 = "db8f4486d527c91b80266faf77fdc38266b1d3960efbba35d0a6aab4caaf6aee";

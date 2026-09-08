@@ -13,20 +13,29 @@ import {
   WORKBENCH_SURFACE_VERSION,
 } from "./surface-contracts.mjs";
 import { CodexAgentExecutor } from "./codex-agent-executor.mjs";
+import { CodexAccountAgentExecutor } from "./codex-account-agent-executor.mjs";
+import { assertCodexAccountHome, loadCodexAccountRegistry } from "./codex-account-registry.mjs";
 import { CodexAuthorityExecutor } from "./codex-authority-executor.mjs";
 import { resolveBrowserRuntimeCompatibility } from "./browser-runtime-compat.mjs";
-import { createCodexRuntimeProvider } from "./codex-runtime-provider.mjs";
+import { createCodexRuntimeProvider, managedLaunchEnv } from "./codex-runtime-provider.mjs";
+import { defaultCodexlessStateRoot } from "./runtime-routing-policy.mjs";
 import { CodexBrowserExecutor } from "./codex-browser-executor.mjs";
 import { createDeferredBrowserAdapter } from "./deferred-browser-adapter.mjs";
-import { LazyCodexAgentExecutor } from "./lazy-codex-agent-executor.mjs";
 import { LazyCodexAuthorityExecutor } from "./lazy-codex-authority-executor.mjs";
 import { BrowserElicitationBridge } from "./browser-elicitation-bridge.mjs";
 import { CodexComputerUseExecutor } from "./codex-computer-use-executor.mjs";
 import { CodexWorkbenchExecutor } from "./codex-workbench-executor.mjs";
 import { readCodexQuotaSnapshot } from "./codex-quota-snapshot.mjs";
-import { createPreviewTelemetryClient } from "./codex-preview-account-preflight.mjs";
+import { createPreviewTelemetryClient, readPreviewAccountPreflight } from "./codex-preview-account-preflight.mjs";
 import { createCodexToolboxServerFactory } from "./mcp-server-factory.mjs";
 import { createRecentCallReceiptStore } from "./recent-call-receipts.mjs";
+
+function accountTelemetryCleanupError() {
+  return Object.assign(
+    new Error("Codex account telemetry cleanup failed; upstream diagnostics are withheld"),
+    { code: "CODEX_ACCOUNT_CLEANUP_FAILED" }
+  );
+}
 
 function envString(env, name, fallback = null) {
   const value = env?.[name];
@@ -201,7 +210,9 @@ export async function createCodexlessRuntime({
   const publicPreview = mode === "public";
   const browserServerRequests = browserServerRequestRoutingPolicy(mode);
 
-  const runtimeProvider = await createCodexRuntimeProvider({ env, stateRoot });
+  const persistentStateRoot = path.resolve(stateRoot ?? defaultCodexlessStateRoot());
+  const runtimeProvider = await createCodexRuntimeProvider({ env, stateRoot: persistentStateRoot });
+  const accountRegistry = await loadCodexAccountRegistry({ stateRoot: persistentStateRoot });
   const modelFreeRuntime = runtimeProvider.modelFree;
   const codexBin = modelFreeRuntime.bin;
   const modelFreeLaunchEnv = modelFreeRuntime.launchEnv;
@@ -499,12 +510,21 @@ export async function createCodexlessRuntime({
         launchEnv: runtime.launchEnv ?? null,
         stderrHandler: () => {},
       });
+      let snapshot;
+      let primaryError = null;
       try {
         await telemetry.start();
-        return await readCodexQuotaSnapshot({ client: telemetry });
-      } finally {
-        await telemetry.close().catch(() => {});
+        snapshot = await readCodexQuotaSnapshot({ client: telemetry });
+      } catch (error) {
+        primaryError = error;
       }
+      try {
+        await telemetry.close();
+      } catch {
+        throw accountTelemetryCleanupError();
+      }
+      if (primaryError) throw primaryError;
+      return snapshot;
     };
     const formalAgentUsesExisting = runtimeProvider.formalAgentAvailable && runtimeProvider.formalAgentLane === "existing";
     let formalAgentRuntime = formalAgentUsesExisting && modelFreeRuntime.lane === "existing" ? modelFreeRuntime : null;
@@ -528,20 +548,34 @@ export async function createCodexlessRuntime({
         if (!formalAgentRuntime) formalAgentRuntimePromise = null;
       }
     };
-    const resourceSnapshotProvider = formalAgentUsesExisting
-      ? async () => snapshotForRuntime(await resolveFormalAgentRuntime())
-      : null;
+    const runtimeForAccount = async (account) => {
+      const baseRuntime = await resolveFormalAgentRuntime();
+      if (accountRegistry.source === "legacy" || !account?.codexHome) return baseRuntime;
+      const codexHome = await assertCodexAccountHome(account, {
+        stateRoot: persistentStateRoot,
+        registry: accountRegistry,
+      });
+      return {
+        ...baseRuntime,
+        codexHome,
+        launchEnv: managedLaunchEnv(env, codexHome),
+      };
+    };
+    const snapshotForAccount = async (account) => snapshotForRuntime(await runtimeForAccount(account));
+    const preflightForAccount = async (account) => {
+      const runtime = await runtimeForAccount(account);
+      const result = await readPreviewAccountPreflight({
+        codexBin: runtime.bin,
+        defaultCwd,
+        configOverrides,
+        launchEnv: runtime.launchEnv ?? null,
+      });
+      return accountRegistry.source === "legacy" ? result : { ...result, selectedAccount: account.id };
+    };
 
     let agentAuthorityExecutor;
     if (formalAgentUsesExisting && modelFreeRuntime.lane === "existing") {
       agentAuthorityExecutor = executor;
-      agentExecutor = new CodexAgentExecutor({
-        codexBin: formalAgentRuntime.bin,
-        defaultCwd,
-        configOverrides,
-        requestTimeoutMs: 30_000,
-        resourceSnapshotProvider,
-      });
     } else if (formalAgentUsesExisting) {
       agentAuthorityExecutor = new LazyCodexAuthorityExecutor({
         factory: async () => {
@@ -557,30 +591,51 @@ export async function createCodexlessRuntime({
           });
         },
       });
-      agentExecutor = new LazyCodexAgentExecutor({
-        factory: async () => {
-          const existingRuntime = await resolveFormalAgentRuntime();
-          return new CodexAgentExecutor({
-            codexBin: existingRuntime.bin,
-            defaultCwd,
-            configOverrides,
-            requestTimeoutMs: 30_000,
-            resourceSnapshotProvider,
-          });
-        },
-      });
     } else {
       agentAuthorityExecutor = createManagedFormalAgentAuthorityExecutor();
+    }
+
+    if (formalAgentUsesExisting) {
+      agentExecutor = new CodexAccountAgentExecutor({
+        registry: accountRegistry,
+        factory: async (account) => {
+          const runtime = await runtimeForAccount(account);
+          return new CodexAgentExecutor({
+            codexBin: runtime.bin,
+            defaultCwd,
+            configOverrides,
+            launchEnv: runtime.launchEnv ?? null,
+            requestTimeoutMs: 30_000,
+            requireAuthorityPolicy: accountRegistry.source === "registry",
+            requireChatgptAuth: accountRegistry.source === "registry",
+            // Terminal resource receipts must traverse the account pool so the
+            // same per-account telemetry serialization/quarantine contract applies.
+            resourceSnapshotProvider: ({ agentRef }) => agentExecutor.quotaSnapshot({ agentRef }),
+          });
+        },
+        quotaProvider: (account) => snapshotForAccount(account),
+        preflightProvider: (account) => preflightForAccount(account),
+      });
+    } else {
       agentExecutor = createManagedFormalAgentExecutor();
     }
     await agentExecutor.open();
+
+    const meteredQuotaProvider = formalAgentUsesExisting
+      ? ({ subjectRef = null, payload = null } = {}) => subjectRef
+          ? agentExecutor.quotaSnapshot({ agentRef: subjectRef })
+          : agentExecutor.quotaSnapshot({ account: payload?.account ?? null })
+      : null;
+    const accountPreflightProvider = formalAgentUsesExisting && accountRegistry.source === "registry"
+      ? (input = {}) => agentExecutor.accountPreflight(input)
+      : null;
 
     // HTTP MCP serving in SDK 2.x constructs a fresh McpServer per request.
     // Agent consent/card bookkeeping must therefore live at the Codexless runtime
     // lifetime rather than inside one server-registration closure.
     const agentPreviewState = createAgentPreviewState({
       meteredConsentMode,
-      meteredQuotaProvider: resourceSnapshotProvider,
+      meteredQuotaProvider,
       taskStateFile: agentTaskStateFile,
     });
     // HTTP MCP serving creates a fresh McpServer per request. Excel opaque
@@ -618,6 +673,7 @@ export async function createCodexlessRuntime({
     const createServer = createCodexToolboxServerFactory({
       executor,
       workbench: toolWorkbench,
+      accountPreflightProvider,
       browserPreview,
       browserElicitationBridge,
       computerUse,
@@ -626,7 +682,7 @@ export async function createCodexlessRuntime({
       authorityExecutor: executor,
       agentAuthorityExecutor,
       meteredConsentMode,
-      meteredQuotaProvider: resourceSnapshotProvider,
+      meteredQuotaProvider,
       agentPreviewState,
       agentPortableCard: privateConstruction || publicPreview,
       legacyAgentCardInternals: false,

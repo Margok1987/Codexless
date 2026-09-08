@@ -4,6 +4,15 @@ export const AGENT_TASK_CARD_LEGACY_URIS = Object.freeze([
   "ui://toolwire/codex-task-card-v11.html",
 ]);
 
+export function resolveAgentTaskCardAccount(state) {
+  if (state?.taskCard && typeof state.taskCard.account === "string" && state.taskCard.account) {
+    return state.taskCard.account;
+  }
+  return typeof state?.account === "string" && state.account ? state.account : null;
+}
+
+const RESOLVE_AGENT_TASK_CARD_ACCOUNT_SOURCE = resolveAgentTaskCardAccount.toString();
+
 export function registerAgentTaskCardResource(server) {
   const resources = [
     { name: "toolwire-codex-task-card", uri: AGENT_TASK_CARD_URI },
@@ -86,6 +95,7 @@ const AGENT_TASK_CARD_HTML = String.raw`
   <div id="error" style="display:none;margin-top:8px;font-size:12px"></div>
 </div>
 <script>
+${RESOLVE_AGENT_TASK_CARD_ACCOUNT_SOURCE}
 (() => {
   const $ = (id) => document.getElementById(id);
   const statusEl = $("status"), taskEl = $("task"), metaEl = $("meta"), quotaTitleEl = $("quotaTitle"), quotaRowsEl = $("quotaRows"), resultEl = $("result"), usageEl = $("usage"), errorEl = $("error");
@@ -103,9 +113,9 @@ const AGENT_TASK_CARD_HTML = String.raw`
   let locale = (window.openai && window.openai.locale) || navigator.language || "en";
 
   const I18N = {
-    en: { call: "Call Codex?", taskId: "Task ID", task: "Task", why: "Why Codex", quota: "Codex quota", before: "Before call", after: "After observed", unavailable: "not provided", left: "left", reset: "reset", approve: "Codex approval", request: "Request", starting: "Starting Codex…", submitting: "Submitting…", running: "Codex running", done: "Codex completed", failed: "Codex failed", stopped: "Codex stopped", uncertain: "Codex state uncertain", result: "Result", usage: "Usage", turn: "This turn", tokens: "tokens", stop: "Stop", rejected: "Declined", model: "Model", reasoning: "Reasoning effort", requested: "requested", elapsed: "Elapsed", duration: "Duration", ended: "Ended" },
-    zh: { call: "调用 Codex？", taskId: "Task ID", task: "任务", why: "调用理由", quota: "Codex 额度", before: "调用前", after: "调用后观测", unavailable: "当前未提供", left: "剩余", reset: "重置", approve: "Codex 请求审批", request: "请求", starting: "正在启动 Codex…", submitting: "正在提交…", running: "Codex 运行中", done: "Codex 施工完成", failed: "Codex 执行失败", stopped: "Codex 已停止", uncertain: "Codex 状态不确定", result: "结果", usage: "用量", turn: "本次", tokens: "tokens", stop: "停止", rejected: "已拒绝", model: "模型", reasoning: "推理强度", requested: "请求", elapsed: "已运行", duration: "耗时", ended: "结束" },
-    ja: { call: "Codexを呼び出しますか？", taskId: "Task ID", task: "タスク", why: "Codexを使う理由", quota: "Codex 利用枠", before: "呼び出し前", after: "呼び出し後の観測", unavailable: "現在は提供なし", left: "残り", reset: "リセット", approve: "Codex 承認リクエスト", request: "内容", starting: "Codexを起動しています…", submitting: "送信しています…", running: "Codex 実行中", done: "Codex 完了", failed: "Codex 失敗", stopped: "Codex 停止", uncertain: "Codex 状態不明", result: "結果", usage: "使用量", turn: "今回", tokens: "tokens", stop: "停止", rejected: "拒否済み", model: "モデル", reasoning: "推論強度", requested: "指定", elapsed: "実行時間", duration: "所要時間", ended: "終了" }
+    en: { call: "Call Codex?", taskId: "Task ID", task: "Task", why: "Why Codex", account: "Account", quota: "Codex quota", before: "Before call", after: "After observed", unavailable: "not provided", left: "left", reset: "reset", approve: "Codex approval", request: "Request", starting: "Starting Codex…", submitting: "Submitting…", running: "Codex running", done: "Codex completed", failed: "Codex failed", stopped: "Codex stopped", uncertain: "Codex state uncertain", result: "Result", usage: "Usage", turn: "This turn", tokens: "tokens", stop: "Stop", rejected: "Declined", model: "Model", reasoning: "Reasoning effort", requested: "requested", elapsed: "Elapsed", duration: "Duration", ended: "Ended" },
+    zh: { call: "调用 Codex？", taskId: "Task ID", task: "任务", why: "调用理由", account: "账户", quota: "Codex 额度", before: "调用前", after: "调用后观测", unavailable: "当前未提供", left: "剩余", reset: "重置", approve: "Codex 请求审批", request: "请求", starting: "正在启动 Codex…", submitting: "正在提交…", running: "Codex 运行中", done: "Codex 施工完成", failed: "Codex 执行失败", stopped: "Codex 已停止", uncertain: "Codex 状态不确定", result: "结果", usage: "用量", turn: "本次", tokens: "tokens", stop: "停止", rejected: "已拒绝", model: "模型", reasoning: "推理强度", requested: "请求", elapsed: "已运行", duration: "耗时", ended: "结束" },
+    ja: { call: "Codexを呼び出しますか？", taskId: "Task ID", task: "タスク", why: "Codexを使う理由", account: "アカウント", quota: "Codex 利用枠", before: "呼び出し前", after: "呼び出し後の観測", unavailable: "現在は提供なし", left: "残り", reset: "リセット", approve: "Codex 承認リクエスト", request: "内容", starting: "Codexを起動しています…", submitting: "送信しています…", running: "Codex 実行中", done: "Codex 完了", failed: "Codex 失敗", stopped: "Codex 停止", uncertain: "Codex 状態不明", result: "結果", usage: "使用量", turn: "今回", tokens: "tokens", stop: "停止", rejected: "拒否済み", model: "モデル", reasoning: "推論強度", requested: "指定", elapsed: "実行時間", duration: "所要時間", ended: "終了" }
   };
 
   function langKey() {
@@ -210,6 +220,8 @@ const AGENT_TASK_CARD_HTML = String.raw`
       ? state.taskCard.invocationRationale
       : null;
     if (invocationRationale) lines.push(t("why") + "：" + invocationRationale);
+    const account = resolveAgentTaskCardAccount(state);
+    if (account) lines.push(t("account") + ": " + account);
     if (execution.resolvedModel) {
       const requestedModel = execution.requestedModel && execution.requestedModel !== execution.resolvedModel
         ? " (" + t("requested") + " " + execution.requestedModel + ")"

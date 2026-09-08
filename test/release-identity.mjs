@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -18,6 +19,7 @@ import {
   validateReleaseManifest,
 } from "../src/release-identity.mjs";
 import { PUBLIC_SERVER_VERSION, PUBLIC_SURFACE_VERSION } from "../src/surface-contracts.mjs";
+import { evaluateReleasePreflight, findReleasePayloadPathsAbsentFromRevision } from "../scripts/release-preflight.mjs";
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(testDir, "..");
@@ -39,6 +41,45 @@ assert.throws(
   /release version mismatch/,
   "a package/server version mismatch must fail closed"
 );
+
+const syntheticRevision = "a".repeat(40);
+const strictPreflight = evaluateReleasePreflight({
+  manifestCurrent: true, sourceRevision: syntheticRevision, resolvedSourceRevision: syntheticRevision, head: syntheticRevision,
+  statusLines: [` M ${RELEASE_MANIFEST_RELATIVE_PATH}`], strayTracked: [], manifestTracked: true,
+});
+assert.equal(strictPreflight.ok, true, "release preflight must accept only the generated manifest as dirty when provenance matches HEAD");
+assert.equal(strictPreflight.releaseReady, true);
+const manifestCommitRevision = "b".repeat(40);
+const manifestCommitPreflight = evaluateReleasePreflight({
+  manifestCurrent: true, sourceRevision: syntheticRevision, resolvedSourceRevision: syntheticRevision, head: manifestCommitRevision,
+  sourceRevisionAncestor: true, committedDiffOutsideManifest: [], statusLines: [], strayTracked: [], manifestTracked: true,
+});
+assert.equal(manifestCommitPreflight.ok, true, "a clean manifest-only commit above the exact source revision must be release-ready");
+assert.equal(manifestCommitPreflight.sourcePayloadMatchesRevision, true);
+const provenanceDrift = evaluateReleasePreflight({
+  manifestCurrent: true, sourceRevision: syntheticRevision, resolvedSourceRevision: syntheticRevision, head: manifestCommitRevision,
+  sourceRevisionAncestor: true, committedDiffOutsideManifest: ["src/runtime.mjs"], statusLines: [], strayTracked: [], manifestTracked: true,
+});
+assert.equal(provenanceDrift.ok, false, "committed payload drift after sourceRevision must fail closed");
+assert.ok(provenanceDrift.blockingReasons.includes("source_revision_payload_drift"));
+const dirtyPreflight = evaluateReleasePreflight({
+  manifestCurrent: true, sourceRevision: syntheticRevision, resolvedSourceRevision: syntheticRevision, head: syntheticRevision,
+  statusLines: [` M ${RELEASE_MANIFEST_RELATIVE_PATH}`, " M src/runtime.mjs"], strayTracked: [], manifestTracked: true,
+});
+assert.equal(dirtyPreflight.ok, false, "release preflight must fail closed on any working-tree drift outside the generated manifest");
+assert.ok(dirtyPreflight.blockingReasons.includes("working_tree_dirty_outside_manifest"));
+const missingProvenance = evaluateReleasePreflight({
+  manifestCurrent: true, sourceRevision: null, resolvedSourceRevision: null, head: syntheticRevision,
+  statusLines: [` M ${RELEASE_MANIFEST_RELATIVE_PATH}`], strayTracked: [], manifestTracked: true,
+});
+assert.equal(missingProvenance.ok, false, "release preflight must reject null sourceRevision");
+assert.ok(missingProvenance.blockingReasons.includes("source_revision_not_exact_commit"));
+const qualificationPreflight = evaluateReleasePreflight({
+  manifestCurrent: true, sourceRevision: null, resolvedSourceRevision: null, head: syntheticRevision,
+  statusLines: [" M src/runtime.mjs"], strayTracked: [], manifestTracked: true, qualification: true,
+});
+assert.equal(qualificationPreflight.ok, true, "explicit qualification mode may inspect uncommitted working state without claiming release readiness");
+assert.equal(qualificationPreflight.releaseReady, false);
 
 const installerEntries = await readInstallerReleaseEntries();
 assert.deepEqual(installerEntries.windows, RELEASE_TREE_ENTRIES, "release identity roots must match the Windows installer staging roots");
@@ -153,6 +194,42 @@ try {
 } finally {
   await rm(tempA, { recursive: true, force: true });
   await rm(tempB, { recursive: true, force: true });
+}
+
+const provenanceRoot = await mkdtemp(path.join(os.tmpdir(), "codexless-release-provenance-"));
+try {
+  await mkdir(path.join(provenanceRoot, "src"), { recursive: true });
+  await writeFile(path.join(provenanceRoot, ".gitignore"), "src/*.log\n", "utf8");
+  await writeFile(path.join(provenanceRoot, "src", "tracked.mjs"), "export const tracked = true;\n", "utf8");
+  execFileSync("git", ["init", "-q"], { cwd: provenanceRoot, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "release-fixture@example.invalid"], { cwd: provenanceRoot, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Release Fixture"], { cwd: provenanceRoot, stdio: "ignore" });
+  execFileSync("git", ["add", ".gitignore", "src/tracked.mjs"], { cwd: provenanceRoot, stdio: "ignore" });
+  execFileSync("git", ["commit", "-q", "-m", "fixture source"], { cwd: provenanceRoot, stdio: "ignore" });
+  const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: provenanceRoot, encoding: "utf8" }).trim();
+  await writeFile(path.join(provenanceRoot, "src", "ignored.log"), "ignored payload\n", "utf8");
+  const ordinaryStatus = execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: provenanceRoot, encoding: "utf8" });
+  assert.doesNotMatch(ordinaryStatus, /ignored\.log/, "ordinary Git status intentionally omits the ignored payload fixture");
+  const absent = findReleasePayloadPathsAbsentFromRevision({
+    root: provenanceRoot,
+    sourceRevision: revision,
+    files: [{ path: "src/tracked.mjs" }, { path: "src/ignored.log" }],
+  });
+  assert.deepEqual(absent, ["src/ignored.log"], "ignored release payload additions must be detected against the exact source commit");
+  const ignoredPayloadPreflight = evaluateReleasePreflight({
+    manifestCurrent: true,
+    sourceRevision: revision,
+    resolvedSourceRevision: revision,
+    head: revision,
+    payloadPathsAbsentFromSourceRevision: absent,
+    statusLines: [],
+    strayTracked: [],
+    manifestTracked: true,
+  });
+  assert.equal(ignoredPayloadPreflight.releaseReady, false);
+  assert.ok(ignoredPayloadPreflight.blockingReasons.includes("source_revision_payload_untracked"));
+} finally {
+  await rm(provenanceRoot, { recursive: true, force: true });
 }
 
 const injected = await buildReleaseManifest({

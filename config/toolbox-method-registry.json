@@ -1,16 +1,16 @@
 {
   "schemaVersion": 1,
-  "verifiedCodexVersion": "0.147.0",
-  "verifiedAt": "2026-08-09",
+  "verifiedCodexVersion": "0.153.4",
+  "verifiedAt": "2026-09-08",
   "defaultAction": "deny",
   "remoteAllowlist": {
     "command/exec": {
       "classification": "model-free",
       "bridgeTool": "codex.command_exec",
       "evidence": [
-        "Codex 0.147.0 stable App Server schema describes command/exec as standalone sandboxed argv execution without creating a thread or turn.",
-        "P0/P1 observed no thread/* or turn/* notifications during buffered command/exec acceptance.",
-        "P2 command/exec works inside an ephemeral CODEX_HOME with no mounted Codex login credential and Docker network=none."
+        "Codex 0.153.4 qualification observed command/exec as standalone sandboxed argv execution under an explicit permissionProfile without creating a model turn.",
+        "The 0.153.4 contract/version gate executed a read-only command/exec marker and observed no turn/* or thread/tokenUsage/updated model-work events.",
+        "The 0.153.4 public STDIO/HTTP contract qualification preserved the nested-Codex guard and model-free command lane."
       ]
     }
   },
@@ -38,7 +38,7 @@
     {
       "pattern": "thread/*",
       "classification": "model-session-or-unsafe-surface",
-      "reason": "Not required by the thin model-free bridge. Some thread methods enter model/session behavior; thread/shellCommand is explicitly documented by Codex 0.147.0 as unsandboxed with full access."
+      "reason": "Not required by the thin model-free bridge. Thread methods may enter model/session behavior; no 0.153.4 qualification has widened the verified model-free remote allowlist beyond command/exec."
     },
     {
       "pattern": "turn/*",

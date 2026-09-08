@@ -11,6 +11,8 @@ const PROMPT_INPUT_LOCATOR_KINDS = new Set([
   "environment resource",
   "orchestrator resource",
   "custom resource",
+  "executor package",
+  "orchestrator package",
 ]);
 const execFileAsync = promisify(execFile);
 
@@ -112,7 +114,7 @@ function parseRenderedSkillLine(line) {
     throw Object.assign(new Error("Available skills bullet is missing the current stock name separator"), { code: "IMPLICIT_SKILLS_STRUCTURE_MISMATCH" });
   }
   const name = line.slice(2, separator);
-  const locatorMatch = line.match(/ \((file|environment resource|orchestrator resource|custom resource): (.+)\)$/);
+  const locatorMatch = line.match(/ \((file|environment resource|orchestrator resource|custom resource|executor package|orchestrator package): (.+)\)$/);
   if (!locatorMatch || !PROMPT_INPUT_LOCATOR_KINDS.has(locatorMatch[1])) {
     throw Object.assign(new Error("Available skills bullet is missing the current stock source locator"), { code: "IMPLICIT_SKILLS_STRUCTURE_MISMATCH" });
   }
@@ -183,20 +185,46 @@ export function parsePromptInputSkillCatalog(stdout) {
     throw Object.assign(new Error("### Available skills heading is outside the accepted Skills block"), { code: "IMPLICIT_SKILLS_STRUCTURE_MISMATCH" });
   }
   const preludeLines = lines.slice(1, availableIndex);
-  const skillRootsIndex = preludeLines.indexOf("### Skill roots");
-  const proseLines = skillRootsIndex >= 0 ? preludeLines.slice(0, skillRootsIndex) : preludeLines;
-  const skillRootLines = skillRootsIndex >= 0 ? preludeLines.slice(skillRootsIndex + 1) : [];
+  const skillRootsIndexes = preludeLines.map((line, index) => line === "### Skill roots" ? index : -1).filter((index) => index >= 0);
+  if (skillRootsIndexes.length > 1) {
+    throw Object.assign(new Error("Skills prelude structure changed before ### Available skills"), { code: "IMPLICIT_SKILLS_STRUCTURE_MISMATCH" });
+  }
+  const skillRootsIndex = skillRootsIndexes[0] ?? -1;
   const validSkillRootLine = (line) => /^- `r\d+` = `[^`]+`$/.test(line);
+  let proseBeforeRoots = preludeLines;
+  let skillRootLines = [];
+  let proseAfterRoots = [];
+  if (skillRootsIndex >= 0) {
+    proseBeforeRoots = preludeLines.slice(0, skillRootsIndex);
+    let cursor = skillRootsIndex + 1;
+    while (cursor < preludeLines.length && validSkillRootLine(preludeLines[cursor])) {
+      skillRootLines.push(preludeLines[cursor]);
+      cursor += 1;
+    }
+    proseAfterRoots = preludeLines.slice(cursor);
+  }
+  const proseLines = [...proseBeforeRoots, ...proseAfterRoots];
   if (
     !proseLines.length
     || proseLines.some((line) => !line || line.startsWith("#") || line.startsWith("- "))
-    || (skillRootsIndex >= 0 && (!skillRootLines.length || skillRootLines.some((line) => !validSkillRootLine(line))))
-    || preludeLines.filter((line) => line === "### Skill roots").length > 1
+    || (skillRootsIndex >= 0 && !skillRootLines.length)
   ) {
     throw Object.assign(new Error("Skills prelude structure changed before ### Available skills"), { code: "IMPLICIT_SKILLS_STRUCTURE_MISMATCH" });
   }
-  const renderedLines = lines.slice(availableIndex + 1);
-  if (renderedLines.some((line) => line === "" || line.startsWith("### "))) {
+
+  const afterAvailable = lines.slice(availableIndex + 1);
+  const usageIndexes = afterAvailable.map((line, index) => line === "### How to use skills" ? index : -1).filter((index) => index >= 0);
+  if (usageIndexes.length > 1) {
+    throw Object.assign(new Error("Available skills section structure changed"), { code: "IMPLICIT_SKILLS_STRUCTURE_MISMATCH" });
+  }
+  const usageIndex = usageIndexes[0] ?? -1;
+  const renderedLines = usageIndex >= 0 ? afterAvailable.slice(0, usageIndex) : afterAvailable;
+  const usageLines = usageIndex >= 0 ? afterAvailable.slice(usageIndex + 1) : [];
+  if (
+    !renderedLines.length
+    || renderedLines.some((line) => line === "" || line.startsWith("### "))
+    || (usageIndex >= 0 && (!usageLines.length || usageLines.some((line) => !line || line.startsWith("### "))))
+  ) {
     throw Object.assign(new Error("Available skills section structure changed"), { code: "IMPLICIT_SKILLS_STRUCTURE_MISMATCH" });
   }
 

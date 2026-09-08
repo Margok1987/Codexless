@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -18,6 +18,13 @@ const testCwd = process.env.CODEXLESS_TEST_CWD;
 const contractStateRoot = mkdtempSync(path.join(os.tmpdir(), "codexless-public-contract-"));
 const recentCallStateFile = path.join(contractStateRoot, "recent-calls.json");
 const agentTaskStateFile = path.join(contractStateRoot, "agent-task-cards.json");
+const contractCodexHome = path.join(contractStateRoot, "codex-home");
+mkdirSync(contractCodexHome, { recursive: true });
+writeFileSync(
+  path.join(contractCodexHome, "config.toml"),
+  `[projects.${JSON.stringify(projectRoot)}]\ntrust_level = "trusted"\n`,
+  "utf8"
+);
 process.once("exit", () => rmSync(contractStateRoot, { recursive: true, force: true }));
 
 function createIsolatedPublicTestEnv(extra = {}) {
@@ -27,6 +34,7 @@ function createIsolatedPublicTestEnv(extra = {}) {
   }
   Object.assign(env, {
     CODEX_BIN: codexBin,
+    CODEX_HOME: contractCodexHome,
     // Poison legacy Toolwire variables deliberately. A clean Codexless runtime must ignore all of them.
     CODEX_TOOLBOX_DEFAULT_CWD: "Z:\\codexless-must-ignore",
     CODEX_TOOLBOX_PROFILE: "__codexless_must_ignore__",

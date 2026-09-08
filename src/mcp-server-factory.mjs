@@ -34,6 +34,7 @@ export function createCodexToolboxServerFactory({
   warnWhenUsingDefaultCwd = false,
   computerUse = null,
   workbench = null,
+  accountPreflightProvider = null,
   browserPreview = null,
   browserElicitationBridge = null,
   agentExecutor = null,
@@ -205,6 +206,7 @@ export function createCodexToolboxServerFactory({
     if (workbench) {
       registerWorkbenchPreviewTools(registrationServer, workbench, {
         directFormalCodexGuard: guardDirectFormalCodex ? classifyFormalCodexInvocation : null,
+        accountPreflightProvider,
         processDescriptionSuffix: guardDirectFormalCodex
           ? " Direct Codex model/control invocation is not a supported fallback on this model-callable process lane: household formal Codex work must use codex.agent_start/codex.agent_send. Required Call Approval returns fixed compact text bound to one exact Task ID; map literal Yes/No only through codex.agent_commit/codex.agent_decline. Running has no mechanical presentation and terminal Result is fixed text. This is an accidental-routing guard, not a claim that a generic process/PTY is an inescapable sandbox against arbitrarily wrapped executables."
           : "",

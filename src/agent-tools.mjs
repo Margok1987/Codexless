@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const require = createRequire(import.meta.url);
@@ -311,15 +311,15 @@ function portableShortTaskId(taskRef) {
 
 const PORTABLE_I18N = Object.freeze({
   en: {
-    call: "Call Codex?", taskId: "Task ID", task: "Task", why: "Why Codex", model: "Model", reasoning: "Reasoning effort", status: "Status", changes: "Changes", verification: "Verification", remaining: "Remaining / blocker",
+    call: "Call Codex?", taskId: "Task ID", task: "Task", why: "Why Codex", account: "Account", model: "Model", reasoning: "Reasoning effort", status: "Status", changes: "Changes", verification: "Verification", remaining: "Remaining / blocker",
     requested: "requested", usage: "Turn usage", quota: "Codex quota", left: "left", reset: "reset", unavailable: "not provided", reply: "Please reply Yes or No.",
   },
   zh: {
-    call: "调用 Codex？", taskId: "Task ID", task: "任务", why: "调用理由", model: "模型", reasoning: "推理强度", status: "状态", changes: "变更", verification: "验证", remaining: "剩余 / 阻塞",
+    call: "调用 Codex？", taskId: "Task ID", task: "任务", why: "调用理由", account: "账户", model: "模型", reasoning: "推理强度", status: "状态", changes: "变更", verification: "验证", remaining: "剩余 / 阻塞",
     requested: "请求", usage: "本次用量", quota: "Codex 额度", left: "剩余", reset: "重置", unavailable: "当前未提供", reply: "请直接回复 Yes 或 No。",
   },
   ja: {
-    call: "Codexを呼び出しますか？", taskId: "Task ID", task: "タスク", why: "Codexを使う理由", model: "モデル", reasoning: "推論強度", status: "状態", changes: "変更", verification: "検証", remaining: "残り / ブロッカー",
+    call: "Codexを呼び出しますか？", taskId: "Task ID", task: "タスク", why: "Codexを使う理由", account: "アカウント", model: "モデル", reasoning: "推論強度", status: "状態", changes: "変更", verification: "検証", remaining: "残り / ブロッカー",
     requested: "指定", usage: "今回の使用量", quota: "Codex 利用枠", left: "残り", reset: "リセット", unavailable: "現在は提供なし", reply: "「Yes」または「No」と返信してください。",
   },
 });
@@ -431,7 +431,7 @@ const FIXED_CALL_APPROVAL_REQUIRED_FIELDS = Object.freeze([
   "yesNo",
 ]);
 
-function fixedCallApprovalDelivery(text) {
+function fixedCallApprovalDelivery(text, { accountBound = false } = {}) {
   const exactText = String(text ?? "");
   return {
     mode: "verbatim_text",
@@ -442,7 +442,9 @@ function fixedCallApprovalDelivery(text) {
     allowReorder: false,
     allowTranslation: false,
     textSha256: createHash("sha256").update(exactText, "utf8").digest("hex"),
-    requiredFields: [...FIXED_CALL_APPROVAL_REQUIRED_FIELDS],
+    requiredFields: accountBound
+      ? [...FIXED_CALL_APPROVAL_REQUIRED_FIELDS, "account"]
+      : [...FIXED_CALL_APPROVAL_REQUIRED_FIELDS],
   };
 }
 
@@ -693,6 +695,9 @@ function chatPresentation(payload) {
         `${strings.taskId}：${displayTaskId ?? strings.unavailable}`,
         `👉 **${strings.reply}**`,
       ];
+      if (typeof payload?.taskCard?.account === "string" && payload.taskCard.account) {
+        lines.splice(3, 0, `${strings.account ?? "Account"}：${compactOneLine(payload.taskCard.account, 80)}`);
+      }
     } else if (isTerminalStatus(status)) {
       const evidence = terminalEvidence(payload, status);
       const businessStatus = evidence.businessStatus ?? strings.unavailable;
@@ -709,6 +714,7 @@ function chatPresentation(payload) {
       lines = [
         `${terminal.icon} **Codex · Result**`,
         `${strings.task}：${task}`,
+        ...(typeof payload?.taskCard?.account === "string" && payload.taskCard.account ? [`${strings.account ?? "Account"}：${compactOneLine(payload.taskCard.account, 80)}`] : []),
         `${strings.status}：${businessStatus}`,
         `${strings.model} / ${strings.reasoning}：${terminalResolvedModel} / ${terminalEffort}`,
         `${presentation.duration}：${portableDurationText(payload?.timing?.durationMs, locale)}`,
@@ -743,7 +749,7 @@ function chatPresentation(payload) {
       },
       ...(selection ? { modelSelection: structuredClone(selection) } : {}),
       ...(status === "consent_required" ? {
-        delivery: fixedCallApprovalDelivery(text),
+        delivery: fixedCallApprovalDelivery(text, { accountBound: typeof payload?.taskCard?.account === "string" && Boolean(payload.taskCard.account) }),
         binding: {
           exactTaskId: shortTaskId,
           approveTool: "codex.agent_commit",
@@ -753,7 +759,7 @@ function chatPresentation(payload) {
         rebind: {
           mode: "natural_language_reprepare",
           requiresNewRequestId: true,
-          instruction: "If the user changes model or reasoning effort before approval, do not commit this task. Prepare the same logical task again with the requested selection and a fresh requestId, present the new confirmation, and bind Yes only to the newly presented taskId.",
+          instruction: "If the user changes account, model, or reasoning effort before approval, do not commit this task. Prepare the same logical task again with the requested selection and a fresh requestId, present the new confirmation, and bind Yes only to the newly presented taskId.",
         },
       } : {}),
       lines,
@@ -767,6 +773,7 @@ function chatPresentation(payload) {
       "",
       `${strings.taskId}：${displayTaskId ?? strings.unavailable}`,
       `${strings.task}：${task}`,
+      ...(typeof payload?.taskCard?.account === "string" && payload.taskCard.account ? [`${strings.account ?? "Account"}：${compactOneLine(payload.taskCard.account, 80)}`] : []),
       `${strings.model}：${model ?? strings.unavailable}`,
       `${strings.reasoning}：${effort ?? strings.unavailable}`,
       "",
@@ -782,7 +789,7 @@ function chatPresentation(payload) {
       choices: ["Yes", "No"],
       summary: task,
       quota: { windows },
-      delivery: fixedCallApprovalDelivery(text),
+      delivery: fixedCallApprovalDelivery(text, { accountBound: typeof payload?.taskCard?.account === "string" && Boolean(payload.taskCard.account) }),
       binding: {
         exactTaskId: displayTaskId,
         approveTool: "codex.agent_commit",
@@ -817,6 +824,7 @@ function chatPresentation(payload) {
     const lines = [
       `${terminal.icon} **Codex · Result**`,
       `${strings.task}：${task}`,
+      ...(typeof payload?.taskCard?.account === "string" && payload.taskCard.account ? [`${strings.account ?? "Account"}：${compactOneLine(payload.taskCard.account, 80)}`] : []),
       `${strings.status}：${businessStatus}`,
       `${strings.model} / ${strings.reasoning}：${terminalResolvedModel} / ${terminalEffort}`,
       `${presentation.duration}：${portableDurationText(payload?.timing?.durationMs, locale)}`,
@@ -856,6 +864,7 @@ function publicAgentSnapshot(snapshot, taskCard = null, { suppressManualFallback
     taskId,
     shortTaskId,
     agentRef: snapshot?.agentRef ?? null,
+    account: typeof snapshot?.account === "string" ? snapshot.account : taskCard?.account ?? null,
     turnId: snapshot?.turnId ?? null,
     status: publicStatus,
     canSend: snapshot?.canSend === true,
@@ -922,32 +931,100 @@ function consentRequiredSnapshot({ agentRef = null, consent, taskCard = null, po
 const TASK_STORE_VERSION = 1;
 const DEFAULT_TASK_STORE_TTL_MS = 14 * 24 * 60 * 60_000;
 const DEFAULT_TASK_STORE_MAX_ENTRIES = 2_000;
+const DEFAULT_TASK_STORE_MAX_REQUEST_TOMBSTONES = 100_000;
 
-function createTaskPersistence({ filePath = null, ttlMs = DEFAULT_TASK_STORE_TTL_MS, maxEntries = DEFAULT_TASK_STORE_MAX_ENTRIES } = {}) {
+function createTaskPersistence({
+  filePath = null,
+  ttlMs = DEFAULT_TASK_STORE_TTL_MS,
+  maxEntries = DEFAULT_TASK_STORE_MAX_ENTRIES,
+  maxRequestTombstones = DEFAULT_TASK_STORE_MAX_REQUEST_TOMBSTONES,
+} = {}) {
   if (!filePath) return null;
   if (!Number.isInteger(ttlMs) || ttlMs < 60_000) throw new Error("agent task-state ttlMs must be at least 60000");
   if (!Number.isInteger(maxEntries) || maxEntries < 10 || maxEntries > 100_000) throw new Error("agent task-state maxEntries must be 10..100000");
+  if (!Number.isInteger(maxRequestTombstones) || maxRequestTombstones < 10 || maxRequestTombstones > 1_000_000) {
+    throw new Error("agent task-state maxRequestTombstones must be 10..1000000");
+  }
   const resolvedPath = path.resolve(filePath);
+  const lockPath = resolvedPath + ".lock";
   const records = new Map();
+  const requestTombstones = new Map();
+  const lockWait = new Int32Array(new SharedArrayBuffer(4));
   let blockedError = null;
 
-  if (existsSync(resolvedPath)) {
+  function persistenceError(code, message) {
+    return Object.assign(new Error(message), { code });
+  }
+
+  function assertAvailable() {
+    if (blockedError) throw persistenceError("CODEX_TASK_STATE_UNSAFE", blockedError);
+  }
+
+  function tombstoneCapacityError() {
+    return persistenceError(
+      "CODEX_REQUEST_TOMBSTONE_CAPACITY",
+      "agent task-state request tombstone capacity reached; new persisted work is blocked without forgetting replay bindings"
+    );
+  }
+
+  function compatibleTombstone(current, next) {
+    return current.action === next.action
+      && (current.subjectRef ?? null) === (next.subjectRef ?? null)
+      && (!current.callerIntentHash || !next.callerIntentHash || current.callerIntentHash === next.callerIntentHash)
+      && (!current.payloadHash || !next.payloadHash || current.payloadHash === next.payloadHash);
+  }
+
+  function rememberRequestTombstone(entry) {
+    const requestId = typeof entry?.requestId === "string" && entry.requestId ? entry.requestId : null;
+    if (!requestId) return;
+    const next = {
+      requestId,
+      action: typeof entry?.action === "string" ? entry.action : null,
+      subjectRef: entry?.subjectRef ?? null,
+      callerIntentHash: typeof entry?.callerIntentHash === "string" ? entry.callerIntentHash : null,
+      payloadHash: typeof entry?.payloadHash === "string" ? entry.payloadHash : null,
+      taskRef: typeof entry?.taskRef === "string" ? entry.taskRef : null,
+      firstSeenAt: Number.isFinite(entry?.firstSeenAt) ? entry.firstSeenAt : (Number.isFinite(entry?.updatedAt) ? entry.updatedAt : Date.now()),
+    };
+    const current = requestTombstones.get(requestId);
+    if (current) {
+      if (!compatibleTombstone(current, next)) throw persistenceError("CODEX_REQUEST_CONFLICT", "requestId tombstone conflicts with persisted task state");
+      requestTombstones.set(requestId, {
+        ...current,
+        callerIntentHash: current.callerIntentHash ?? next.callerIntentHash,
+        payloadHash: current.payloadHash ?? next.payloadHash,
+        taskRef: current.taskRef ?? next.taskRef,
+      });
+      return;
+    }
+    if (requestTombstones.size >= maxRequestTombstones) throw tombstoneCapacityError();
+    requestTombstones.set(requestId, next);
+  }
+
+  function loadFromDisk() {
+    records.clear();
+    requestTombstones.clear();
+    blockedError = null;
+    if (!existsSync(resolvedPath)) return;
     try {
       const parsed = JSON.parse(readFileSync(resolvedPath, "utf8"));
       if (parsed?.version !== TASK_STORE_VERSION || !Array.isArray(parsed.records)) {
-        throw new Error(`unsupported task-state schema version ${String(parsed?.version ?? "missing")}`);
+        throw new Error("unsupported task-state schema");
       }
       for (const entry of parsed.records) {
         if (!entry || typeof entry !== "object" || typeof entry.taskRef !== "string") continue;
         records.set(entry.taskRef, entry);
+        rememberRequestTombstone(entry);
       }
-    } catch (error) {
-      blockedError = `agent task-state file is unreadable or corrupt: ${error instanceof Error ? error.message : String(error)}`;
+      if (parsed.requestTombstones !== undefined && !Array.isArray(parsed.requestTombstones)) {
+        throw new Error("invalid request tombstone store");
+      }
+      for (const tombstone of parsed.requestTombstones ?? []) rememberRequestTombstone(tombstone);
+    } catch {
+      records.clear();
+      requestTombstones.clear();
+      blockedError = "agent task-state file is unreadable or corrupt; its contents are not exposed";
     }
-  }
-
-  function assertAvailable() {
-    if (blockedError) throw new Error(blockedError);
   }
 
   function trim(now = Date.now()) {
@@ -960,40 +1037,126 @@ function createTaskPersistence({ filePath = null, ttlMs = DEFAULT_TASK_STORE_TTL
     for (let index = 0; index < oldest.length - maxEntries; index += 1) records.delete(oldest[index][0]);
   }
 
-  function flush() {
+  function lockOwnerIsDead() {
+    try {
+      const owner = JSON.parse(readFileSync(lockPath, "utf8"));
+      if (!Number.isInteger(owner?.pid) || owner.pid < 1) return false;
+      try {
+        process.kill(owner.pid, 0);
+        return false;
+      } catch (error) {
+        return error?.code === "ESRCH";
+      }
+    } catch {
+      return false;
+    }
+  }
+
+  function acquireLock() {
+    mkdirSync(path.dirname(resolvedPath), { recursive: true });
+    const deadline = Date.now() + 2_000;
+    while (true) {
+      try {
+        const fd = openSync(lockPath, "wx", 0o600);
+        try {
+          writeFileSync(fd, JSON.stringify({ version: 1, pid: process.pid, createdAt: Date.now() }), { encoding: "utf8" });
+        } catch (error) {
+          try { closeSync(fd); } catch {}
+          try { unlinkSync(lockPath); } catch {}
+          throw error;
+        }
+        return () => {
+          try { closeSync(fd); } finally {
+            try { unlinkSync(lockPath); } catch {}
+          }
+        };
+      } catch (error) {
+        if (error?.code !== "EEXIST") {
+          throw persistenceError("CODEX_TASK_STATE_LOCK_FAILED", "agent task-state lock could not be acquired safely");
+        }
+        if (lockOwnerIsDead()) {
+          try { unlinkSync(lockPath); continue; } catch {}
+        }
+        if (Date.now() >= deadline) {
+          throw persistenceError("CODEX_TASK_STATE_LOCKED", "agent task-state is locked by another runtime; new persisted work is blocked");
+        }
+        Atomics.wait(lockWait, 0, 0, 10);
+      }
+    }
+  }
+
+  function syncFromDisk() {
+    loadFromDisk();
+    assertAvailable();
+    trim();
+  }
+
+  function flushUnlocked() {
     assertAvailable();
     trim();
     mkdirSync(path.dirname(resolvedPath), { recursive: true });
-    const tmp = `${resolvedPath}.tmp-${randomUUID()}`;
-    writeFileSync(tmp, JSON.stringify({ version: TASK_STORE_VERSION, records: [...records.values()] }), { encoding: "utf8", mode: 0o600 });
-    renameSync(tmp, resolvedPath);
+    const tmp = resolvedPath + ".tmp-" + randomUUID();
+    try {
+      writeFileSync(tmp, JSON.stringify({
+        version: TASK_STORE_VERSION,
+        records: [...records.values()],
+        requestTombstones: [...requestTombstones.values()],
+      }), { encoding: "utf8", mode: 0o600 });
+      renameSync(tmp, resolvedPath);
+    } catch (error) {
+      try { unlinkSync(tmp); } catch {}
+      throw error;
+    }
   }
 
+  loadFromDisk();
   trim();
   return {
     filePath: resolvedPath,
     get(taskRef) {
-      assertAvailable();
-      trim();
+      syncFromDisk();
       const entry = records.get(taskRef);
       return entry ? structuredClone(entry) : null;
     },
     findByRequest({ requestId, action, agentRef = null }) {
-      assertAvailable();
-      trim();
+      syncFromDisk();
       let found = null;
       for (const entry of records.values()) {
-        if (entry?.requestId !== requestId || entry?.action !== action) continue;
-        if ((entry?.subjectRef ?? null) !== agentRef) continue;
+        if (entry?.requestId !== requestId) continue;
+        if (entry?.action !== action || (entry?.subjectRef ?? null) !== agentRef) {
+          throw persistenceError("CODEX_REQUEST_CONFLICT", "requestId was already persisted for a different Codex action or target");
+        }
         if (!found || (entry.updatedAt ?? 0) > (found.updatedAt ?? 0)) found = entry;
       }
-      return found ? structuredClone(found) : null;
+      if (found) return structuredClone(found);
+      const tombstone = requestTombstones.get(requestId);
+      if (!tombstone) return null;
+      if (tombstone.action !== action || (tombstone.subjectRef ?? null) !== agentRef) {
+        throw persistenceError("CODEX_REQUEST_CONFLICT", "requestId was already persisted for a different Codex action or target");
+      }
+      return { ...structuredClone(tombstone), tombstone: true };
     },
     put(entry) {
       assertAvailable();
       if (!entry || typeof entry.taskRef !== "string" || !entry.taskRef) throw new Error("persisted agent task entry requires taskRef");
-      records.set(entry.taskRef, { ...structuredClone(entry), updatedAt: Date.now() });
-      flush();
+      const releaseLock = acquireLock();
+      try {
+        syncFromDisk();
+        const persisted = { ...structuredClone(entry), updatedAt: Date.now() };
+        const requestId = typeof persisted.requestId === "string" && persisted.requestId ? persisted.requestId : null;
+        const current = requestId ? requestTombstones.get(requestId) : null;
+        if (current && current.taskRef !== persisted.taskRef) {
+          if (!compatibleTombstone(current, persisted)) {
+            throw persistenceError("CODEX_REQUEST_CONFLICT", "requestId was already persisted for a different Codex action or target");
+          }
+          throw persistenceError("CODEX_REQUEST_ALREADY_PERSISTED", "requestId is already durably bound to another prepared task; duplicate dispatch is blocked");
+        }
+        rememberRequestTombstone(persisted);
+        records.set(entry.taskRef, persisted);
+        flushUnlocked();
+      } finally {
+        releaseLock();
+      }
     },
   };
 }
@@ -1004,13 +1167,25 @@ export function createAgentPreviewState({
   taskStateFile = null,
   taskStateTtlMs = DEFAULT_TASK_STORE_TTL_MS,
   taskStateMaxEntries = DEFAULT_TASK_STORE_MAX_ENTRIES,
+  taskStateMaxRequestTombstones = DEFAULT_TASK_STORE_MAX_REQUEST_TOMBSTONES,
+  maxLiveTasks = 1_000,
 } = {}) {
+  if (!Number.isInteger(maxLiveTasks) || maxLiveTasks < 1 || maxLiveTasks > 10_000) {
+    throw new Error("agent maxLiveTasks must be 1..10000");
+  }
   return {
+    maxLiveTasks,
+    preparations: new Map(),
     meteredConsent: new MeteredConsentGate({ mode: meteredConsentMode, quotaProvider: meteredQuotaProvider }),
     preparedMetered: new Map(),
     agentCards: new Map(),
     taskRecords: new Map(),
-    taskPersistence: createTaskPersistence({ filePath: taskStateFile, ttlMs: taskStateTtlMs, maxEntries: taskStateMaxEntries }),
+    taskPersistence: createTaskPersistence({
+      filePath: taskStateFile,
+      ttlMs: taskStateTtlMs,
+      maxEntries: taskStateMaxEntries,
+      maxRequestTombstones: taskStateMaxRequestTombstones,
+    }),
   };
 }
 
@@ -1142,12 +1317,51 @@ export function registerAgentPreviewTools(server, {
     return firstLine.length > 72 ? firstLine.slice(0, 69) + "..." : firstLine;
   }
 
-  async function fullModelCatalog() {
+  function taskCapacityError() {
+    return Object.assign(new Error("Codex task capacity reached; new work is blocked without forgetting existing task or replay bindings"), { code: "CODEX_TASK_CAPACITY" });
+  }
+
+  function assertNewTaskCapacity() {
+    if (taskRecords.size >= (state.maxLiveTasks ?? 1_000)) throw taskCapacityError();
+  }
+
+  async function prepareOnce({ requestId, action, payload, agentRef = null }, prepare) {
+    const intent = callerIntentHash(action, payload, agentRef);
+    const preparations = state.preparations ??= new Map();
+    const pending = preparations.get(requestId);
+    if (pending) {
+      if (pending.intent !== intent) throw new Error("requestId is already preparing a different Codex caller intent");
+      return { ...structuredClone(await pending.promise), duplicate: true };
+    }
+    const existing = [...taskRecords.values()].find((record) =>
+      (record.consent?.requestId ?? record.taskCard?.requestId) === requestId);
+    if (existing && (existing.action !== action || existing.subjectRef !== agentRef
+      || (existing.callerIntentHash && existing.callerIntentHash !== intent))) {
+      throw new Error("requestId is already bound to a different Codex caller intent or target");
+    }
+    const reserved = [...preparations.values()].filter((entry) => entry.reservesTask).length;
+    if ((!existing && taskRecords.size + reserved >= (state.maxLiveTasks ?? 1_000)) || preparations.size >= 128) {
+      throw taskCapacityError();
+    }
+    const record = { intent, reservesTask: !existing, promise: null };
+    record.promise = Promise.resolve().then(prepare);
+    preparations.set(requestId, record);
+    try { return await record.promise; }
+    finally { if (preparations.get(requestId) === record) preparations.delete(requestId); }
+  }
+
+  async function fullModelCatalog(account = null) {
+    if (account !== null && typeof catalogProvider.resolveAccountId !== "function") {
+      throw new Error("CODEX_ACCOUNT_ROUTING_UNAVAILABLE: this preparation catalog does not support explicit account selection");
+    }
+    if (account !== null && catalogProvider.resolveAccountId(account) !== account) {
+      throw new Error("CODEX_ACCOUNT_ROUTING_UNAVAILABLE: preparation catalog changed the selected account");
+    }
     const models = [];
     let cursor = null;
     const seenCursors = new Set();
     for (let page = 0; page < 20; page += 1) {
-      const result = await catalogProvider.listModels({ cursor, limit: 200, includeHidden: false });
+      const result = await catalogProvider.listModels({ account, cursor, limit: 200, includeHidden: false });
       for (const entry of Array.isArray(result?.models) ? result.models : []) {
         const option = portableModelOption(entry);
         if (option && !models.some((item) => item.model === option.model)) models.push(option);
@@ -1162,8 +1376,8 @@ export function registerAgentPreviewTools(server, {
     return models;
   }
 
-  async function resolvePreparedModelSelection({ requestedModel = null, requestedReasoningEffort = null, currentModel = null, currentReasoningEffort = null } = {}) {
-    const models = await fullModelCatalog();
+  async function resolvePreparedModelSelection({ account = null, requestedModel = null, requestedReasoningEffort = null, currentModel = null, currentReasoningEffort = null } = {}) {
+    const models = await fullModelCatalog(account);
     const requested = typeof requestedModel === "string" && requestedModel.trim() ? requestedModel.trim() : null;
     const current = typeof currentModel === "string" && currentModel.trim() ? currentModel.trim() : null;
     const entry = requested
@@ -1324,6 +1538,9 @@ export function registerAgentPreviewTools(server, {
       message: action === "send" ? payload?.message ?? null : null,
       cwd: action === "start" ? payload?.cwd ?? null : null,
       permissionProfile: action === "start" ? payload?.permissionProfile ?? null : null,
+      permissionCeiling: action === "start" ? payload?.permissionCeiling ?? null : null,
+      authorityPolicyHash: action === "start" ? payload?.authorityPolicyHash ?? null : null,
+      account: payload?.account ?? null,
       model: hasCallerModel ? payload?.callerModel ?? null : payload?.model ?? null,
       invocationRationale: action === "start" ? payload?.invocationRationale ?? null : null,
       presentationLocale: payload?.presentationLocale ?? null,
@@ -1345,6 +1562,7 @@ export function registerAgentPreviewTools(server, {
       prompt: action === "start" ? payload?.prompt ?? null : null,
       message: action === "send" ? payload?.message ?? null : null,
       cwd: action === "start" ? payload?.callerCwd ?? null : null,
+      account: action === "start" ? payload?.callerAccount ?? null : null,
       model: payload?.callerModel ?? null,
       reasoningEffort: payload?.callerReasoningEffort ?? null,
       invocationRationale: action === "start" ? payload?.callerInvocationRationale ?? null : null,
@@ -1362,6 +1580,7 @@ export function registerAgentPreviewTools(server, {
       action,
       title: titleFor(action, payload),
       summary: summaryFor(action, payload),
+      account: typeof payload?.account === "string" ? payload.account : null,
       requestedModel: Object.hasOwn(payload ?? {}, "callerModel")
         ? (typeof payload?.callerModel === "string" ? payload.callerModel : null)
         : (typeof payload?.model === "string" ? payload.model : null),
@@ -1379,6 +1598,7 @@ export function registerAgentPreviewTools(server, {
   }
 
   function newTaskIdentity() {
+    assertNewTaskCapacity();
     while (true) {
       const taskRef = `task_${randomUUID()}`;
       const shortTaskId = agentPortableCard ? portableShortTaskId(taskRef) : null;
@@ -1393,6 +1613,7 @@ export function registerAgentPreviewTools(server, {
       taskRef: snapshot.taskRef ?? snapshot.taskId ?? snapshot.taskCard?.taskRef ?? null,
       taskId: snapshot.taskId ?? snapshot.shortTaskId ?? snapshot.taskCard?.taskId ?? snapshot.taskRef ?? snapshot.taskCard?.taskRef ?? null,
       shortTaskId: snapshot.shortTaskId ?? snapshot.taskCard?.shortTaskId ?? null,
+      account: snapshot.account ?? snapshot.taskCard?.account ?? null,
       agentRef: snapshot.agentRef ?? null,
       turnId: snapshot.turnId ?? null,
       status: snapshot.status ?? "lost",
@@ -1439,6 +1660,7 @@ export function registerAgentPreviewTools(server, {
       return true;
     } catch (error) {
       record.persistenceWarning = `Prepared-task persistence unavailable: ${error instanceof Error ? error.message : String(error)}`;
+      if (error?.code === "CODEX_REQUEST_TOMBSTONE_CAPACITY") throw error;
       return false;
     }
   }
@@ -1448,8 +1670,12 @@ export function registerAgentPreviewTools(server, {
     const persisted = taskPersistence.get(taskRef);
     if (!persisted) return null;
     if (persisted.toolError) throw new Error(persisted.toolError);
-    if (persisted.terminalSnapshot) {
+    if (persisted.terminalSnapshot && isTerminalStatus(persisted.terminalSnapshot.status)) {
       const terminal = structuredClone(persisted.terminalSnapshot);
+      terminal.account = terminal.account ?? terminal.taskCard?.account ?? persisted.taskCard?.account ?? null;
+      terminal.canSend = false;
+      terminal.pendingApproval = null;
+      terminal.terminal = true;
       if (terminal.suppressManualFallback !== true && !terminal.chatPresentation) {
         const presentation = chatPresentation(terminal);
         if (presentation) terminal.chatPresentation = presentation;
@@ -1461,6 +1687,7 @@ export function registerAgentPreviewTools(server, {
       taskRef,
       taskId: persisted.shortTaskId ?? taskRef,
       shortTaskId: persisted.shortTaskId ?? persisted.taskCard?.shortTaskId ?? null,
+      account: persisted.taskCard?.account ?? null,
       agentRef: persisted.agentRef ?? null,
       turnId: persisted.turnId ?? null,
       status: "lost",
@@ -1499,6 +1726,13 @@ export function registerAgentPreviewTools(server, {
     return lost;
   }
 
+  function retiredRequestError() {
+    return Object.assign(
+      new Error("requestId was already used; durable task detail expired and the original request will not be replayed"),
+      { code: "CODEX_REQUEST_REPLAY_RETIRED" }
+    );
+  }
+
   async function existingRequestByCallerIntent({ requestId, action, payload, agentRef = null }) {
     const expectedHash = callerIntentHash(action, payload, agentRef);
     let liveRecord = null;
@@ -1519,11 +1753,14 @@ export function registerAgentPreviewTools(server, {
     }
     if (!taskPersistence) return null;
     const persisted = taskPersistence.findByRequest({ requestId, action, agentRef });
-    if (!persisted || !persisted.callerIntentHash) return null;
+    if (!persisted) return null;
+    if (persisted.tombstone === true && !persisted.callerIntentHash) throw retiredRequestError();
+    if (!persisted.callerIntentHash) return null;
     if (persisted.callerIntentHash !== expectedHash) {
       throw new Error(`requestId ${requestId} was already used for a different Codex caller intent`);
     }
     if (persisted.toolError) throw new Error(persisted.toolError);
+    if (persisted.tombstone === true) throw retiredRequestError();
     const live = taskRecords.get(persisted.taskRef);
     if (live) return preparedCardState(live);
     return recoveredTaskState(persisted.taskRef);
@@ -1537,6 +1774,7 @@ export function registerAgentPreviewTools(server, {
     if (persisted.payloadHash && persisted.payloadHash !== payloadHash) {
       throw new Error(`requestId ${requestId} was already used for a different Codex task payload`);
     }
+    if (persisted.tombstone === true) throw retiredRequestError();
     const live = taskRecords.get(persisted.taskRef);
     if (live) return preparedCardState(live);
     return recoveredTaskState(persisted.taskRef);
@@ -1567,9 +1805,13 @@ export function registerAgentPreviewTools(server, {
       portableTaskBody: boundedPortableBody(action === "start" ? payload?.prompt : payload?.message),
       taskCard: taskCardFor({ taskRef, shortTaskId, requestId: consent.requestId, action, payload, cwd, permissionProfile, quota: consent.quota }),
     };
+    // Persist the durable request binding before exposing a new in-memory task.
+    // Tombstone-capacity exhaustion must block new work without forgetting old IDs.
+    if (!persistRecord(record, null, "pending")) {
+      throw new Error("Codex task was not prepared because durable task state could not be recorded safely");
+    }
     preparedMetered.set(consent.consentRef, record);
     taskRecords.set(taskRef, record);
-    persistRecord(record, null, "pending");
     return record;
   }
 
@@ -1597,8 +1839,11 @@ export function registerAgentPreviewTools(server, {
       portableTaskBody: boundedPortableBody(action === "start" ? payload?.prompt : payload?.message),
       taskCard: taskCardFor({ taskRef, shortTaskId, requestId, action, payload, cwd, permissionProfile, quota: null }),
     };
+    // Keep the same fail-closed ordering for direct/no-metered preparation.
+    if (!persistRecord(record, null, "pending")) {
+      throw new Error("Codex task was not prepared because durable task state could not be recorded safely");
+    }
     taskRecords.set(taskRef, record);
-    persistRecord(record, null, "pending");
     return record;
   }
 
@@ -1747,7 +1992,7 @@ export function registerAgentPreviewTools(server, {
     });
   }
 
-  async function dispatchPrepared(record) {
+  async function dispatchPreparedInternal(record) {
     assertFormalAgentAvailable();
     if (record.terminalSnapshot) return { ...structuredClone(record.terminalSnapshot), duplicate: true };
     if (record.declinedAt) return structuredClone(record.terminalSnapshot ?? lostRecord(record));
@@ -1758,12 +2003,18 @@ export function registerAgentPreviewTools(server, {
     }
     if (record.action === "start") {
       const currentAuthority = await resolveFormalAgentStartAuthority(record.cwd);
-      if (currentAuthority.effectiveCwd !== record.cwd || currentAuthority.permissionProfile !== record.permissionProfile) {
+      if (
+        currentAuthority.effectiveCwd !== record.cwd
+        || currentAuthority.permissionProfile !== record.permissionProfile
+        || (currentAuthority.permissionCeiling ?? currentAuthority.permissionProfile)
+          !== (record.payload?.permissionCeiling ?? record.permissionProfile)
+        || (record.payload?.authorityPolicyHash && currentAuthority.policyHash !== record.payload.authorityPolicyHash)
+      ) {
         throw new Error("prepared Codex task authority changed; prepare and approve a new task");
       }
     } else if (record.payload?.parentTurnId) {
       const current = await agentExecutor.show({ agentRef: record.agentRef, afterSeq: 0 });
-      if (current.turnId !== record.payload.parentTurnId || current.status !== "idle" || current.canSend !== true) {
+      if (current.turnId !== record.payload.parentTurnId || current.canSend !== true) {
         throw new Error("prepared Codex follow-up is stale because the agent advanced; prepare a new task for the current turn");
       }
     }
@@ -1775,16 +2026,24 @@ export function registerAgentPreviewTools(server, {
       consentRef: record.consent.consentRef,
     });
     if (!consent.authorized) throw new Error("metered consent was not authorized for the prepared task");
+    // A decline may arrive during authority, parent-turn or quota awaits. This
+    // synchronous check is the final decision point before dispatch ownership.
+    if (record.terminalSnapshot || record.declinedAt) {
+      return structuredClone(record.terminalSnapshot ?? lostRecord(record));
+    }
     record.authorized = true;
 
     if (record.action === "start") {
       let snapshot;
       try {
         snapshot = await agentExecutor.start({
+          account: record.payload.account ?? null,
           cwd: record.cwd,
           task: record.payload.prompt,
           clientRequestId: record.consent.requestId,
           permissionProfile: record.permissionProfile,
+          permissionCeiling: record.payload.permissionCeiling ?? record.permissionProfile,
+          authorityPolicyHash: record.payload.authorityPolicyHash ?? null,
           model: record.payload.model ?? null,
           reasoningEffort: record.payload.reasoningEffort ?? null,
         });
@@ -1816,6 +2075,7 @@ export function registerAgentPreviewTools(server, {
       snapshot = await agentExecutor.send({
         agentRef: record.agentRef,
         message: record.payload.message,
+        expectedParentTurnId: record.payload.parentTurnId ?? null,
         clientRequestId: record.consent.requestId,
         model: record.payload.model ?? null,
         reasoningEffort: record.payload.reasoningEffort ?? null,
@@ -1839,6 +2099,28 @@ export function registerAgentPreviewTools(server, {
     return payload;
   }
 
+  async function dispatchPrepared(record) {
+    if (record.dispatchPromise) return { ...structuredClone(await record.dispatchPromise), duplicate: true };
+    if (record.dispatchSettled) {
+      if (record.toolError) throw Object.assign(new Error(record.toolError), { code: record.toolErrorCode });
+      return { ...await preparedCardState(record), duplicate: true };
+    }
+    // Reserve synchronously, before any external provider can run or re-enter.
+    const operation = Promise.resolve().then(() => dispatchPreparedInternal(record));
+    record.dispatchPromise = operation;
+    try { return structuredClone(await operation); }
+    catch (error) {
+      if (record.declinedAt && record.terminalSnapshot) return structuredClone(record.terminalSnapshot);
+      record.toolError = (error instanceof Error ? error.message : String(error)).slice(0, 2_048);
+      record.toolErrorCode = typeof error?.code === "string" ? error.code : "CODEX_TASK_DISPATCH_FAILED";
+      persistRecord(record, null, "error");
+      throw error;
+    } finally {
+      // Keep the replay receipt, not a settled promise retaining the full result.
+      record.dispatchSettled = true;
+      record.dispatchPromise = null;
+    }
+  }
 
   if (codexCallProfile) {
     server.registerTool(
@@ -1917,17 +2199,28 @@ export function registerAgentPreviewTools(server, {
       description:
         "Model-free read of the current Codex App Server model catalog. Use it when a user explicitly cares which model to run. The catalog reports current model ids/capabilities/defaults but does not provide price data, so Codexless must not infer cheapest from names alone.",
       inputSchema: z.object({
+        account: z.string().min(1).max(32).optional()
+          .describe("Optional configured Codex account id. Required when multiple accounts are configured."),
         cursor: z.string().min(1).max(2048).optional(),
         limit: z.number().int().min(1).max(200).optional(),
         includeHidden: z.boolean().optional(),
       }).strict(),
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ cursor, limit, includeHidden }) => structured(async () => catalogProvider.listModels({
-      cursor: cursor ?? null,
-      limit: limit ?? null,
-      includeHidden: includeHidden === true,
-    }))
+    async ({ account, cursor, limit, includeHidden }) => structured(async () => {
+      if (account !== undefined && typeof catalogProvider.resolveAccountId !== "function") {
+        throw new Error("CODEX_ACCOUNT_ROUTING_UNAVAILABLE: this model catalog runtime does not support explicit account selection");
+      }
+      const resolvedAccount = account === undefined
+        ? null
+        : catalogProvider.resolveAccountId(account);
+      return catalogProvider.listModels({
+        account: resolvedAccount,
+        cursor: cursor ?? null,
+        limit: limit ?? null,
+        includeHidden: includeHidden === true,
+      });
+    })
   );
 
   server.registerTool(
@@ -1938,6 +2231,8 @@ export function registerAgentPreviewTools(server, {
         `Experimental Preview. Start one formal Codex agent thread/turn under Codexless's locally resolved authority. Before calling, read and apply the current Codex Call Profile to task sizing, model/reasoning choice, supervision, and in-turn approval habits. invocationRationale records why this task needs Codex. requireCallApproval is the only hard call-stage switch: only an explicit false from a valid configured Profile may skip Call Approval; true, missing, unreadable, invalid, field-missing, or unknown Profile state fails closed. When approval is required, this tool prepares one exact server-bound task and returns consent_required plus fixed compact chatPresentation text with an exact Task ID. The next user-visible assistant response MUST equal the returned content[0].text / chatPresentation.text verbatim, with no prose before or after, no summary, rewrite, reordering, translation, or field omission; do not reconstruct it from structuredContent. Then map the user's literal Yes / No only to codex.agent_commit or codex.agent_decline with that exact taskId. Do not retry agent_start as an approval action. Pass presentationLocale from the current Chat/Host when available; service-machine locale is not user-language authority. When requireCallApproval is false, Codex starts immediately. RUNNING is authoritative but has no mechanical presentation: keep responsibility for the work unit, supervise it according to the bound Profile, and use waiting time for non-conflicting work. requestId is a caller-stable idempotency key and MUST be reused only for retries of the same logical start.${agentReasoningEffort ? " reasoningEffort is validated against the current effective model catalog; no global effort enum is hard-coded." : ""} If the returned state is awaitingApproval, apply explicit current-task user instructions first, otherwise the valid bound Profile, and use the recommended default only when the Profile is missing. If user confirmation is actually required, present the returned conspicuous ordinary-text decision with exact Task ID/action/scope/reason/risk and literal Yes / No. Durable user corrections should prompt an offer to update the Profile, never a silent write. The caller cannot choose or widen Codex permission profile, sandbox, roots, network authority, or other authority ceilings.`,
       inputSchema: z.object({
         prompt: z.string().min(1).max(200_000),
+        account: z.string().min(1).max(32).optional()
+          .describe("Configured Codex account id. Required when multiple accounts are configured; it is bound to the new agent for its lifetime."),
         requestId: z.string().min(1).max(512)
           .describe("Stable caller-generated idempotency key. Reuse this exact value for retries of the same logical start."),
         cwd: z.string().min(1).max(32_768).optional()
@@ -1963,12 +2258,21 @@ export function registerAgentPreviewTools(server, {
         "openai/toolInvocation/invoked": "Codex task ready.",
       },
     },
-    async ({ prompt, requestId, cwd, presentationLocale, model, reasoningEffort, invocationRationale, profileDecision }, toolContext) => structuredCard(async () => {
+    async ({ prompt, account, requestId, cwd, presentationLocale, model, reasoningEffort, invocationRationale, profileDecision }, toolContext) => structuredCard(async () => {
       assertFormalAgentAvailable();
+      if (account !== undefined && typeof agentExecutor.resolveAccountId !== "function") {
+        const error = new Error("CODEX_ACCOUNT_ROUTING_UNAVAILABLE: this agent runtime does not support explicit account selection");
+        error.code = "CODEX_ACCOUNT_ROUTING_UNAVAILABLE";
+        throw error;
+      }
+      const resolvedAccount = typeof agentExecutor.resolveAccountId === "function"
+        ? agentExecutor.resolveAccountId(account ?? null)
+        : null;
       const resolvedPresentationLocale = resolvePresentationLocale(presentationLocale, toolContext);
 
       const startCallerIntent = {
         prompt,
+        callerAccount: resolvedAccount,
         callerCwd: cwd ?? null,
         presentationLocale: resolvedPresentationLocale,
         callerModel: model ?? null,
@@ -1977,6 +2281,7 @@ export function registerAgentPreviewTools(server, {
           callerInvocationRationale: invocationRationale ?? null,
         } : {}),
       };
+      return prepareOnce({ requestId, action: "start", payload: startCallerIntent, agentRef: null }, async () => {
       const priorByCallerIntent = await existingRequestByCallerIntent({
         requestId,
         action: "start",
@@ -2002,6 +2307,8 @@ export function registerAgentPreviewTools(server, {
       const authority = await resolveFormalAgentStartAuthority(cwd ?? null);
       const callerPayload = {
         prompt,
+        callerAccount: resolvedAccount,
+        account: resolvedAccount,
         callerCwd: cwd ?? null,
         cwd: authority.effectiveCwd,
         presentationLocale: resolvedPresentationLocale,
@@ -2009,6 +2316,8 @@ export function registerAgentPreviewTools(server, {
         model: model ?? null,
         callerReasoningEffort: agentReasoningEffort ? reasoningEffort ?? null : null,
         permissionProfile: authority.permissionProfile,
+        permissionCeiling: authority.permissionCeiling ?? authority.permissionProfile,
+        authorityPolicyHash: authority.policyHash ?? null,
         ...(codexCallProfile ? {
           callerInvocationRationale: invocationRationale ?? null,
           invocationRationale: boundInvocationRationale,
@@ -2026,6 +2335,7 @@ export function registerAgentPreviewTools(server, {
       if (agentPortableCard && meteredConsent.mode === "always") {
         try {
           preparedSelection = await resolvePreparedModelSelection({
+            account: resolvedAccount,
             requestedModel: model ?? null,
             requestedReasoningEffort: agentReasoningEffort ? reasoningEffort ?? null : null,
           });
@@ -2101,6 +2411,7 @@ export function registerAgentPreviewTools(server, {
         requestId,
       });
       return dispatchPrepared(record);
+      });
     })
   );
 
@@ -2271,6 +2582,7 @@ export function registerAgentPreviewTools(server, {
         callerReasoningEffort: agentReasoningEffort ? reasoningEffort ?? null : null,
       };
 
+      return prepareOnce({ requestId, action: "send", payload: sendCallerIntent, agentRef }, async () => {
       const priorByCallerIntent = await existingRequestByCallerIntent({
         requestId,
         action: "send",
@@ -2284,7 +2596,14 @@ export function registerAgentPreviewTools(server, {
         ? structuredClone(parentCard.callProfile)
         : null;
       const current = await agentExecutor.show({ agentRef, afterSeq: 0 });
-      if (current.status !== "idle" || current.canSend !== true || !current.turnId) {
+      const boundAccount = typeof current?.account === "string"
+        ? current.account
+        : typeof parentCard?.account === "string"
+          ? parentCard.account
+          : typeof agentExecutor.accountForAgent === "function"
+            ? agentExecutor.accountForAgent(agentRef)
+            : null;
+      if (current.canSend !== true || !current.turnId) {
         throw new Error(`agent ${agentRef} is not ready for a follow-up: ${current.status}`);
       }
 
@@ -2295,6 +2614,7 @@ export function registerAgentPreviewTools(server, {
       if (agentPortableCard && meteredConsent.mode === "always") {
         try {
           preparedSelection = await resolvePreparedModelSelection({
+            account: boundAccount,
             requestedModel,
             requestedReasoningEffort: requestedEffort,
             currentModel: current.execution?.resolvedModel ?? null,
@@ -2310,6 +2630,7 @@ export function registerAgentPreviewTools(server, {
 
       const payload = {
         message,
+        account: boundAccount,
         presentationLocale: resolvedPresentationLocale,
         callerModel: model ?? null,
         callerReasoningEffort: agentReasoningEffort ? reasoningEffort ?? null : null,
@@ -2393,6 +2714,7 @@ export function registerAgentPreviewTools(server, {
         requestId,
       });
       return dispatchPrepared(record);
+      });
     })
   );
 
