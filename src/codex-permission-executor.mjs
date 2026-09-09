@@ -8,6 +8,8 @@ import { assertRemoteModelFreeMethod } from "./toolbox-method-registry.mjs";
 const execFileAsync = promisify(execFile);
 const SUPPORTED_ACCESS = new Set(["readOnly", "workspaceWrite"]);
 const SUPPORTED_RESOLVER_MODES = new Set(["quiet", "inherit"]);
+// Legacy executor retained for compatibility only; the active runtime uses CodexAuthorityExecutor.
+// Keep this older projection fail-closed on its last qualified version until it is explicitly retired or requalified.
 const DEFAULT_ACCEPTED_CODEX_VERSIONS = new Set(["0.147.0"]);
 const SUPPORTED_SANDBOX_TYPES = new Set(["readOnly", "workspaceWrite"]);
 const SUPPORTED_BUILTIN_PROFILES = new Set([":read-only", ":workspace"]);

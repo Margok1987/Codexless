@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -9,6 +9,7 @@ import {
   DUAL_READY_ACTIVATION,
   effectiveRuntimeRouting,
   PENDING_MANAGED_ACTIVATION,
+  readRuntimeRoutingPolicy,
   readRuntimeRoutingState,
   writeRuntimeInstallPreference,
 } from "../src/runtime-routing-policy.mjs";
@@ -17,9 +18,9 @@ const root = path.resolve(import.meta.dirname, "..");
 const managedRuntime = Object.freeze({
   lane: "managed",
   packageName: "@openai/codex",
-  packageVersion: "0.147.0",
+  packageVersion: "0.153.4",
   platformPackageName: process.platform === "darwin" ? "@openai/codex-darwin-arm64" : "@openai/codex-win32-x64",
-  platformPackageVersion: process.platform === "darwin" ? "0.147.0-darwin-arm64" : "0.147.0-win32-x64",
+  platformPackageVersion: process.platform === "darwin" ? "0.153.4-darwin-arm64" : "0.153.4-win32-x64",
   binarySha256: "a".repeat(64),
 });
 
@@ -148,4 +149,20 @@ test("Advanced Existing-only preference survives update/reinstall state and expl
   assert.equal(returned.activation, DUAL_READY_ACTIVATION);
   assert.equal(returned.routes.stableModelFree, "managed");
   assert.equal(returned.preferenceSource, "user-state");
+});
+
+
+test("managed routing policy pin is bound to package.json and drift fails closed", async (t) => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "codexless-routing-pin-"));
+  t.after(() => rm(tempRoot, { recursive: true, force: true }));
+  await mkdir(path.join(tempRoot, "config"), { recursive: true });
+  const policy = JSON.parse(await readFile(path.join(root, "config", "runtime-routing-policy.json"), "utf8"));
+  const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+  await writeFile(path.join(tempRoot, "package.json"), `${JSON.stringify({ dependencies: { "@openai/codex": packageJson.dependencies["@openai/codex"] } }, null, 2)}\n`, "utf8");
+  await writeFile(path.join(tempRoot, "config", "runtime-routing-policy.json"), `${JSON.stringify(policy, null, 2)}\n`, "utf8");
+  const accepted = await readRuntimeRoutingPolicy({ root: tempRoot });
+  assert.equal(accepted.managed.packageVersion, packageJson.dependencies["@openai/codex"]);
+  policy.managed.packageVersion = "9.9.9";
+  await writeFile(path.join(tempRoot, "config", "runtime-routing-policy.json"), `${JSON.stringify(policy, null, 2)}\n`, "utf8");
+  await assert.rejects(() => readRuntimeRoutingPolicy({ root: tempRoot }), /must exactly match package\.json/);
 });

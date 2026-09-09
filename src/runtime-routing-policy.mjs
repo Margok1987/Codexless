@@ -34,8 +34,15 @@ export function codexRuntimeSelection(env = process.env) {
 }
 
 export async function readRuntimeRoutingPolicy({ root = projectRoot } = {}) {
-  const policyPath = path.join(path.resolve(root), "config", "runtime-routing-policy.json");
-  return validateRuntimeRoutingPolicy(JSON.parse(await readFile(policyPath, "utf8")));
+  const releaseRoot = path.resolve(root);
+  const policyPath = path.join(releaseRoot, "config", "runtime-routing-policy.json");
+  const policy = validateRuntimeRoutingPolicy(JSON.parse(await readFile(policyPath, "utf8")));
+  const packageJson = JSON.parse(await readFile(path.join(releaseRoot, "package.json"), "utf8"));
+  const packagePin = packageJson?.dependencies?.["@openai/codex"];
+  if (policy.managed?.packageName !== "@openai/codex" || policy.managed?.packageVersion !== packagePin) {
+    throw new Error("runtime routing policy managed Codex version must exactly match package.json @openai/codex pin");
+  }
+  return policy;
 }
 
 export async function readInstalledRuntimeMode({ root = projectRoot } = {}) {

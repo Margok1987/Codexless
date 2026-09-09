@@ -86,6 +86,10 @@ class FakeClient {
         reasoningEffort: this.threadEffort,
       };
     }
+    if (method === "thread/delete") {
+      assert.equal(params.threadId, `thread-${this.threadSeq}`);
+      return {};
+    }
     throw new Error(`unexpected fake request: ${method}`);
   }
 }

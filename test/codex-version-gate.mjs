@@ -1,9 +1,31 @@
 import assert from "node:assert/strict";
 import path from "node:path";
-import { CodexAuthorityExecutor } from "../src/codex-authority-executor.mjs";
+import { CodexAuthorityExecutor, normalizeCodexAuthorityProjection } from "../src/codex-authority-executor.mjs";
 import { compareCodexVersions, resolveCodexExecutable } from "../src/codex-bin.mjs";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
+const projectionRoot = path.resolve(projectRoot);
+for (const [sandboxMode, sandboxType, expectedProfile] of [
+  ["read-only", "readOnly", ":read-only"],
+  ["workspace-write", "workspaceWrite", ":workspace"],
+  ["danger-full-access", "dangerFullAccess", ":danger-full-access"],
+]) {
+  const projected = normalizeCodexAuthorityProjection({
+    started: { activePermissionProfile: null, cwd: projectionRoot, runtimeWorkspaceRoots: [projectionRoot], sandbox: { type: sandboxType } },
+    effectiveConfig: { sandbox_mode: sandboxMode, approval_policy: "on-request" },
+    allowedProfiles: new Set([":read-only", ":workspace", ":danger-full-access"]),
+    authorityRoot: projectionRoot,
+  });
+  assert.equal(projected.profileId, expectedProfile);
+  assert.equal(projected.provenance, "config/read:sandbox_mode+approval_policy");
+}
+assert.throws(() => normalizeCodexAuthorityProjection({
+  started: { activePermissionProfile: null, cwd: projectionRoot, runtimeWorkspaceRoots: [projectionRoot], sandbox: { type: "dangerFullAccess" } },
+  effectiveConfig: { sandbox_mode: "danger-full-access", approval_policy: "never" },
+  allowedProfiles: new Set([":read-only", ":workspace", ":danger-full-access"]),
+  authorityRoot: projectionRoot,
+}), /capability gate failed closed/);
+
 const env = { ...process.env, CODEX_BIN: "" };
 const resolved = await resolveCodexExecutable({ env });
 
@@ -36,6 +58,7 @@ assert.equal(explicitOverride.source, "CODEX_BIN");
 const contractFirst = new CodexAuthorityExecutor({
   codexBin: resolved.path,
   defaultCwd: projectRoot,
+  allowUntrustedReadOnlyBootstrap: true,
 });
 const contractValidation = await contractFirst.validate();
 assert.equal(contractValidation.codexVersion, resolved.version);
@@ -48,6 +71,7 @@ assert.equal(contractValidation.compatibilityGate?.permissionProfile, ":read-onl
 const explicitReject = new CodexAuthorityExecutor({
   codexBin: resolved.path,
   defaultCwd: projectRoot,
+  allowUntrustedReadOnlyBootstrap: true,
   acceptedCodexVersions: ["9.9.9-not-current"],
 });
 await assert.rejects(
@@ -58,6 +82,7 @@ await assert.rejects(
 const explicitAccept = new CodexAuthorityExecutor({
   codexBin: resolved.path,
   defaultCwd: projectRoot,
+  allowUntrustedReadOnlyBootstrap: true,
   acceptedCodexVersions: [resolved.version],
 });
 const explicitValidation = await explicitAccept.validate();

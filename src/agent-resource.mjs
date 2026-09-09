@@ -26,24 +26,28 @@ export function normalizeThreadTokenUsage(value) {
 function projectError(error) {
   if (!error || typeof error !== "object") return null;
   return {
-    name: typeof error.name === "string" ? error.name : null,
-    message: typeof error.message === "string" ? error.message : String(error),
+    // Upstream auth/transport diagnostics can contain account identifiers or
+    // credential fragments. Keep structured status, never arbitrary text.
+    name: "Unavailable",
+    message: "Codex account telemetry is unavailable",
     rpcCode: Number.isInteger(error.rpcCode) ? error.rpcCode : null,
-    rpcMessage: typeof error.rpcMessage === "string" ? error.rpcMessage : null,
+    rpcMessage: null,
   };
 }
 
 function projectLimit(limit) {
   const windows = Array.isArray(limit?.windows) ? limit.windows : [];
   return {
-    key: typeof limit?.key === "string" ? limit.key : null,
-    limitId: typeof limit?.limitId === "string" ? limit.limitId : null,
-    limitName: typeof limit?.limitName === "string" ? limit.limitName : null,
-    planType: typeof limit?.planType === "string" ? limit.planType : null,
-    rateLimitReachedType: typeof limit?.rateLimitReachedType === "string" ? limit.rateLimitReachedType : null,
+    // This projection reaches consent cards and terminal resource receipts too.
+    // Bucket names/IDs are arbitrary upstream text, not safe display labels.
+    key: limit?.key === "codex" ? "codex" : null,
+    limitId: limit?.limitId === "codex" ? "codex" : null,
+    limitName: ["Codex", "codex"].includes(limit?.limitName) ? limit.limitName : null,
+    planType: ["free", "plus", "pro", "team", "business", "enterprise", "edu"].includes(limit?.planType) ? limit.planType : null,
+    rateLimitReachedType: null,
     spendControlReached: typeof limit?.spendControlReached === "boolean" ? limit.spendControlReached : null,
     windows: windows.map((window) => ({
-      kind: typeof window?.kind === "string" ? window.kind : null,
+      kind: ["primary", "secondary"].includes(window?.kind) ? window.kind : null,
       usedPercent: Number.isInteger(window?.usedPercent) ? window.usedPercent : null,
       remainingPercent: Number.isInteger(window?.usedPercent) ? Math.max(0, Math.min(100, 100 - window.usedPercent)) : null,
       resetsAt: Number.isInteger(window?.resetsAt) ? window.resetsAt : null,

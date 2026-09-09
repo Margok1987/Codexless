@@ -73,18 +73,18 @@ test("managed package pin and platform lock provenance are exact source inputs",
     lockBytes = await readFile(path.join(root, "package-lock.json"), "utf8");
   }
   const lock = JSON.parse(lockBytes);
-  assert.equal(pkg.dependencies?.["@openai/codex"], "0.147.0");
-  assert.equal(lock.packages?.[""]?.dependencies?.["@openai/codex"], "0.147.0");
+  assert.equal(pkg.dependencies?.["@openai/codex"], "0.153.4");
+  assert.equal(lock.packages?.[""]?.dependencies?.["@openai/codex"], "0.153.4");
   const rootCodex = lock.packages?.["node_modules/@openai/codex"];
-  assert.equal(rootCodex?.version, "0.147.0");
+  assert.equal(rootCodex?.version, "0.153.4");
   assert.match(rootCodex?.integrity ?? "", /^sha512-/);
   const win = lock.packages?.["node_modules/@openai/codex-win32-x64"];
-  assert.equal(win?.version, "0.147.0-win32-x64");
+  assert.equal(win?.version, "0.153.4-win32-x64");
   assert.match(win?.integrity ?? "", /^sha512-/);
   assert.deepEqual(win?.os, ["win32"]);
   assert.deepEqual(win?.cpu, ["x64"]);
   const mac = lock.packages?.["node_modules/@openai/codex-darwin-arm64"];
-  assert.equal(mac?.version, "0.147.0-darwin-arm64");
+  assert.equal(mac?.version, "0.153.4-darwin-arm64");
   assert.match(mac?.integrity ?? "", /^sha512-/);
   assert.deepEqual(mac?.os, ["darwin"]);
   assert.deepEqual(mac?.cpu, ["arm64"]);
@@ -117,14 +117,15 @@ test("managed provider resolves the exact supported-platform official native pac
         CODEXLESS_CODEX_RUNTIME: "managed",
         CODEXLESS_MANAGED_CODEX_HOME: tempHome,
       }),
+      stateRoot: tempHome,
     });
     assert.equal(provider.selection, "managed");
     assert.equal(provider.modelFree.lane, "managed");
-    assert.equal(provider.modelFree.version, "0.147.0");
-    assert.equal(provider.modelFree.packageVersion, "0.147.0");
+    assert.equal(provider.modelFree.version, "0.153.4");
+    assert.equal(provider.modelFree.packageVersion, "0.153.4");
     assert.equal(path.resolve(provider.modelFree.bin).toLowerCase(), path.resolve(expectedNative).toLowerCase());
     assert.equal(provider.modelFree.platformPackageName, platformSpec.packageName);
-    assert.equal(provider.modelFree.platformPackageVersion, `0.147.0-${platformSpec.versionSuffix}`);
+    assert.equal(provider.modelFree.platformPackageVersion, `0.153.4-${platformSpec.versionSuffix}`);
     assert.equal(provider.modelFree.existingResolverUsed, false);
     assert.equal(provider.modelFree.launchEnv.CODEX_HOME, path.resolve(tempHome));
     assert.equal(provider.modelFree.launchEnv.CODEX_BIN, undefined);
@@ -155,7 +156,7 @@ test("Recommended pending readiness preserves Existing model-free behavior and E
   assert.equal(provider.modelFree.lane, "existing");
   assert.equal(provider.modelFree.bin.toLowerCase(), path.resolve(pinnedWin).toLowerCase());
   assert.equal(provider.modelFree.launchEnv, null);
-  assert.equal(provider.modelFree.version, "0.147.0");
+  assert.equal(provider.modelFree.version, "0.153.4");
   assert.equal(provider.formalAgentLane, "existing");
   assert.equal(provider.formalAgentAvailable, true);
   assert.equal(provider.managedModelInvocation, "existing-lane");

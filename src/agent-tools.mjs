@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const require = createRequire(import.meta.url);
@@ -116,6 +116,16 @@ function quotaWindowLabel(window, index) {
 function compactOneLine(value, max = 320) {
   const clean = String(value ?? "").replace(/\s+/g, " ").trim();
   return clean.length > max ? clean.slice(0, Math.max(1, max - 3)) + "..." : clean;
+}
+
+const PORTABLE_RUNTIME_BODY_MAX_CHARS = 8_000;
+
+function boundedPortableBody(value, fallback = "") {
+  const clean = String(value ?? "").replace(/\s+/g, " ").trim();
+  if (!clean) return fallback;
+  if (clean.length <= PORTABLE_RUNTIME_BODY_MAX_CHARS) return clean;
+  const marker = ` … [truncated at ${PORTABLE_RUNTIME_BODY_MAX_CHARS} characters]`;
+  return clean.slice(0, Math.max(1, PORTABLE_RUNTIME_BODY_MAX_CHARS - marker.length)) + marker;
 }
 
 function pathInside(base, candidate) {
@@ -242,6 +252,101 @@ function approvalRiskReference(pendingApproval, taskCard) {
   return { risk: "unknown", reason: "approval_kind_not_classified", defaultRecommendation: "ask_user" };
 }
 
+const IN_TURN_I18N = Object.freeze({
+  en: { title: "Codex needs an approval", blocked: "Codex approval blocked", taskId: "Task ID", action: "Requested action", scope: "Scope", why: "Why", risk: "Risk", reply: "Reply Yes to approve or No to reject.", genericWhy: "Codex requires this approval to continue the current task.", missing: "not enough human-readable detail was provided.", unsupported: "This approval type is not supported by the current Codexless approve/reject protocol. No action will be guessed or auto-approved." },
+  zh: { title: "Codex 需要确认", blocked: "Codex 审批已阻塞", taskId: "任务 ID", action: "请求动作", scope: "范围", why: "原因", risk: "风险", reply: "请直接回复 Yes / No。", genericWhy: "Codex 需要这项确认才能继续当前任务。", missing: "当前没有足够的人类可读动作信息。", unsupported: "当前 Codexless approve/reject 协议不支持此审批类型；不会猜测或自动批准。" },
+  ja: { title: "Codex の確認が必要です", blocked: "Codex 承認はブロックされています", taskId: "タスク ID", action: "要求された操作", scope: "範囲", why: "理由", risk: "リスク", reply: "Yes / No で返信してください。", genericWhy: "Codex が現在のタスクを続行するためにこの確認が必要です。", missing: "人が判断できる操作情報が不足しています。", unsupported: "現在の Codexless approve/reject プロトコルではこの承認種別を扱えません。推測や自動承認は行いません。" },
+});
+
+function inTurnStrings(locale) {
+  const normalized = String(locale || "en").toLowerCase();
+  if (normalized.startsWith("zh")) return IN_TURN_I18N.zh;
+  if (normalized.startsWith("ja")) return IN_TURN_I18N.ja;
+  return IN_TURN_I18N.en;
+}
+
+function inTurnApprovalPresentation(pendingApproval, riskReference, taskCard = null) {
+  if (!pendingApproval) return null;
+  const labels = inTurnStrings(taskCard?.presentationLocale ?? "en");
+  const details = pendingApproval.details ?? {};
+  const kind = details.kind ?? "unknown";
+  const taskId = taskCard?.shortTaskId ?? taskCard?.taskId ?? taskCard?.taskRef ?? "unavailable";
+  let action = null;
+  let scope = "Current Codex task";
+  if (kind === "command") {
+    action = details.command ? `Run command: ${compactOneLine(details.command, 700)}` : "Run a command requested by Codex";
+    if (details.cwd) scope = `Working directory: ${compactOneLine(details.cwd, 500)}`;
+  } else if (kind === "fileChange") {
+    const changes = Array.isArray(details.changes) ? details.changes : [];
+    action = changes.length
+      ? `Apply file changes: ${compactOneLine(changes.map((change) => `${change?.kind ?? "change"} ${change?.path ?? "unknown path"}`).join("; "), 700)}`
+      : "Apply file changes requested by Codex";
+    if (changes.length) scope = `Files: ${compactOneLine(changes.map((change) => change?.path ?? "unknown path").join("; "), 500)}`;
+  } else if (kind === "permissions") {
+    const permissions = compactOneLine(JSON.stringify(details.permissions ?? {}), 700);
+    action = `Grant requested permissions: ${permissions}`;
+    scope = `Requested permission subset: ${permissions}`;
+  } else {
+    action = details.humanText ? compactOneLine(details.humanText, 700) : null;
+  }
+
+  const why = typeof pendingApproval.reason === "string" && pendingApproval.reason.trim()
+    ? compactOneLine(pendingApproval.reason, 700)
+    : labels.genericWhy;
+  const risk = riskReference?.risk ?? "unknown";
+  const supported = new Set([
+    "item/commandExecution/requestApproval",
+    "item/fileChange/requestApproval",
+    "item/permissions/requestApproval",
+  ]).has(pendingApproval.method);
+  if (!action) {
+    return {
+      kind: "in_turn_approval",
+      status: "blocked_unexplained",
+      taskId,
+      action: null,
+      scope,
+      why,
+      risk,
+      choices: [],
+      approveSupported: false,
+      rejectSupported: false,
+      failClosed: true,
+      text: `⚠️ **${labels.blocked}**\n${labels.taskId}: ${taskId}\n${labels.action}: ${labels.missing}\n${labels.scope}: ${scope}\n${labels.why}: ${why}\n${labels.risk}: ${risk}`,
+    };
+  }
+  if (!supported) {
+    return {
+      kind: "in_turn_approval",
+      status: "blocked_unsupported",
+      taskId,
+      action,
+      scope,
+      why,
+      risk,
+      choices: [],
+      approveSupported: false,
+      rejectSupported: false,
+      failClosed: true,
+      text: `⚠️ **${labels.blocked}**\n${labels.taskId}: ${taskId}\n${labels.action}: ${action}\n${labels.scope}: ${scope}\n${labels.why}: ${why}\n${labels.risk}: ${risk}\n${labels.unsupported}`,
+    };
+  }
+  return {
+    kind: "in_turn_approval",
+    status: "decision_required",
+    taskId,
+    action,
+    scope,
+    why,
+    risk,
+    choices: ["Yes", "No"],
+    approveSupported: true,
+    rejectSupported: true,
+    failClosed: false,
+    text: `⚠️ **${labels.title}**\n${labels.taskId}: ${taskId}\n${labels.action}: ${action}\n${labels.scope}: ${scope}\n${labels.why}: ${why}\n${labels.risk}: ${risk}\n👉 **${labels.reply}**`,
+  };
+}
+
 function portableShortTaskId(taskRef) {
   const digest = createHash("sha256").update(String(taskRef), "utf8").digest("hex").slice(0, 10).toUpperCase();
   return `C-${digest}`;
@@ -249,16 +354,16 @@ function portableShortTaskId(taskRef) {
 
 const PORTABLE_I18N = Object.freeze({
   en: {
-    call: "Call Codex?", task: "Task", why: "Why Codex", model: "Model", reasoning: "Reasoning effort",
-    requested: "requested", usage: "Usage", quota: "Codex quota", left: "left", reset: "reset", unavailable: "not provided", reply: "Please reply Yes or No.",
+    call: "Call Codex?", taskId: "Task ID", task: "Task", why: "Why Codex", account: "Account", model: "Model", reasoning: "Reasoning effort", status: "Status", changes: "Changes", verification: "Verification", remaining: "Remaining / blocker",
+    requested: "requested", usage: "Turn usage", quota: "Codex quota", left: "left", reset: "reset", unavailable: "not provided", reply: "Please reply Yes or No.",
   },
   zh: {
-    call: "调用 Codex？", task: "任务", why: "调用理由", model: "模型", reasoning: "推理强度",
-    requested: "请求", usage: "用量", quota: "Codex 额度", left: "剩余", reset: "重置", unavailable: "当前未提供", reply: "请直接回复 Yes 或 No。",
+    call: "调用 Codex？", taskId: "Task ID", task: "任务", why: "调用理由", account: "账户", model: "模型", reasoning: "推理强度", status: "状态", changes: "变更", verification: "验证", remaining: "剩余 / 阻塞",
+    requested: "请求", usage: "本次用量", quota: "Codex 额度", left: "剩余", reset: "重置", unavailable: "当前未提供", reply: "请直接回复 Yes 或 No。",
   },
   ja: {
-    call: "Codexを呼び出しますか？", task: "タスク", why: "Codexを使う理由", model: "モデル", reasoning: "推論強度",
-    requested: "指定", usage: "使用量", quota: "Codex 利用枠", left: "残り", reset: "リセット", unavailable: "現在は提供なし", reply: "「Yes」または「No」と返信してください。",
+    call: "Codexを呼び出しますか？", taskId: "Task ID", task: "タスク", why: "Codexを使う理由", account: "アカウント", model: "モデル", reasoning: "推論強度", status: "状態", changes: "変更", verification: "検証", remaining: "残り / ブロッカー",
+    requested: "指定", usage: "今回の使用量", quota: "Codex 利用枠", left: "残り", reset: "リセット", unavailable: "現在は提供なし", reply: "「Yes」または「No」と返信してください。",
   },
 });
 
@@ -292,22 +397,41 @@ function portableModelLabel(option) {
     : option.model;
 }
 
-function portableLocale() {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().locale || "en";
-  } catch {
-    return "en";
-  }
+function validPresentationLocale(value) {
+  const locale = typeof value === "string" && value.trim() ? value.trim() : null;
+  if (!locale) return null;
+  return /^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/.test(locale) ? locale : null;
 }
 
-function portableStrings(locale = portableLocale()) {
+function normalizePresentationLocale(value) {
+  return validPresentationLocale(value) ?? "en";
+}
+
+function hostPresentationLocale(toolContext) {
+  const meta = toolContext?._meta && typeof toolContext._meta === "object" ? toolContext._meta : null;
+  return validPresentationLocale(meta?.["openai/locale"])
+    ?? validPresentationLocale(meta?.["webplus/i18n"])
+    ?? null;
+}
+
+function resolvePresentationLocale(explicitLocale, toolContext) {
+  return validPresentationLocale(explicitLocale)
+    ?? hostPresentationLocale(toolContext)
+    ?? "en";
+}
+
+function presentationLocaleForPayload(payload) {
+  return normalizePresentationLocale(payload?.taskCard?.presentationLocale ?? payload?.presentationLocale ?? "en");
+}
+
+function portableStrings(locale = "en") {
   const normalized = String(locale || "en").toLowerCase();
   if (normalized.startsWith("zh")) return PORTABLE_I18N.zh;
   if (normalized.startsWith("ja")) return PORTABLE_I18N.ja;
   return PORTABLE_I18N.en;
 }
 
-function portableResetText(unixSeconds, locale = portableLocale()) {
+function portableResetText(unixSeconds, locale = "en") {
   if (!Number.isInteger(unixSeconds)) return "";
   try {
     return new Intl.DateTimeFormat(locale, {
@@ -323,7 +447,7 @@ function portableResetText(unixSeconds, locale = portableLocale()) {
   }
 }
 
-function portableQuotaText(window, index, locale = portableLocale()) {
+function portableQuotaText(window, index, locale = "en") {
   const strings = portableStrings(locale);
   const label = quotaWindowLabel(window, index);
   const remaining = Number.isInteger(window?.remainingPercent) ? `${window.remainingPercent}% ${strings.left}` : strings.unavailable;
@@ -331,7 +455,7 @@ function portableQuotaText(window, index, locale = portableLocale()) {
   return `${label}：**${remaining}** · ${strings.reset} ${reset || strings.unavailable}`;
 }
 
-function portableQuotaGroup(label, quota, locale = portableLocale()) {
+function portableQuotaGroup(label, quota, locale = "en") {
   const strings = portableStrings(locale);
   const windows = quotaWindows(quota);
   return [
@@ -340,8 +464,35 @@ function portableQuotaGroup(label, quota, locale = portableLocale()) {
   ];
 }
 
-function threadTotalTokens(payload) {
-  const value = payload?.resourceReceipt?.tokenUsage?.threadTotal?.totalTokens;
+const FIXED_CALL_APPROVAL_REQUIRED_FIELDS = Object.freeze([
+  "task",
+  "whyCodex",
+  "model",
+  "reasoningEffort",
+  "quota",
+  "taskId",
+  "yesNo",
+]);
+
+function fixedCallApprovalDelivery(text, { accountBound = false } = {}) {
+  const exactText = String(text ?? "");
+  return {
+    mode: "verbatim_text",
+    mustPresentVerbatim: true,
+    noProseBeforeOrAfter: true,
+    allowSummary: false,
+    allowRewrite: false,
+    allowReorder: false,
+    allowTranslation: false,
+    textSha256: createHash("sha256").update(exactText, "utf8").digest("hex"),
+    requiredFields: accountBound
+      ? [...FIXED_CALL_APPROVAL_REQUIRED_FIELDS, "account"]
+      : [...FIXED_CALL_APPROVAL_REQUIRED_FIELDS],
+  };
+}
+
+function turnTotalTokens(payload) {
+  const value = payload?.resourceReceipt?.tokenUsage?.turn?.totalTokens;
   return Number.isInteger(value) && value >= 0 ? value : null;
 }
 
@@ -363,14 +514,14 @@ const PORTABLE_PRESENTATION_I18N = Object.freeze({
   },
 });
 
-function portablePresentationStrings(locale = portableLocale()) {
+function portablePresentationStrings(locale = "en") {
   const normalized = String(locale || "en").toLowerCase();
   if (normalized.startsWith("zh")) return PORTABLE_PRESENTATION_I18N.zh;
   if (normalized.startsWith("ja")) return PORTABLE_PRESENTATION_I18N.ja;
   return PORTABLE_PRESENTATION_I18N.en;
 }
 
-function portableDurationText(durationMs, locale = portableLocale()) {
+function portableDurationText(durationMs, locale = "en") {
   const unavailable = portableStrings(locale).unavailable;
   if (!Number.isFinite(durationMs) || durationMs < 0) return unavailable;
   if (durationMs < 1_000) return `${Math.round(durationMs)} ms`;
@@ -382,23 +533,149 @@ function portableDurationText(durationMs, locale = portableLocale()) {
   return rest ? `${minutes}m ${String(rest).padStart(2, "0")}s` : `${minutes}m`;
 }
 
-function terminalPresentation(status, locale = portableLocale()) {
-  const p = portablePresentationStrings(locale);
-  if (status === "failed") return { icon: "❌", label: p.failed };
-  if (status === "interrupted") return { icon: "⏹️", label: p.stopped };
-  if (status === "rejected") return { icon: "🚫", label: p.declined };
-  if (status === "lost") return { icon: "⚠️", label: p.uncertain };
-  return { icon: "✅", label: p.completed };
+const BUSINESS_TERMINAL_STATUSES = new Set(["PASS", "PARTIAL", "BLOCKED", "FAILED", "CANCELLED"]);
+
+function normalizeBusinessTerminalStatus(value) {
+  const normalized = typeof value === "string" ? value.trim().toUpperCase() : "";
+  return BUSINESS_TERMINAL_STATUSES.has(normalized) ? normalized : null;
 }
 
-function terminalDetail(payload, status, unavailable) {
+function cleanTerminalEvidenceLine(value) {
+  return String(value ?? "")
+    .trim()
+    .replace(/^[#>\s*-]+/, "")
+    .replace(/\*\*/g, "")
+    .trim();
+}
+
+function explicitBusinessStatusFromText(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const lines = value.split(/\r?\n/).map(cleanTerminalEvidenceLine).filter(Boolean);
+  for (const line of lines) {
+    const labeled = line.match(/^(?:business\s+status|status|状态|狀態|ステータス)\s*[:：]\s*(PASS|PARTIAL|BLOCKED|FAILED|CANCELLED)\b/i);
+    if (labeled) return normalizeBusinessTerminalStatus(labeled[1]);
+  }
+  const first = lines[0] ?? "";
+  const leading = first.match(/^(PASS|PARTIAL|BLOCKED|FAILED|CANCELLED)(?:\s*[:：\-—]|$)/i);
+  return leading ? normalizeBusinessTerminalStatus(leading[1]) : null;
+}
+
+function compactTerminalEvidenceValue(value, max = 500) {
+  if (typeof value === "string") return compactOneLine(value, max) || null;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) {
+    const items = value
+      .map((item) => {
+        if (typeof item === "string" || typeof item === "number" || typeof item === "boolean") return compactOneLine(item, 180);
+        if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+        const itemPath = typeof item.path === "string" ? item.path : typeof item.file === "string" ? item.file : null;
+        const itemKind = typeof item.kind === "string" ? item.kind : typeof item.status === "string" ? item.status : null;
+        const itemSummary = typeof item.summary === "string" ? item.summary : typeof item.text === "string" ? item.text : null;
+        if (itemPath) return compactOneLine(`${itemKind ? `${itemKind} ` : ""}${itemPath}`, 180);
+        if (itemSummary) return compactOneLine(itemSummary, 180);
+        return null;
+      })
+      .filter(Boolean);
+    return items.length ? compactOneLine(items.join("; "), max) : null;
+  }
+  if (value && typeof value === "object") {
+    for (const key of ["summary", "text", "detail", "message"]) {
+      if (typeof value[key] === "string" && value[key].trim()) return compactOneLine(value[key], max);
+    }
+    for (const key of ["files", "changes", "items", "tests", "blockers", "remaining"]) {
+      const nested = compactTerminalEvidenceValue(value[key], max);
+      if (nested) return nested;
+    }
+  }
+  return null;
+}
+
+const TERMINAL_TEXT_FIELDS = Object.freeze({
+  changes: /^(?:changes?|changed\s+files?|mutation(?:\s+summary)?|变更|變更|変更)\s*[:：]\s*(.+)$/i,
+  verification: /^(?:verification|tests?|test\s+results?|acceptance(?:\s+evidence)?|验证|驗證|検証)\s*[:：]\s*(.+)$/i,
+  remaining: /^(?:remaining(?:\s*\/\s*blocker)?|blockers?|next\s+steps?|剩余(?:\s*\/\s*阻塞)?|剩餘(?:\s*\/\s*阻塞)?|阻塞|残り(?:\s*\/\s*ブロッカー)?|ブロッカー)\s*[:：]\s*(.+)$/i,
+  result: /^(?:result|summary|结果|結果)\s*[:：]\s*(.+)$/i,
+});
+
+function terminalTextField(value, field) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const pattern = TERMINAL_TEXT_FIELDS[field];
+  if (!pattern) return null;
+  for (const rawLine of value.split(/\r?\n/)) {
+    const line = cleanTerminalEvidenceLine(rawLine);
+    const match = line.match(pattern);
+    if (match?.[1]) return compactOneLine(match[1], 500) || null;
+  }
+  return null;
+}
+
+function structuredTerminalEvidence(payload) {
+  const sources = [
+    payload?.terminalEvidence,
+    payload?.resultEvidence,
+    payload?.resourceReceipt?.terminalEvidence,
+    payload?.resourceReceipt?.resultEvidence,
+  ].filter((source) => source && typeof source === "object" && !Array.isArray(source));
+
+  const pick = (keys) => {
+    for (const source of sources) {
+      for (const key of keys) {
+        const value = compactTerminalEvidenceValue(source?.[key]);
+        if (value) return value;
+      }
+    }
+    return null;
+  };
+  const status = sources
+    .map((source) => normalizeBusinessTerminalStatus(source.businessStatus ?? source.resultStatus ?? source.outcome ?? source.status))
+    .find(Boolean) ?? null;
+  return {
+    status,
+    result: pick(["result", "resultSummary", "summary"]),
+    changes: pick(["changes", "changeSummary", "mutation", "mutationSummary", "changedFiles", "filesChanged"]),
+    verification: pick(["verification", "verificationSummary", "tests", "testSummary", "acceptanceEvidence"]),
+    remaining: pick(["remaining", "remainingSummary", "blocker", "blockers", "nextSteps"]),
+  };
+}
+
+function terminalEvidence(payload, status) {
+  const structured = structuredTerminalEvidence(payload);
+  const finalText = typeof payload?.finalResult === "string" ? payload.finalResult : null;
+  const businessStatus = structured.status
+    ?? explicitBusinessStatusFromText(finalText)
+    ?? (status === "failed" ? "FAILED" : null)
+    ?? (status === "interrupted" ? "CANCELLED" : null)
+    ?? (status === "lost" ? "BLOCKED" : null);
+  return {
+    businessStatus,
+    result: structured.result ?? terminalTextField(finalText, "result"),
+    changes: structured.changes ?? terminalTextField(finalText, "changes"),
+    verification: structured.verification ?? terminalTextField(finalText, "verification"),
+    remaining: structured.remaining ?? terminalTextField(finalText, "remaining"),
+  };
+}
+
+function terminalPresentation(businessStatus, locale = "en") {
+  const p = portablePresentationStrings(locale);
+  if (businessStatus === "PASS") return { icon: "✅", label: p.completed };
+  if (businessStatus === "FAILED") return { icon: "❌", label: p.failed };
+  if (businessStatus === "CANCELLED") return { icon: "⏹️", label: p.stopped };
+  if (businessStatus === "PARTIAL" || businessStatus === "BLOCKED") return { icon: "⚠️", label: businessStatus };
+  return { icon: "⚠️", label: p.uncertain };
+}
+
+function terminalDetail(payload, status, unavailable, evidence = terminalEvidence(payload, status)) {
+  if (evidence?.result) return evidence.result;
+  if (typeof payload?.portableTerminalDetail === "string" && payload.portableTerminalDetail) {
+    return payload.portableTerminalDetail;
+  }
   const raw = status === "failed" || status === "lost"
     ? payload?.latestError ?? payload?.finalResult
     : payload?.finalResult ?? payload?.latestError;
   return compactOneLine(raw ?? unavailable, 500) || unavailable;
 }
 
-function manualFallback(payload) {
+function chatPresentation(payload) {
   if (payload?.suppressManualFallback === true) return null;
   const status = payload?.status ?? "unknown";
   // There is no text "running card" and no in-turn fallback card. Once Codex
@@ -406,7 +683,7 @@ function manualFallback(payload) {
   // resolved by the caller after applying the Profile instruction. Text
   // fallback is reserved for the initial Call Codex decision and terminal receipt.
   if (status === "running" || status === "awaitingApproval") return null;
-  const locale = portableLocale();
+  const locale = presentationLocaleForPayload(payload);
   const strings = portableStrings(locale);
   const presentation = portablePresentationStrings(locale);
   const beforeQuota = payload?.meteredConsent?.quota ?? payload?.taskCard?.quota ?? null;
@@ -417,7 +694,8 @@ function manualFallback(payload) {
     ? windows.map((window, index) => portableQuotaText(window, index, locale))
     : [strings.unavailable];
   const shortTaskId = payload?.shortTaskId ?? payload?.taskCard?.shortTaskId ?? null;
-  const task = compactOneLine(payload?.taskCard?.summary ?? "Codex task");
+  const displayTaskId = shortTaskId ?? payload?.taskId ?? payload?.taskCard?.taskId ?? payload?.taskRef ?? null;
+  const task = boundedPortableBody(payload?.portableTaskBody ?? payload?.taskCard?.summary ?? "Codex task", "Codex task");
 
   const selection = payload?.taskCard?.modelSelection && typeof payload.taskCard.modelSelection === "object"
     ? payload.taskCard.modelSelection
@@ -446,41 +724,51 @@ function manualFallback(payload) {
     let choices = [];
     if (status === "consent_required") {
       choices = ["Yes", "No"];
+      const why = typeof payload?.taskCard?.invocationRationale === "string" && payload.taskCard.invocationRationale
+        ? compactOneLine(payload.taskCard.invocationRationale, 500)
+        : strings.unavailable;
       lines = [
         `⚠️ **${strings.call}**`,
-        "",
         `${strings.task}：${task}`,
+        `${strings.why}：${why}`,
+        `${strings.model}：${model ?? strings.unavailable}`,
+        `${strings.reasoning}：${effort ?? strings.unavailable}`,
+        `**${strings.quota}**`,
+        ...portableQuotaLines,
+        `${strings.taskId}：${displayTaskId ?? strings.unavailable}`,
+        `👉 **${strings.reply}**`,
       ];
-      if (typeof payload?.taskCard?.invocationRationale === "string" && payload.taskCard.invocationRationale) {
-        lines.push(`${strings.why}：${compactOneLine(payload.taskCard.invocationRationale, 500)}`);
+      if (typeof payload?.taskCard?.account === "string" && payload.taskCard.account) {
+        lines.splice(3, 0, `${strings.account ?? "Account"}：${compactOneLine(payload.taskCard.account, 80)}`);
       }
-      lines.push(`${strings.model}：${model ?? strings.unavailable}`);
-      lines.push(`${strings.reasoning}：${effort ?? strings.unavailable}`);
-      lines.push("", `**${strings.quota}**`, ...portableQuotaLines, "", `👉 **${strings.reply}**`);
     } else if (isTerminalStatus(status)) {
-      const terminal = terminalPresentation(status, locale);
-      const detail = terminalDetail(payload, status, strings.unavailable);
-      const cumulativeTokens = threadTotalTokens(payload);
+      const evidence = terminalEvidence(payload, status);
+      const businessStatus = evidence.businessStatus ?? strings.unavailable;
+      const terminal = terminalPresentation(businessStatus, locale);
+      const detail = terminalDetail(payload, status, strings.unavailable, evidence);
+      const turnTokens = turnTotalTokens(payload);
       const terminalResolvedModel = typeof payload?.execution?.resolvedModel === "string" && payload.execution.resolvedModel
         ? compactOneLine(payload.execution.resolvedModel)
         : strings.unavailable;
       const terminalEffort = typeof payload?.execution?.reasoningEffort === "string" && payload.execution.reasoningEffort
         ? compactOneLine(payload.execution.reasoningEffort)
         : strings.unavailable;
-      const detailLabel = status === "failed" || status === "lost" ? presentation.error : presentation.result;
+      const detailLabel = businessStatus === "FAILED" ? presentation.error : presentation.result;
       lines = [
-        `${terminal.icon} **Codex · ${terminal.label}**`,
-        "",
+        `${terminal.icon} **Codex · Result**`,
         `${strings.task}：${task}`,
-        `${detailLabel}：${detail}`,
+        ...(typeof payload?.taskCard?.account === "string" && payload.taskCard.account ? [`${strings.account ?? "Account"}：${compactOneLine(payload.taskCard.account, 80)}`] : []),
+        `${strings.status}：${businessStatus}`,
+        `${strings.model} / ${strings.reasoning}：${terminalResolvedModel} / ${terminalEffort}`,
         `${presentation.duration}：${portableDurationText(payload?.timing?.durationMs, locale)}`,
-        `${strings.model}：${terminalResolvedModel}`,
-        `${strings.reasoning}：${terminalEffort}`,
-        `${strings.usage}：${cumulativeTokens !== null ? `${cumulativeTokens.toLocaleString()} tokens` : strings.unavailable}`,
-        "",
+        `${detailLabel}：${detail}`,
+        `${strings.changes}：${evidence.changes ?? strings.unavailable}`,
+        `${strings.verification}：${evidence.verification ?? strings.unavailable}`,
+        `${strings.remaining}：${evidence.remaining ?? ((businessStatus === "BLOCKED" || businessStatus === "FAILED") ? detail : strings.unavailable)}`,
+        `${strings.usage}：${turnTokens !== null ? `${turnTokens.toLocaleString()} tokens` : strings.unavailable}`,
         ...portableQuotaGroup(`${strings.quota} · ${presentation.before}`, beforeQuota, locale),
-        "",
         ...portableQuotaGroup(`${strings.quota} · ${presentation.after}`, afterQuota, locale),
+        `${strings.taskId}：${displayTaskId ?? strings.unavailable}`,
       ];
     } else {
       lines = [`**Codex · ${portableStatus}**`, `${strings.task}：${task}`];
@@ -488,9 +776,11 @@ function manualFallback(payload) {
       if (effort) lines.push(`${strings.reasoning}：${effort}`);
       if (beforeQuota) lines.push("", ...portableQuotaGroup(strings.quota, beforeQuota, locale));
     }
+    const text = lines.join("\n");
     return {
-      kind: "portable_card",
-      portable: true,
+      kind: status === "consent_required" ? "call_approval" : "codex_result",
+      mustPresentToUser: status === "consent_required" || isTerminalStatus(status),
+      blocking: status === "consent_required",
       taskId: shortTaskId,
       status: portableStatus,
       task,
@@ -502,14 +792,21 @@ function manualFallback(payload) {
       },
       ...(selection ? { modelSelection: structuredClone(selection) } : {}),
       ...(status === "consent_required" ? {
+        delivery: fixedCallApprovalDelivery(text, { accountBound: typeof payload?.taskCard?.account === "string" && Boolean(payload.taskCard.account) }),
+        binding: {
+          exactTaskId: shortTaskId,
+          approveTool: "codex.agent_commit",
+          declineTool: "codex.agent_decline",
+          singleConsume: true,
+        },
         rebind: {
           mode: "natural_language_reprepare",
           requiresNewRequestId: true,
-          instruction: "If the user changes model or reasoning effort before approval, do not commit this task. Prepare the same logical task again with the requested selection and a fresh requestId, present the new confirmation, and bind Yes only to the newly presented taskId.",
+          instruction: "If the user changes account, model, or reasoning effort before approval, do not commit this task. Prepare the same logical task again with the requested selection and a fresh requestId, present the new confirmation, and bind Yes only to the newly presented taskId.",
         },
       } : {}),
       lines,
-      text: lines.join("\n"),
+      text,
     };
   }
 
@@ -517,7 +814,9 @@ function manualFallback(payload) {
     const lines = [
       `⚠️ **${strings.call}**`,
       "",
+      `${strings.taskId}：${displayTaskId ?? strings.unavailable}`,
       `${strings.task}：${task}`,
+      ...(typeof payload?.taskCard?.account === "string" && payload.taskCard.account ? [`${strings.account ?? "Account"}：${compactOneLine(payload.taskCard.account, 80)}`] : []),
       `${strings.model}：${model ?? strings.unavailable}`,
       `${strings.reasoning}：${effort ?? strings.unavailable}`,
       "",
@@ -525,42 +824,61 @@ function manualFallback(payload) {
       "",
       `👉 **${strings.reply}**`,
     ];
+    const text = lines.join("\n");
     return {
       kind: "confirm_metered",
       mustPresentToUser: true,
+      taskId: displayTaskId,
       choices: ["Yes", "No"],
       summary: task,
       quota: { windows },
+      delivery: fixedCallApprovalDelivery(text, { accountBound: typeof payload?.taskCard?.account === "string" && Boolean(payload.taskCard.account) }),
+      binding: {
+        exactTaskId: displayTaskId,
+        approveTool: "codex.agent_commit",
+        declineTool: "codex.agent_decline",
+        singleConsume: true,
+      },
+      rebind: {
+        mode: "natural_language_reprepare",
+        requiresNewRequestId: true,
+        instruction: "If task, model, reasoning effort, cwd, or other bound call meaning changes before approval, prepare a fresh task with a fresh requestId and present its new Task ID before accepting Yes.",
+      },
       lines,
-      text: lines.join("\n"),
+      text,
     };
   }
 
   if (isTerminalStatus(status)) {
-    const terminal = terminalPresentation(status, locale);
-    const detail = terminalDetail(payload, status, strings.unavailable);
-    const cumulativeTokens = threadTotalTokens(payload);
+    const evidence = terminalEvidence(payload, status);
+    const businessStatus = evidence.businessStatus ?? strings.unavailable;
+    const terminal = terminalPresentation(businessStatus, locale);
+    const detail = terminalDetail(payload, status, strings.unavailable, evidence);
+    const turnTokens = turnTotalTokens(payload);
     const terminalResolvedModel = typeof payload?.execution?.resolvedModel === "string" && payload.execution.resolvedModel
       ? compactOneLine(payload.execution.resolvedModel)
       : strings.unavailable;
     const terminalEffort = typeof payload?.execution?.reasoningEffort === "string" && payload.execution.reasoningEffort
       ? compactOneLine(payload.execution.reasoningEffort)
       : strings.unavailable;
-    const detailLabel = status === "failed" || status === "lost" ? presentation.error : presentation.result;
+    const detailLabel = businessStatus === "FAILED" ? presentation.error : presentation.result;
     const beforeLines = quotaWindows(beforeQuota);
     const afterLines = quotaWindows(afterQuota);
     const lines = [
-      `${terminal.icon} **Codex · ${terminal.label}**`,
+      `${terminal.icon} **Codex · Result**`,
       `${strings.task}：${task}`,
-      `${detailLabel}：${detail}`,
+      ...(typeof payload?.taskCard?.account === "string" && payload.taskCard.account ? [`${strings.account ?? "Account"}：${compactOneLine(payload.taskCard.account, 80)}`] : []),
+      `${strings.status}：${businessStatus}`,
+      `${strings.model} / ${strings.reasoning}：${terminalResolvedModel} / ${terminalEffort}`,
       `${presentation.duration}：${portableDurationText(payload?.timing?.durationMs, locale)}`,
-      `${strings.model}：${terminalResolvedModel}`,
-      `${strings.reasoning}：${terminalEffort}`,
-      `${strings.usage}：${cumulativeTokens !== null ? `${cumulativeTokens.toLocaleString()} tokens` : strings.unavailable}`,
-      "",
+      `${detailLabel}：${detail}`,
+      `${strings.changes}：${evidence.changes ?? strings.unavailable}`,
+      `${strings.verification}：${evidence.verification ?? strings.unavailable}`,
+      `${strings.remaining}：${evidence.remaining ?? ((businessStatus === "BLOCKED" || businessStatus === "FAILED") ? detail : strings.unavailable)}`,
+      `${strings.usage}：${turnTokens !== null ? `${turnTokens.toLocaleString()} tokens` : strings.unavailable}`,
       ...portableQuotaGroup(`${strings.quota} · ${presentation.before}`, beforeQuota, locale),
-      "",
       ...portableQuotaGroup(`${strings.quota} · ${presentation.after}`, afterQuota, locale),
+      `${strings.taskId}：${displayTaskId ?? strings.unavailable}`,
     ];
     return {
       kind: "completion",
@@ -577,13 +895,21 @@ function manualFallback(payload) {
   return null;
 }
 
-function publicAgentSnapshot(snapshot, taskCard = null, { suppressManualFallback = false } = {}) {
+function publicAgentSnapshot(snapshot, taskCard = null, { suppressManualFallback = false, portableTaskBody = null } = {}) {
   const pendingApproval = publicPendingApproval(snapshot?.pendingApproval);
   const riskReference = pendingApproval ? approvalRiskReference(pendingApproval, taskCard) : null;
+  const taskRef = taskCard?.taskRef ?? snapshot?.taskRef ?? null;
+  const shortTaskId = taskCard?.shortTaskId ?? snapshot?.shortTaskId ?? null;
+  const taskId = taskCard?.taskId ?? shortTaskId ?? snapshot?.taskId ?? taskRef ?? null;
+  const publicStatus = snapshot?.status === "idle" ? "completed" : snapshot?.status ?? "unknown";
   const payload = {
+    taskRef,
+    taskId,
+    shortTaskId,
     agentRef: snapshot?.agentRef ?? null,
+    account: typeof snapshot?.account === "string" ? snapshot.account : taskCard?.account ?? null,
     turnId: snapshot?.turnId ?? null,
-    status: snapshot?.status ?? "unknown",
+    status: publicStatus,
     canSend: snapshot?.canSend === true,
     pendingApproval,
     finalResult: snapshot?.finalResult ?? null,
@@ -596,16 +922,35 @@ function publicAgentSnapshot(snapshot, taskCard = null, { suppressManualFallback
     nextSeq: Number.isInteger(snapshot?.nextSeq) ? snapshot.nextSeq : 0,
   };
   if (taskCard) payload.taskCard = taskCard;
+  const projectedTerminalEvidence = structuredTerminalEvidence(snapshot);
+  if (projectedTerminalEvidence.status || projectedTerminalEvidence.result || projectedTerminalEvidence.changes || projectedTerminalEvidence.verification || projectedTerminalEvidence.remaining) {
+    payload.terminalEvidence = projectedTerminalEvidence;
+  }
+  if (typeof portableTaskBody === "string" && portableTaskBody) payload.portableTaskBody = portableTaskBody;
+  if (isTerminalStatus(publicStatus)) {
+    const rawTerminalDetail = publicStatus === "failed" || publicStatus === "lost"
+      ? payload.latestError ?? payload.finalResult
+      : payload.finalResult ?? payload.latestError;
+    if (rawTerminalDetail !== null && rawTerminalDetail !== undefined) {
+      payload.portableTerminalDetail = boundedPortableBody(rawTerminalDetail);
+    }
+  }
+  const supervision = supervisionFor(publicStatus, payload.agentRef, pendingApproval);
+  payload.supervisionRequired = supervision.supervisionRequired;
+  payload.nextAction = supervision.nextAction;
   if (riskReference) payload.approvalRiskReference = riskReference;
+  if (pendingApproval) payload.approvalPresentation = inTurnApprovalPresentation(pendingApproval, riskReference, taskCard);
   if (typeof snapshot?.duplicate === "boolean") payload.duplicate = snapshot.duplicate;
   if (typeof snapshot?.controlAcceptance === "string") payload.controlAcceptance = snapshot.controlAcceptance;
   if (suppressManualFallback) payload.suppressManualFallback = true;
-  const fallback = suppressManualFallback ? null : manualFallback(payload);
-  if (fallback) payload.manualFallback = fallback;
+  const presentation = suppressManualFallback ? null : chatPresentation(payload);
+  if (presentation) payload.chatPresentation = presentation;
+  delete payload.portableTaskBody;
+  delete payload.portableTerminalDetail;
   return payload;
 }
 
-function consentRequiredSnapshot({ agentRef = null, consent, taskCard = null }) {
+function consentRequiredSnapshot({ agentRef = null, consent, taskCard = null, portableTaskBody = null }) {
   const payload = {
     agentRef,
     status: "consent_required",
@@ -618,40 +963,185 @@ function consentRequiredSnapshot({ agentRef = null, consent, taskCard = null }) 
     latestError: null,
     events: [],
     nextSeq: 0,
+    supervisionRequired: false,
+    nextAction: { kind: "await_call_approval" },
   };
-  payload.manualFallback = manualFallback(payload);
+  if (typeof portableTaskBody === "string" && portableTaskBody) payload.portableTaskBody = portableTaskBody;
+  payload.chatPresentation = chatPresentation(payload);
+  delete payload.portableTaskBody;
   return payload;
 }
 
-const TASK_STORE_VERSION = 1;
+const TASK_STORE_VERSION = 2;
 const DEFAULT_TASK_STORE_TTL_MS = 14 * 24 * 60 * 60_000;
 const DEFAULT_TASK_STORE_MAX_ENTRIES = 2_000;
+const DEFAULT_TASK_STORE_MAX_REQUEST_TOMBSTONES = 100_000;
 
-function createTaskPersistence({ filePath = null, ttlMs = DEFAULT_TASK_STORE_TTL_MS, maxEntries = DEFAULT_TASK_STORE_MAX_ENTRIES } = {}) {
+function createTaskPersistence({
+  filePath = null,
+  ttlMs = DEFAULT_TASK_STORE_TTL_MS,
+  maxEntries = DEFAULT_TASK_STORE_MAX_ENTRIES,
+  maxRequestTombstones = DEFAULT_TASK_STORE_MAX_REQUEST_TOMBSTONES,
+} = {}) {
   if (!filePath) return null;
   if (!Number.isInteger(ttlMs) || ttlMs < 60_000) throw new Error("agent task-state ttlMs must be at least 60000");
   if (!Number.isInteger(maxEntries) || maxEntries < 10 || maxEntries > 100_000) throw new Error("agent task-state maxEntries must be 10..100000");
-  const resolvedPath = path.resolve(filePath);
+  if (!Number.isInteger(maxRequestTombstones) || maxRequestTombstones < 10 || maxRequestTombstones > 1_000_000) {
+    throw new Error("agent task-state maxRequestTombstones must be 10..1000000");
+  }
+  const configuredPath = path.resolve(filePath);
+  const resolvedPath = configuredPath + ".v2";
+  const legacyRetiredPath = configuredPath + ".v1-retired";
+  const lockPath = resolvedPath + ".lock";
   const records = new Map();
+  const requestTombstones = new Map();
+  const lockWait = new Int32Array(new SharedArrayBuffer(4));
   let blockedError = null;
 
-  if (existsSync(resolvedPath)) {
-    try {
-      const parsed = JSON.parse(readFileSync(resolvedPath, "utf8"));
-      if (parsed?.version !== TASK_STORE_VERSION || !Array.isArray(parsed.records)) {
-        throw new Error(`unsupported task-state schema version ${String(parsed?.version ?? "missing")}`);
-      }
-      for (const entry of parsed.records) {
-        if (!entry || typeof entry !== "object" || typeof entry.taskRef !== "string") continue;
-        records.set(entry.taskRef, entry);
-      }
-    } catch (error) {
-      blockedError = `agent task-state file is unreadable or corrupt: ${error instanceof Error ? error.message : String(error)}`;
-    }
+  function persistenceError(code, message) {
+    return Object.assign(new Error(message), { code });
   }
 
   function assertAvailable() {
-    if (blockedError) throw new Error(blockedError);
+    if (blockedError) throw persistenceError("CODEX_TASK_STATE_UNSAFE", blockedError);
+  }
+
+  function tombstoneCapacityError() {
+    return persistenceError(
+      "CODEX_REQUEST_TOMBSTONE_CAPACITY",
+      "agent task-state request tombstone capacity reached; new persisted work is blocked without forgetting replay bindings"
+    );
+  }
+
+  function compatibleTombstone(current, next) {
+    return current.action === next.action
+      && (current.subjectRef ?? null) === (next.subjectRef ?? null)
+      && (!current.callerIntentHash || !next.callerIntentHash || current.callerIntentHash === next.callerIntentHash)
+      && (!current.payloadHash || !next.payloadHash || current.payloadHash === next.payloadHash);
+  }
+
+  function rememberRequestTombstone(entry) {
+    const requestId = typeof entry?.requestId === "string" && entry.requestId ? entry.requestId : null;
+    if (!requestId) return;
+    const next = {
+      requestId,
+      action: typeof entry?.action === "string" ? entry.action : null,
+      subjectRef: entry?.subjectRef ?? null,
+      callerIntentHash: typeof entry?.callerIntentHash === "string" ? entry.callerIntentHash : null,
+      payloadHash: typeof entry?.payloadHash === "string" ? entry.payloadHash : null,
+      taskRef: typeof entry?.taskRef === "string" ? entry.taskRef : null,
+      firstSeenAt: Number.isFinite(entry?.firstSeenAt) ? entry.firstSeenAt : (Number.isFinite(entry?.updatedAt) ? entry.updatedAt : Date.now()),
+    };
+    const current = requestTombstones.get(requestId);
+    if (current) {
+      if (!compatibleTombstone(current, next)) throw persistenceError("CODEX_REQUEST_CONFLICT", "requestId tombstone conflicts with persisted task state");
+      requestTombstones.set(requestId, {
+        ...current,
+        callerIntentHash: current.callerIntentHash ?? next.callerIntentHash,
+        payloadHash: current.payloadHash ?? next.payloadHash,
+        taskRef: current.taskRef ?? next.taskRef,
+      });
+      return;
+    }
+    if (requestTombstones.size >= maxRequestTombstones) throw tombstoneCapacityError();
+    requestTombstones.set(requestId, next);
+  }
+
+  function loadStoreObject(parsed, { allowLegacy = false } = {}) {
+    const supportedVersion = parsed?.version === TASK_STORE_VERSION || (allowLegacy && parsed?.version === 1);
+    if (!supportedVersion || !Array.isArray(parsed.records)) throw new Error("unsupported task-state schema");
+    for (const entry of parsed.records) {
+      if (!entry || typeof entry !== "object" || typeof entry.taskRef !== "string") continue;
+      records.set(entry.taskRef, entry);
+      rememberRequestTombstone(entry);
+    }
+    if (parsed.requestTombstones !== undefined && !Array.isArray(parsed.requestTombstones)) {
+      throw new Error("invalid request tombstone store");
+    }
+    for (const tombstone of parsed.requestTombstones ?? []) rememberRequestTombstone(tombstone);
+  }
+
+  function assertWriterFence() {
+    try {
+      if (!lstatSync(configuredPath).isDirectory()) throw new Error("writer fence is not a directory");
+    } catch {
+      blockedError = "agent task-state writer fence is missing or unsafe; incompatible runtime activation is blocked";
+      assertAvailable();
+    }
+  }
+
+  function migrateLegacyStore(sourcePath) {
+    records.clear();
+    requestTombstones.clear();
+    try {
+      const parsed = JSON.parse(readFileSync(sourcePath, "utf8"));
+      loadStoreObject(parsed, { allowLegacy: true });
+      flushUnlocked();
+      unlinkSync(sourcePath);
+    } catch {
+      records.clear();
+      requestTombstones.clear();
+      blockedError = "agent task-state legacy migration could not be completed safely; incompatible runtime activation is blocked";
+    }
+  }
+
+  function ensureWriterFence() {
+    mkdirSync(path.dirname(configuredPath), { recursive: true });
+    const v2Exists = existsSync(resolvedPath);
+    if (v2Exists) {
+      if (existsSync(legacyRetiredPath)) {
+        blockedError = "agent task-state legacy migration has conflicting recovery evidence";
+        return;
+      }
+      if (!existsSync(configuredPath)) {
+        try { mkdirSync(configuredPath, { mode: 0o700 }); }
+        catch { blockedError = "agent task-state writer fence could not be established safely"; return; }
+      }
+      try {
+        if (!lstatSync(configuredPath).isDirectory()) throw new Error("unsafe fence");
+      } catch { blockedError = "agent task-state writer fence is missing or unsafe; incompatible runtime activation is blocked"; }
+      return;
+    }
+
+    let migrationSource = null;
+    if (existsSync(configuredPath)) {
+      try {
+        if (lstatSync(configuredPath).isDirectory()) {
+          if (existsSync(legacyRetiredPath)) migrationSource = legacyRetiredPath;
+        } else {
+          if (existsSync(legacyRetiredPath)) {
+            blockedError = "agent task-state legacy migration has conflicting recovery evidence";
+            return;
+          }
+          renameSync(configuredPath, legacyRetiredPath);
+          try { mkdirSync(configuredPath, { mode: 0o700 }); }
+          catch { blockedError = "agent task-state writer fence could not be established safely"; return; }
+          migrationSource = legacyRetiredPath;
+        }
+      } catch {
+        blockedError = "agent task-state legacy migration could not establish an exclusive writer fence";
+        return;
+      }
+    } else {
+      try { mkdirSync(configuredPath, { mode: 0o700 }); }
+      catch { blockedError = "agent task-state writer fence could not be established safely"; return; }
+      if (existsSync(legacyRetiredPath)) migrationSource = legacyRetiredPath;
+    }
+    if (migrationSource) migrateLegacyStore(migrationSource);
+  }
+
+  function loadFromDisk() {
+    records.clear();
+    requestTombstones.clear();
+    if (!existsSync(resolvedPath)) return;
+    try {
+      const parsed = JSON.parse(readFileSync(resolvedPath, "utf8"));
+      loadStoreObject(parsed);
+    } catch {
+      records.clear();
+      requestTombstones.clear();
+      blockedError = "agent task-state file is unreadable or corrupt; its contents are not exposed";
+    }
   }
 
   function trim(now = Date.now()) {
@@ -664,40 +1154,118 @@ function createTaskPersistence({ filePath = null, ttlMs = DEFAULT_TASK_STORE_TTL
     for (let index = 0; index < oldest.length - maxEntries; index += 1) records.delete(oldest[index][0]);
   }
 
-  function flush() {
+  function acquireLock() {
+    mkdirSync(path.dirname(resolvedPath), { recursive: true });
+    const deadline = Date.now() + 2_000;
+    while (true) {
+      try {
+        const fd = openSync(lockPath, "wx", 0o600);
+        try {
+          writeFileSync(fd, JSON.stringify({ version: 1, pid: process.pid, createdAt: Date.now() }), { encoding: "utf8" });
+        } catch (error) {
+          try { closeSync(fd); } catch {}
+          try { unlinkSync(lockPath); } catch {}
+          throw error;
+        }
+        return () => {
+          try { closeSync(fd); } finally {
+            try { unlinkSync(lockPath); } catch {}
+          }
+        };
+      } catch (error) {
+        if (error?.code !== "EEXIST") {
+          throw persistenceError("CODEX_TASK_STATE_LOCK_FAILED", "agent task-state lock could not be acquired safely");
+        }
+        if (Date.now() >= deadline) {
+          throw persistenceError("CODEX_TASK_STATE_LOCKED", "agent task-state is locked by another runtime; new persisted work is blocked");
+        }
+        Atomics.wait(lockWait, 0, 0, 10);
+      }
+    }
+  }
+
+  function syncFromDisk() {
+    assertWriterFence();
+    loadFromDisk();
+    assertAvailable();
+    trim();
+  }
+
+  function flushUnlocked() {
     assertAvailable();
     trim();
     mkdirSync(path.dirname(resolvedPath), { recursive: true });
-    const tmp = `${resolvedPath}.tmp-${randomUUID()}`;
-    writeFileSync(tmp, JSON.stringify({ version: TASK_STORE_VERSION, records: [...records.values()] }), { encoding: "utf8", mode: 0o600 });
-    renameSync(tmp, resolvedPath);
+    const tmp = resolvedPath + ".tmp-" + randomUUID();
+    try {
+      writeFileSync(tmp, JSON.stringify({
+        version: TASK_STORE_VERSION,
+        records: [...records.values()],
+        requestTombstones: [...requestTombstones.values()],
+      }), { encoding: "utf8", mode: 0o600 });
+      renameSync(tmp, resolvedPath);
+    } catch (error) {
+      try { unlinkSync(tmp); } catch {}
+      throw error;
+    }
   }
 
+  // Startup migration is a writer too. Serialize the entire fence/migration
+  // decision with ordinary puts so a late migrator cannot replace newer v2 IDs.
+  let releaseStartupLock;
+  try {
+    releaseStartupLock = acquireLock();
+    ensureWriterFence();
+    if (!blockedError) loadFromDisk();
+  } catch {
+    blockedError = "agent task-state startup could not acquire or initialize its writer lock safely";
+  } finally { releaseStartupLock?.(); }
   trim();
   return {
     filePath: resolvedPath,
     get(taskRef) {
-      assertAvailable();
-      trim();
+      syncFromDisk();
       const entry = records.get(taskRef);
       return entry ? structuredClone(entry) : null;
     },
     findByRequest({ requestId, action, agentRef = null }) {
-      assertAvailable();
-      trim();
+      syncFromDisk();
       let found = null;
       for (const entry of records.values()) {
-        if (entry?.requestId !== requestId || entry?.action !== action) continue;
-        if ((entry?.subjectRef ?? null) !== agentRef) continue;
+        if (entry?.requestId !== requestId) continue;
+        if (entry?.action !== action || (entry?.subjectRef ?? null) !== agentRef) {
+          throw persistenceError("CODEX_REQUEST_CONFLICT", "requestId was already persisted for a different Codex action or target");
+        }
         if (!found || (entry.updatedAt ?? 0) > (found.updatedAt ?? 0)) found = entry;
       }
-      return found ? structuredClone(found) : null;
+      if (found) return structuredClone(found);
+      const tombstone = requestTombstones.get(requestId);
+      if (!tombstone) return null;
+      if (tombstone.action !== action || (tombstone.subjectRef ?? null) !== agentRef) {
+        throw persistenceError("CODEX_REQUEST_CONFLICT", "requestId was already persisted for a different Codex action or target");
+      }
+      return { ...structuredClone(tombstone), tombstone: true };
     },
     put(entry) {
       assertAvailable();
       if (!entry || typeof entry.taskRef !== "string" || !entry.taskRef) throw new Error("persisted agent task entry requires taskRef");
-      records.set(entry.taskRef, { ...structuredClone(entry), updatedAt: Date.now() });
-      flush();
+      const releaseLock = acquireLock();
+      try {
+        syncFromDisk();
+        const persisted = { ...structuredClone(entry), updatedAt: Date.now() };
+        const requestId = typeof persisted.requestId === "string" && persisted.requestId ? persisted.requestId : null;
+        const current = requestId ? requestTombstones.get(requestId) : null;
+        if (current && current.taskRef !== persisted.taskRef) {
+          if (!compatibleTombstone(current, persisted)) {
+            throw persistenceError("CODEX_REQUEST_CONFLICT", "requestId was already persisted for a different Codex action or target");
+          }
+          throw persistenceError("CODEX_REQUEST_ALREADY_PERSISTED", "requestId is already durably bound to another prepared task; duplicate dispatch is blocked");
+        }
+        rememberRequestTombstone(persisted);
+        records.set(entry.taskRef, persisted);
+        flushUnlocked();
+      } finally {
+        releaseLock();
+      }
     },
   };
 }
@@ -708,13 +1276,25 @@ export function createAgentPreviewState({
   taskStateFile = null,
   taskStateTtlMs = DEFAULT_TASK_STORE_TTL_MS,
   taskStateMaxEntries = DEFAULT_TASK_STORE_MAX_ENTRIES,
+  taskStateMaxRequestTombstones = DEFAULT_TASK_STORE_MAX_REQUEST_TOMBSTONES,
+  maxLiveTasks = 1_000,
 } = {}) {
+  if (!Number.isInteger(maxLiveTasks) || maxLiveTasks < 1 || maxLiveTasks > 10_000) {
+    throw new Error("agent maxLiveTasks must be 1..10000");
+  }
   return {
+    maxLiveTasks,
+    preparations: new Map(),
     meteredConsent: new MeteredConsentGate({ mode: meteredConsentMode, quotaProvider: meteredQuotaProvider }),
     preparedMetered: new Map(),
     agentCards: new Map(),
     taskRecords: new Map(),
-    taskPersistence: createTaskPersistence({ filePath: taskStateFile, ttlMs: taskStateTtlMs, maxEntries: taskStateMaxEntries }),
+    taskPersistence: createTaskPersistence({
+      filePath: taskStateFile,
+      ttlMs: taskStateTtlMs,
+      maxEntries: taskStateMaxEntries,
+      maxRequestTombstones: taskStateMaxRequestTombstones,
+    }),
   };
 }
 
@@ -730,6 +1310,37 @@ function terminalLabel(status) {
   return "DONE";
 }
 
+function supervisionFor(status, agentRef, pendingApproval = null) {
+  if (status === "running") {
+    return {
+      supervisionRequired: true,
+      nextAction: { kind: "recheck_agent", tool: "codex.agent_show", agentRef: agentRef ?? null },
+    };
+  }
+  if (status === "awaitingApproval" || pendingApproval) {
+    return {
+      supervisionRequired: true,
+      nextAction: {
+        kind: "resolve_pending_approval",
+        agentRef: agentRef ?? null,
+        approvalRequestId: pendingApproval?.requestId ?? null,
+      },
+    };
+  }
+  if (isTerminalStatus(status)) {
+    const kind = status === "lost"
+      ? "resolve_uncertain_terminal"
+      : status === "completed" || status === "idle"
+        ? "verify_and_integrate"
+        : "review_terminal_failure";
+    return { supervisionRequired: false, nextAction: { kind } };
+  }
+  return {
+    supervisionRequired: false,
+    nextAction: { kind: "inspect_agent_state", agentRef: agentRef ?? null },
+  };
+}
+
 export function registerAgentPreviewTools(server, {
   agentExecutor,
   modelCatalogProvider = null,
@@ -738,6 +1349,7 @@ export function registerAgentPreviewTools(server, {
   meteredQuotaProvider = null,
   agentPreviewState = null,
   agentPortableCard = false,
+  legacyAgentCardInternals = false,
   agentReasoningEffort = false,
   codexCallProfile = false,
   codexCallProfileFile = null,
@@ -752,7 +1364,7 @@ export function registerAgentPreviewTools(server, {
   const catalogProvider = modelCatalogProvider ?? agentExecutor;
   const state = agentPreviewState ?? createAgentPreviewState({ meteredConsentMode, meteredQuotaProvider });
   const { meteredConsent, preparedMetered, agentCards, taskRecords, taskPersistence } = state;
-  registerAgentTaskCardResource(server);
+  if (legacyAgentCardInternals) registerAgentTaskCardResource(server);
   const callProfilePath = codexCallProfile
     ? path.resolve(codexCallProfileFile || defaultCodexCallProfilePath())
     : null;
@@ -814,12 +1426,51 @@ export function registerAgentPreviewTools(server, {
     return firstLine.length > 72 ? firstLine.slice(0, 69) + "..." : firstLine;
   }
 
-  async function fullModelCatalog() {
+  function taskCapacityError() {
+    return Object.assign(new Error("Codex task capacity reached; new work is blocked without forgetting existing task or replay bindings"), { code: "CODEX_TASK_CAPACITY" });
+  }
+
+  function assertNewTaskCapacity() {
+    if (taskRecords.size >= (state.maxLiveTasks ?? 1_000)) throw taskCapacityError();
+  }
+
+  async function prepareOnce({ requestId, action, payload, agentRef = null }, prepare) {
+    const intent = callerIntentHash(action, payload, agentRef);
+    const preparations = state.preparations ??= new Map();
+    const pending = preparations.get(requestId);
+    if (pending) {
+      if (pending.intent !== intent) throw new Error("requestId is already preparing a different Codex caller intent");
+      return { ...structuredClone(await pending.promise), duplicate: true };
+    }
+    const existing = [...taskRecords.values()].find((record) =>
+      (record.consent?.requestId ?? record.taskCard?.requestId) === requestId);
+    if (existing && (existing.action !== action || existing.subjectRef !== agentRef
+      || (existing.callerIntentHash && existing.callerIntentHash !== intent))) {
+      throw new Error("requestId is already bound to a different Codex caller intent or target");
+    }
+    const reserved = [...preparations.values()].filter((entry) => entry.reservesTask).length;
+    if ((!existing && taskRecords.size + reserved >= (state.maxLiveTasks ?? 1_000)) || preparations.size >= 128) {
+      throw taskCapacityError();
+    }
+    const record = { intent, reservesTask: !existing, promise: null };
+    record.promise = Promise.resolve().then(prepare);
+    preparations.set(requestId, record);
+    try { return await record.promise; }
+    finally { if (preparations.get(requestId) === record) preparations.delete(requestId); }
+  }
+
+  async function fullModelCatalog(account = null) {
+    if (account !== null && typeof catalogProvider.resolveAccountId !== "function") {
+      throw new Error("CODEX_ACCOUNT_ROUTING_UNAVAILABLE: this preparation catalog does not support explicit account selection");
+    }
+    if (account !== null && catalogProvider.resolveAccountId(account) !== account) {
+      throw new Error("CODEX_ACCOUNT_ROUTING_UNAVAILABLE: preparation catalog changed the selected account");
+    }
     const models = [];
     let cursor = null;
     const seenCursors = new Set();
     for (let page = 0; page < 20; page += 1) {
-      const result = await catalogProvider.listModels({ cursor, limit: 200, includeHidden: false });
+      const result = await catalogProvider.listModels({ account, cursor, limit: 200, includeHidden: false });
       for (const entry of Array.isArray(result?.models) ? result.models : []) {
         const option = portableModelOption(entry);
         if (option && !models.some((item) => item.model === option.model)) models.push(option);
@@ -834,8 +1485,8 @@ export function registerAgentPreviewTools(server, {
     return models;
   }
 
-  async function resolvePreparedModelSelection({ requestedModel = null, requestedReasoningEffort = null, currentModel = null, currentReasoningEffort = null } = {}) {
-    const models = await fullModelCatalog();
+  async function resolvePreparedModelSelection({ account = null, requestedModel = null, requestedReasoningEffort = null, currentModel = null, currentReasoningEffort = null } = {}) {
+    const models = await fullModelCatalog(account);
     const requested = typeof requestedModel === "string" && requestedModel.trim() ? requestedModel.trim() : null;
     const current = typeof currentModel === "string" && currentModel.trim() ? currentModel.trim() : null;
     const entry = requested
@@ -916,7 +1567,7 @@ export function registerAgentPreviewTools(server, {
       };
     }
 
-    const locale = portableLocale();
+    const locale = "en";
     const normalized = String(locale || "en").toLowerCase();
     const copy = normalized.startsWith("zh")
       ? {
@@ -996,11 +1647,15 @@ export function registerAgentPreviewTools(server, {
       message: action === "send" ? payload?.message ?? null : null,
       cwd: action === "start" ? payload?.cwd ?? null : null,
       permissionProfile: action === "start" ? payload?.permissionProfile ?? null : null,
+      permissionCeiling: action === "start" ? payload?.permissionCeiling ?? null : null,
+      authorityPolicyHash: action === "start" ? payload?.authorityPolicyHash ?? null : null,
+      account: payload?.account ?? null,
       model: hasCallerModel ? payload?.callerModel ?? null : payload?.model ?? null,
       invocationRationale: action === "start" ? payload?.invocationRationale ?? null : null,
+      presentationLocale: payload?.presentationLocale ?? null,
       callProfile: payload?.callProfile ?? null,
     };
-    // New Portable confirmations bind resolved defaults for execution but keep
+    // Prepared confirmations bind resolved defaults for execution but keep
     // caller intent as the requestId idempotency key. This lets an omitted
     // default remain stable across retries while an explicit user change still
     // requires a fresh requestId / prepared confirmation.
@@ -1016,9 +1671,11 @@ export function registerAgentPreviewTools(server, {
       prompt: action === "start" ? payload?.prompt ?? null : null,
       message: action === "send" ? payload?.message ?? null : null,
       cwd: action === "start" ? payload?.callerCwd ?? null : null,
+      account: action === "start" ? payload?.callerAccount ?? null : null,
       model: payload?.callerModel ?? null,
       reasoningEffort: payload?.callerReasoningEffort ?? null,
       invocationRationale: action === "start" ? payload?.callerInvocationRationale ?? null : null,
+      presentationLocale: payload?.presentationLocale ?? null,
     };
     return createHash("sha256").update(JSON.stringify(bound), "utf8").digest("hex");
   }
@@ -1027,17 +1684,19 @@ export function registerAgentPreviewTools(server, {
     const card = {
       kind: "codex_task",
       taskRef,
-      taskId: taskRef,
+      taskId: shortTaskId ?? taskRef,
       requestId,
       action,
       title: titleFor(action, payload),
       summary: summaryFor(action, payload),
+      account: typeof payload?.account === "string" ? payload.account : null,
       requestedModel: Object.hasOwn(payload ?? {}, "callerModel")
         ? (typeof payload?.callerModel === "string" ? payload.callerModel : null)
         : (typeof payload?.model === "string" ? payload.model : null),
       ...(typeof payload?.reasoningEffort === "string" ? { requestedReasoningEffort: payload.reasoningEffort } : {}),
       ...(payload?.modelSelection && typeof payload.modelSelection === "object" ? { modelSelection: structuredClone(payload.modelSelection) } : {}),
       ...(typeof payload?.invocationRationale === "string" ? { invocationRationale: payload.invocationRationale } : {}),
+      presentationLocale: normalizePresentationLocale(payload?.presentationLocale ?? "en"),
       cwd,
       permissionProfile,
       quota,
@@ -1048,6 +1707,7 @@ export function registerAgentPreviewTools(server, {
   }
 
   function newTaskIdentity() {
+    assertNewTaskCapacity();
     while (true) {
       const taskRef = `task_${randomUUID()}`;
       const shortTaskId = agentPortableCard ? portableShortTaskId(taskRef) : null;
@@ -1060,8 +1720,9 @@ export function registerAgentPreviewTools(server, {
     const resultSummary = compactOneLine(snapshot.resultSummary ?? snapshot.finalResult ?? snapshot.latestError ?? "", 800);
     return {
       taskRef: snapshot.taskRef ?? snapshot.taskId ?? snapshot.taskCard?.taskRef ?? null,
-      taskId: snapshot.taskRef ?? snapshot.taskId ?? snapshot.taskCard?.taskRef ?? null,
+      taskId: snapshot.taskId ?? snapshot.shortTaskId ?? snapshot.taskCard?.taskId ?? snapshot.taskRef ?? snapshot.taskCard?.taskRef ?? null,
       shortTaskId: snapshot.shortTaskId ?? snapshot.taskCard?.shortTaskId ?? null,
+      account: snapshot.account ?? snapshot.taskCard?.account ?? null,
       agentRef: snapshot.agentRef ?? null,
       turnId: snapshot.turnId ?? null,
       status: snapshot.status ?? "lost",
@@ -1072,6 +1733,7 @@ export function registerAgentPreviewTools(server, {
       finalResult: resultSummary || null,
       resultSummary: resultSummary || null,
       resourceReceipt: snapshot.resourceReceipt ? structuredClone(snapshot.resourceReceipt) : null,
+      ...(snapshot.terminalEvidence ? { terminalEvidence: structuredClone(snapshot.terminalEvidence) } : {}),
       timing: snapshot.timing ? structuredClone(snapshot.timing) : { startedAt: null, endedAt: null, durationMs: null },
       execution: snapshot.execution ? structuredClone(snapshot.execution) : { requestedModel: null, resolvedModel: null, modelProvider: null, serviceTier: null, reasoningEffort: null },
       latestError: snapshot.latestError ? compactOneLine(snapshot.latestError, 800) : null,
@@ -1106,7 +1768,8 @@ export function registerAgentPreviewTools(server, {
       record.persistenceWarning = null;
       return true;
     } catch (error) {
-      record.persistenceWarning = `Task-card persistence unavailable: ${error instanceof Error ? error.message : String(error)}`;
+      record.persistenceWarning = `Prepared-task persistence unavailable: ${error instanceof Error ? error.message : String(error)}`;
+      if (error?.code === "CODEX_REQUEST_TOMBSTONE_CAPACITY") throw error;
       return false;
     }
   }
@@ -1116,19 +1779,24 @@ export function registerAgentPreviewTools(server, {
     const persisted = taskPersistence.get(taskRef);
     if (!persisted) return null;
     if (persisted.toolError) throw new Error(persisted.toolError);
-    if (persisted.terminalSnapshot) {
+    if (persisted.terminalSnapshot && isTerminalStatus(persisted.terminalSnapshot.status)) {
       const terminal = structuredClone(persisted.terminalSnapshot);
-      if (terminal.suppressManualFallback !== true && !terminal.manualFallback) {
-        const fallback = manualFallback(terminal);
-        if (fallback) terminal.manualFallback = fallback;
+      terminal.account = terminal.account ?? terminal.taskCard?.account ?? persisted.taskCard?.account ?? null;
+      terminal.canSend = false;
+      terminal.pendingApproval = null;
+      terminal.terminal = true;
+      if (terminal.suppressManualFallback !== true && !terminal.chatPresentation) {
+        const presentation = chatPresentation(terminal);
+        if (presentation) terminal.chatPresentation = presentation;
       }
       return terminal;
     }
     const now = Date.now();
     const lost = {
       taskRef,
-      taskId: taskRef,
+      taskId: persisted.shortTaskId ?? taskRef,
       shortTaskId: persisted.shortTaskId ?? persisted.taskCard?.shortTaskId ?? null,
+      account: persisted.taskCard?.account ?? null,
       agentRef: persisted.agentRef ?? null,
       turnId: persisted.turnId ?? null,
       status: "lost",
@@ -1156,8 +1824,8 @@ export function registerAgentPreviewTools(server, {
       nextSeq: 0,
     };
     if (lost.suppressManualFallback !== true) {
-      const fallback = manualFallback(lost);
-      if (fallback) lost.manualFallback = fallback;
+      const presentation = chatPresentation(lost);
+      if (presentation) lost.chatPresentation = presentation;
     }
     try {
       taskPersistence.put({ ...persisted, phase: "terminal", terminalSnapshot: persistableSnapshot(lost) });
@@ -1165,6 +1833,13 @@ export function registerAgentPreviewTools(server, {
       // Recovery remains fail-closed even when the local history file cannot be refreshed.
     }
     return lost;
+  }
+
+  function retiredRequestError() {
+    return Object.assign(
+      new Error("requestId was already used; durable task detail expired and the original request will not be replayed"),
+      { code: "CODEX_REQUEST_REPLAY_RETIRED" }
+    );
   }
 
   async function existingRequestByCallerIntent({ requestId, action, payload, agentRef = null }) {
@@ -1187,11 +1862,14 @@ export function registerAgentPreviewTools(server, {
     }
     if (!taskPersistence) return null;
     const persisted = taskPersistence.findByRequest({ requestId, action, agentRef });
-    if (!persisted || !persisted.callerIntentHash) return null;
+    if (!persisted) return null;
+    if (persisted.tombstone === true && !persisted.callerIntentHash) throw retiredRequestError();
+    if (!persisted.callerIntentHash) return null;
     if (persisted.callerIntentHash !== expectedHash) {
       throw new Error(`requestId ${requestId} was already used for a different Codex caller intent`);
     }
     if (persisted.toolError) throw new Error(persisted.toolError);
+    if (persisted.tombstone === true) throw retiredRequestError();
     const live = taskRecords.get(persisted.taskRef);
     if (live) return preparedCardState(live);
     return recoveredTaskState(persisted.taskRef);
@@ -1205,6 +1883,7 @@ export function registerAgentPreviewTools(server, {
     if (persisted.payloadHash && persisted.payloadHash !== payloadHash) {
       throw new Error(`requestId ${requestId} was already used for a different Codex task payload`);
     }
+    if (persisted.tombstone === true) throw retiredRequestError();
     const live = taskRecords.get(persisted.taskRef);
     if (live) return preparedCardState(live);
     return recoveredTaskState(persisted.taskRef);
@@ -1216,7 +1895,7 @@ export function registerAgentPreviewTools(server, {
     const { taskRef, shortTaskId } = newTaskIdentity();
     const record = {
       taskRef,
-      taskId: taskRef,
+      taskId: shortTaskId ?? taskRef,
       shortTaskId,
       consent,
       action,
@@ -1232,11 +1911,16 @@ export function registerAgentPreviewTools(server, {
       terminalSnapshot: null,
       toolError: null,
       declinedAt: null,
+      portableTaskBody: boundedPortableBody(action === "start" ? payload?.prompt : payload?.message),
       taskCard: taskCardFor({ taskRef, shortTaskId, requestId: consent.requestId, action, payload, cwd, permissionProfile, quota: consent.quota }),
     };
+    // Persist the durable request binding before exposing a new in-memory task.
+    // Tombstone-capacity exhaustion must block new work without forgetting old IDs.
+    if (!persistRecord(record, null, "pending")) {
+      throw new Error("Codex task was not prepared because durable task state could not be recorded safely");
+    }
     preparedMetered.set(consent.consentRef, record);
     taskRecords.set(taskRef, record);
-    persistRecord(record, null, "pending");
     return record;
   }
 
@@ -1245,7 +1929,7 @@ export function registerAgentPreviewTools(server, {
     const consent = { consentRef: null, requestId, quota: null };
     const record = {
       taskRef,
-      taskId: taskRef,
+      taskId: shortTaskId ?? taskRef,
       shortTaskId,
       consent,
       action,
@@ -1261,10 +1945,14 @@ export function registerAgentPreviewTools(server, {
       terminalSnapshot: null,
       toolError: null,
       declinedAt: null,
+      portableTaskBody: boundedPortableBody(action === "start" ? payload?.prompt : payload?.message),
       taskCard: taskCardFor({ taskRef, shortTaskId, requestId, action, payload, cwd, permissionProfile, quota: null }),
     };
+    // Keep the same fail-closed ordering for direct/no-metered preparation.
+    if (!persistRecord(record, null, "pending")) {
+      throw new Error("Codex task was not prepared because durable task state could not be recorded safely");
+    }
     taskRecords.set(taskRef, record);
-    persistRecord(record, null, "pending");
     return record;
   }
 
@@ -1277,7 +1965,7 @@ export function registerAgentPreviewTools(server, {
     const frozen = {
       ...structuredClone(payload),
       taskRef: record.taskRef,
-      taskId: record.taskRef,
+      taskId: record.shortTaskId ?? record.taskRef,
       shortTaskId: record.shortTaskId ?? null,
       taskCard: structuredClone(record.taskCard),
       canSend: false,
@@ -1288,9 +1976,10 @@ export function registerAgentPreviewTools(server, {
     if (suppressTerminalFallback) {
       frozen.suppressManualFallback = true;
       delete frozen.manualFallback;
-    } else if (!frozen.manualFallback) {
-      const fallback = manualFallback(frozen);
-      if (fallback) frozen.manualFallback = fallback;
+      delete frozen.chatPresentation;
+    } else if (!frozen.chatPresentation) {
+      const presentation = chatPresentation(frozen);
+      if (presentation) frozen.chatPresentation = presentation;
     }
     frozen.resultSummary = compactOneLine(frozen.finalResult ?? frozen.latestError ?? terminalLabel(frozen.status), 600);
     record.terminalSnapshot = frozen;
@@ -1331,9 +2020,9 @@ export function registerAgentPreviewTools(server, {
       if (!record.turnId && cardForAgent(agentRef)?.taskRef === record.taskRef) record.turnId = snapshot.turnId ?? null;
       if (!record.turnId || snapshot.turnId !== record.turnId) continue;
       freezeRecord(record, {
-        ...publicAgentSnapshot(snapshot, record.taskCard),
+        ...publicAgentSnapshot(snapshot, record.taskCard, { portableTaskBody: record.portableTaskBody }),
         taskRef: record.taskRef,
-        taskId: record.taskRef,
+        taskId: record.shortTaskId ?? record.taskRef,
         shortTaskId: record.shortTaskId ?? null,
         meteredConsent: { status: "approved", quota: record.consent.quota },
       });
@@ -1344,9 +2033,9 @@ export function registerAgentPreviewTools(server, {
     if (record.terminalSnapshot) return structuredClone(record.terminalSnapshot);
     if (record.toolError) throw new Error(record.toolError);
     if (!record.authorized) {
-      const pending = consentRequiredSnapshot({ agentRef: record.agentRef, consent: record.consent, taskCard: record.taskCard });
+      const pending = consentRequiredSnapshot({ agentRef: record.agentRef, consent: record.consent, taskCard: record.taskCard, portableTaskBody: record.portableTaskBody });
       pending.taskRef = record.taskRef;
-      pending.taskId = record.taskRef;
+      pending.taskId = record.shortTaskId ?? record.taskRef;
       pending.shortTaskId = record.shortTaskId ?? null;
       pending.turnId = null;
       pending.timing = { startedAt: null, endedAt: null, durationMs: null };
@@ -1365,9 +2054,9 @@ export function registerAgentPreviewTools(server, {
     if (!record.turnId && snapshot.turnId) record.turnId = snapshot.turnId;
     if (record.turnId && snapshot.turnId !== record.turnId) return lostRecord(record);
     const payload = {
-      ...publicAgentSnapshot(snapshot, record.taskCard),
+      ...publicAgentSnapshot(snapshot, record.taskCard, { portableTaskBody: record.portableTaskBody }),
       taskRef: record.taskRef,
-      taskId: record.taskRef,
+      taskId: record.shortTaskId ?? record.taskRef,
       shortTaskId: record.shortTaskId ?? null,
       meteredConsent: { status: "approved", quota: record.consent.quota },
     };
@@ -1375,17 +2064,16 @@ export function registerAgentPreviewTools(server, {
     return payload;
   }
 
-  function preparedRecordByShortTaskId(taskId) {
-    if (!agentPortableCard) throw new Error("portable Codex task decisions are not enabled on this surface");
-    const matches = [...taskRecords.values()].filter((record) => record.shortTaskId === taskId);
-    if (matches.length !== 1) throw new Error("unknown, stale, or ambiguous portable Codex task ID");
+  function preparedRecordByTaskId(taskId) {
+    const matches = [...taskRecords.values()].filter((record) => record.taskId === taskId || record.shortTaskId === taskId);
+    if (matches.length !== 1) throw new Error("unknown, stale, or ambiguous prepared Codex task ID");
     const record = matches[0];
-    if (!record.consent?.consentRef) throw new Error("portable Codex task ID is not bound to a prepared metered task");
+    if (!record.consent?.consentRef) throw new Error("prepared Codex task ID is not bound to a pending metered decision");
     return record;
   }
 
   function declinePrepared(record) {
-    if (record.terminalSnapshot) return structuredClone(record.terminalSnapshot);
+    if (record.terminalSnapshot) return { ...structuredClone(record.terminalSnapshot), duplicate: true };
     if (record.authorized) throw new Error("prepared Codex task already started and cannot be declined as a pre-call task");
     record.declinedAt = Date.now();
     record.suppressTerminalFallback = true;
@@ -1413,22 +2101,30 @@ export function registerAgentPreviewTools(server, {
     });
   }
 
-  async function dispatchPrepared(record) {
+  async function dispatchPreparedInternal(record) {
     assertFormalAgentAvailable();
     if (record.terminalSnapshot) return { ...structuredClone(record.terminalSnapshot), duplicate: true };
     if (record.declinedAt) return structuredClone(record.terminalSnapshot ?? lostRecord(record));
-    if (taskPersistence && !persistRecord(record, null, record.authorized ? "active" : "pending")) {
-      throw new Error("Codex task was not started because durable Task Card state could not be recorded safely");
+    if (record.toolError) throw new Error(record.toolError);
+    if (record.authorized) return { ...(await preparedCardState(record)), duplicate: true };
+    if (taskPersistence && !persistRecord(record, null, "pending")) {
+      throw new Error("Codex task was not started because durable prepared-task state could not be recorded safely");
     }
     if (record.action === "start") {
       const currentAuthority = await resolveFormalAgentStartAuthority(record.cwd);
-      if (currentAuthority.effectiveCwd !== record.cwd || currentAuthority.permissionProfile !== record.permissionProfile) {
-        throw new Error("prepared Codex task authority changed; prepare and approve a new task card");
+      if (
+        currentAuthority.effectiveCwd !== record.cwd
+        || currentAuthority.permissionProfile !== record.permissionProfile
+        || (currentAuthority.permissionCeiling ?? currentAuthority.permissionProfile)
+          !== (record.payload?.permissionCeiling ?? record.permissionProfile)
+        || (record.payload?.authorityPolicyHash && currentAuthority.policyHash !== record.payload.authorityPolicyHash)
+      ) {
+        throw new Error("prepared Codex task authority changed; prepare and approve a new task");
       }
     } else if (record.payload?.parentTurnId) {
       const current = await agentExecutor.show({ agentRef: record.agentRef, afterSeq: 0 });
-      if (current.turnId !== record.payload.parentTurnId || current.status !== "idle" || current.canSend !== true) {
-        throw new Error("prepared Codex follow-up is stale because the agent advanced; prepare a new task card for the current turn");
+      if (current.turnId !== record.payload.parentTurnId || current.canSend !== true) {
+        throw new Error("prepared Codex follow-up is stale because the agent advanced; prepare a new task for the current turn");
       }
     }
     const consent = await meteredConsent.authorize({
@@ -1439,16 +2135,24 @@ export function registerAgentPreviewTools(server, {
       consentRef: record.consent.consentRef,
     });
     if (!consent.authorized) throw new Error("metered consent was not authorized for the prepared task");
+    // A decline may arrive during authority, parent-turn or quota awaits. This
+    // synchronous check is the final decision point before dispatch ownership.
+    if (record.terminalSnapshot || record.declinedAt) {
+      return structuredClone(record.terminalSnapshot ?? lostRecord(record));
+    }
     record.authorized = true;
 
     if (record.action === "start") {
       let snapshot;
       try {
         snapshot = await agentExecutor.start({
+          account: record.payload.account ?? null,
           cwd: record.cwd,
           task: record.payload.prompt,
           clientRequestId: record.consent.requestId,
           permissionProfile: record.permissionProfile,
+          permissionCeiling: record.payload.permissionCeiling ?? record.permissionProfile,
+          authorityPolicyHash: record.payload.authorityPolicyHash ?? null,
           model: record.payload.model ?? null,
           reasoningEffort: record.payload.reasoningEffort ?? null,
         });
@@ -1463,9 +2167,9 @@ export function registerAgentPreviewTools(server, {
         agentCards.set(snapshot.agentRef, record.taskCard);
       }
       const payload = {
-        ...publicAgentSnapshot(snapshot, record.taskCard),
+        ...publicAgentSnapshot(snapshot, record.taskCard, { portableTaskBody: record.portableTaskBody }),
         taskRef: record.taskRef,
-        taskId: record.taskRef,
+        taskId: record.shortTaskId ?? record.taskRef,
         shortTaskId: record.shortTaskId ?? null,
         meteredConsent: { status: "approved", quota: record.consent.quota },
       };
@@ -1480,6 +2184,7 @@ export function registerAgentPreviewTools(server, {
       snapshot = await agentExecutor.send({
         agentRef: record.agentRef,
         message: record.payload.message,
+        expectedParentTurnId: record.payload.parentTurnId ?? null,
         clientRequestId: record.consent.requestId,
         model: record.payload.model ?? null,
         reasoningEffort: record.payload.reasoningEffort ?? null,
@@ -1492,9 +2197,9 @@ export function registerAgentPreviewTools(server, {
     record.turnId = snapshot.turnId ?? null;
     if (record.agentRef) agentCards.set(record.agentRef, record.taskCard);
     const payload = {
-      ...publicAgentSnapshot(snapshot, record.taskCard),
+      ...publicAgentSnapshot(snapshot, record.taskCard, { portableTaskBody: record.portableTaskBody }),
       taskRef: record.taskRef,
-      taskId: record.taskRef,
+      taskId: record.shortTaskId ?? record.taskRef,
       shortTaskId: record.shortTaskId ?? null,
       meteredConsent: { status: "approved", quota: record.consent.quota },
     };
@@ -1503,6 +2208,28 @@ export function registerAgentPreviewTools(server, {
     return payload;
   }
 
+  async function dispatchPrepared(record) {
+    if (record.dispatchPromise) return { ...structuredClone(await record.dispatchPromise), duplicate: true };
+    if (record.dispatchSettled) {
+      if (record.toolError) throw Object.assign(new Error(record.toolError), { code: record.toolErrorCode });
+      return { ...await preparedCardState(record), duplicate: true };
+    }
+    // Reserve synchronously, before any external provider can run or re-enter.
+    const operation = Promise.resolve().then(() => dispatchPreparedInternal(record));
+    record.dispatchPromise = operation;
+    try { return structuredClone(await operation); }
+    catch (error) {
+      if (record.declinedAt && record.terminalSnapshot) return structuredClone(record.terminalSnapshot);
+      record.toolError = (error instanceof Error ? error.message : String(error)).slice(0, 2_048);
+      record.toolErrorCode = typeof error?.code === "string" ? error.code : "CODEX_TASK_DISPATCH_FAILED";
+      persistRecord(record, null, "error");
+      throw error;
+    } finally {
+      // Keep the replay receipt, not a settled promise retaining the full result.
+      record.dispatchSettled = true;
+      record.dispatchPromise = null;
+    }
+  }
 
   if (codexCallProfile) {
     server.registerTool(
@@ -1510,7 +2237,7 @@ export function registerAgentPreviewTools(server, {
       {
         title: "Codex Call Profile",
         description:
-          "Read or explicitly update the user-local Codex Call Profile. The Profile body is a recurring natural-language instruction for the calling AI: it may describe when Codex should be used, how large Codex work units should be, how running Codex sessions should be supervised, how waiting time should be used, model/reasoning selection rules (including multiple tiers or AI judgment), in-turn approval habits at any user-chosen granularity, and how Codex results should be verified and integrated. Codexless does not reduce those instructions to product enums and does not pretend to enforce the AI's semantic judgment. The recommended default instruction is background working policy: do not enumerate or explain its detailed principles to the user unless the user asks about them or chooses Customize Profile. The only hard Profile field is requireCallApproval: unless it is false, every real Codex call must pass the Call Codex consent stage and therefore show the Rich Card or its initial text fallback. show is read-only. save/delete are durable preference mutations and may be called only after explicit user intent; when the user says things like 'don't ask me about this kind next time' or 'always ask me before this kind', suggest updating the Profile and persist only after confirmation. The saved Profile lives outside the install/package tree and product updates/reinstalls must preserve it; only an explicit Profile mutation or removal may replace or delete it. Updating a configured Profile requires the fresh expectedProfileRevision + expectedProfileHash so another window cannot be overwritten silently. The Profile never expands Codex permissions, sandbox, trusted roots, network, Browser/MCP authority, or any requested permission subset.",
+          "Read or explicitly update the user-local Codex Call Profile. The Profile body is a recurring natural-language instruction for the calling AI: it may describe when Codex should be used, how large Codex work units should be, how running Codex sessions should be supervised, how waiting time should be used, model/reasoning selection rules (including multiple tiers or AI judgment), in-turn approval habits at any user-chosen granularity, and how Codex results should be verified and integrated. Codexless does not reduce those instructions to product enums and does not pretend to enforce the AI's semantic judgment. The recommended default instruction is background working policy: do not enumerate or explain its detailed principles to the user unless the user asks about them or chooses Customize Profile. The only hard Profile field is requireCallApproval: unless it is false, every real Codex call must pass the Call Codex consent stage and return the fixed compact Chat approval text. show is read-only. save/delete are durable preference mutations and may be called only after explicit user intent; when the user says things like 'don't ask me about this kind next time' or 'always ask me before this kind', suggest updating the Profile and persist only after confirmation. The saved Profile lives outside the install/package tree and product updates/reinstalls must preserve it; only an explicit Profile mutation or removal may replace or delete it. Updating a configured Profile requires the fresh expectedProfileRevision + expectedProfileHash so another window cannot be overwritten silently. The Profile never expands Codex permissions, sandbox, trusted roots, network, Browser/MCP authority, or any requested permission subset.",
         inputSchema: z.object({
           action: z.enum(["show", "save", "delete"]),
           requireCallApproval: z.boolean().optional()
@@ -1581,17 +2308,28 @@ export function registerAgentPreviewTools(server, {
       description:
         "Model-free read of the current Codex App Server model catalog. Use it when a user explicitly cares which model to run. The catalog reports current model ids/capabilities/defaults but does not provide price data, so Codexless must not infer cheapest from names alone.",
       inputSchema: z.object({
+        account: z.string().min(1).max(32).optional()
+          .describe("Optional configured Codex account id. Required when multiple accounts are configured."),
         cursor: z.string().min(1).max(2048).optional(),
         limit: z.number().int().min(1).max(200).optional(),
         includeHidden: z.boolean().optional(),
       }).strict(),
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ cursor, limit, includeHidden }) => structured(async () => catalogProvider.listModels({
-      cursor: cursor ?? null,
-      limit: limit ?? null,
-      includeHidden: includeHidden === true,
-    }))
+    async ({ account, cursor, limit, includeHidden }) => structured(async () => {
+      if (account !== undefined && typeof catalogProvider.resolveAccountId !== "function") {
+        throw new Error("CODEX_ACCOUNT_ROUTING_UNAVAILABLE: this model catalog runtime does not support explicit account selection");
+      }
+      const resolvedAccount = account === undefined
+        ? null
+        : catalogProvider.resolveAccountId(account);
+      return catalogProvider.listModels({
+        account: resolvedAccount,
+        cursor: cursor ?? null,
+        limit: limit ?? null,
+        includeHidden: includeHidden === true,
+      });
+    })
   );
 
   server.registerTool(
@@ -1599,13 +2337,17 @@ export function registerAgentPreviewTools(server, {
     {
       title: "Start Codex Agent",
       description:
-        `Experimental Preview. Start one formal Codex agent thread/turn under Codexless's locally resolved Codex authority. When Codex Call Profile is enabled, read and apply its natural-language instruction to the current task before deciding to call this tool; the Profile is a recurring user instruction, not a server-side routing enum. In particular, apply its task-sizing and supervision rules before handing work to Codex. invocationRationale records the caller's current-task judgment and is shown as Why Codex. Apply any Profile model/reasoning strategy yourself against the current codex.model_list and pass the selected exact model/effort here; named choices are validated before dispatch and must not be silently substituted unless the user instruction allows it. Local metered consent mode is ${meteredConsent.mode}; requireCallApproval is the only hard Profile switch: unless false, the first logical call returns consent_required so the Call Codex Rich Card or initial text fallback must be presented before work starts. When requireCallApproval is false, Codex starts immediately and the result carries cardRender; on a Host with native MCP App rendering, immediately call codex.agent_card_render with that taskRef so the same Rich Card begins at RUNNING/terminal without a Yes/No stage. On a generic facade without native Rich UI, do not emulate a text running card. A RUNNING return is not handoff completion: keep responsibility for the work unit, revisit running agents periodically according to the bound Profile, and use waiting time for non-conflicting work rather than abandoning the task; multiple Codex sessions may be supervised in parallel when manageable. requestId is a caller-stable idempotency key and MUST be reused for retries of the same logical start.${agentReasoningEffort ? " reasoningEffort is validated against the current effective model catalog; no global effort enum is hard-coded." : ""} If the returned state is awaitingApproval, apply the bound Profile instruction to that exact action; approvalRiskReference is only a conservative default reference and does not replace a more specific user-authored rule. Durable user corrections such as 'don't ask me about this kind next time' or 'always ask me before this kind' should prompt an offer to update the Profile, never a silent write. The caller cannot choose permission profile, sandbox, roots, network authority, or widen Codex permissions.`,
+        `Experimental Preview. Start one formal Codex agent thread/turn under Codexless's locally resolved authority. Before calling, read and apply the current Codex Call Profile to task sizing, model/reasoning choice, supervision, and in-turn approval habits. invocationRationale records why this task needs Codex. requireCallApproval is the only hard call-stage switch: only an explicit false from a valid configured Profile may skip Call Approval; true, missing, unreadable, invalid, field-missing, or unknown Profile state fails closed. When approval is required, this tool prepares one exact server-bound task and returns consent_required plus fixed compact chatPresentation text with an exact Task ID. The next user-visible assistant response MUST equal the returned content[0].text / chatPresentation.text verbatim, with no prose before or after, no summary, rewrite, reordering, translation, or field omission; do not reconstruct it from structuredContent. Then map the user's literal Yes / No only to codex.agent_commit or codex.agent_decline with that exact taskId. Do not retry agent_start as an approval action. Pass presentationLocale from the current Chat/Host when available; service-machine locale is not user-language authority. When requireCallApproval is false, Codex starts immediately. RUNNING is authoritative but has no mechanical presentation: keep responsibility for the work unit, supervise it according to the bound Profile, and use waiting time for non-conflicting work. requestId is a caller-stable idempotency key and MUST be reused only for retries of the same logical start.${agentReasoningEffort ? " reasoningEffort is validated against the current effective model catalog; no global effort enum is hard-coded." : ""} If the returned state is awaitingApproval, apply explicit current-task user instructions first, otherwise the valid bound Profile, and use the recommended default only when the Profile is missing. If user confirmation is actually required, present the returned conspicuous ordinary-text decision with exact Task ID/action/scope/reason/risk and literal Yes / No. Durable user corrections should prompt an offer to update the Profile, never a silent write. The caller cannot choose or widen Codex permission profile, sandbox, roots, network authority, or other authority ceilings.`,
       inputSchema: z.object({
         prompt: z.string().min(1).max(200_000),
+        account: z.string().min(1).max(32).optional()
+          .describe("Configured Codex account id. Required when multiple accounts are configured; it is bound to the new agent for its lifetime."),
         requestId: z.string().min(1).max(512)
           .describe("Stable caller-generated idempotency key. Reuse this exact value for retries of the same logical start."),
         cwd: z.string().min(1).max(32_768).optional()
           .describe("Optional execution-directory context. Codexless resolves authority locally for this cwd; cwd is not a permission selector."),
+        presentationLocale: z.string().min(2).max(64).optional()
+          .describe("Optional current Chat/Host locale (for example zh-CN, ja-JP, en-US) used only for the fixed approval/result text. It is bound to the prepared task and never changes Codex authority."),
         model: z.string().min(1).max(512).optional()
           .describe("Optional exact model id from codex.model_list. Omit to use Codex's current default model routing."),
         ...(agentReasoningEffort ? {
@@ -1616,10 +2358,8 @@ export function registerAgentPreviewTools(server, {
           invocationRationale: z.string().min(1).max(4_000)
             .describe("Free-form current-task reason why the caller decided Codex should be used after applying the Profile instruction. Shown as Why Codex; this is not a routing enum."),
           profileDecision: z.enum(["skip_once"]).optional()
-            .describe("Use only after the caller presented the missing/invalid Profile setup and the user chose to skip setup for this task. Saves nothing; Call Codex approval remains required."),
+            .describe("Legacy compatibility input from the earlier Profile-setup interstitial. It never bypasses Call Codex approval; missing, invalid, unreadable, or otherwise unknown Profile state remains fail-closed."),
         } : {}),
-        consentRef: z.string().min(1).max(512).optional()
-          .describe("When local metered consent mode is always, retry the same logical request with this exact consentRef only after the user approves the returned quota/context card."),
       }).strict(),
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
       _meta: {
@@ -1627,39 +2367,30 @@ export function registerAgentPreviewTools(server, {
         "openai/toolInvocation/invoked": "Codex task ready.",
       },
     },
-    async ({ prompt, requestId, cwd, model, reasoningEffort, invocationRationale, profileDecision, consentRef }) => structuredCard(async () => {
+    async ({ prompt, account, requestId, cwd, presentationLocale, model, reasoningEffort, invocationRationale, profileDecision }, toolContext) => structuredCard(async () => {
       assertFormalAgentAvailable();
-      if (consentRef) {
-        const record = preparedMetered.get(consentRef);
-        if (!record || record.action !== "start" || record.consent?.requestId !== requestId) {
-          throw new Error("consentRef is unknown, stale, or does not match this prepared Codex start");
-        }
-        const originalModel = Object.hasOwn(record.payload ?? {}, "callerModel")
-          ? record.payload.callerModel ?? null
-          : record.payload?.model ?? null;
-        const originalEffort = Object.hasOwn(record.payload ?? {}, "callerReasoningEffort")
-          ? record.payload.callerReasoningEffort ?? null
-          : record.payload?.reasoningEffort ?? null;
-        if (
-          record.payload?.prompt !== prompt
-          || (model ?? null) !== originalModel
-          || (agentReasoningEffort ? reasoningEffort ?? null : null) !== originalEffort
-          || (codexCallProfile ? invocationRationale ?? null : null) !== (record.payload?.callerInvocationRationale ?? null)
-        ) {
-          throw new Error("prepared Codex task selection changed; prepare and present a new task card with a fresh requestId");
-        }
-        return dispatchPrepared(record);
+      if (account !== undefined && typeof agentExecutor.resolveAccountId !== "function") {
+        const error = new Error("CODEX_ACCOUNT_ROUTING_UNAVAILABLE: this agent runtime does not support explicit account selection");
+        error.code = "CODEX_ACCOUNT_ROUTING_UNAVAILABLE";
+        throw error;
       }
+      const resolvedAccount = typeof agentExecutor.resolveAccountId === "function"
+        ? agentExecutor.resolveAccountId(account ?? null)
+        : null;
+      const resolvedPresentationLocale = resolvePresentationLocale(presentationLocale, toolContext);
 
       const startCallerIntent = {
         prompt,
+        callerAccount: resolvedAccount,
         callerCwd: cwd ?? null,
+        presentationLocale: resolvedPresentationLocale,
         callerModel: model ?? null,
         callerReasoningEffort: agentReasoningEffort ? reasoningEffort ?? null : null,
         ...(codexCallProfile ? {
           callerInvocationRationale: invocationRationale ?? null,
         } : {}),
       };
+      return prepareOnce({ requestId, action: "start", payload: startCallerIntent, agentRef: null }, async () => {
       const priorByCallerIntent = await existingRequestByCallerIntent({
         requestId,
         action: "start",
@@ -1669,15 +2400,12 @@ export function registerAgentPreviewTools(server, {
       if (priorByCallerIntent) return { ...priorByCallerIntent, duplicate: true };
 
       const loadedProfile = readCallProfile();
-      if (codexCallProfile && loadedProfile.status !== "configured" && profileDecision !== "skip_once") {
-        return profileInstructionState(loadedProfile);
-      }
       const activeProfile = loadedProfile.status === "configured"
         ? loadedProfile
         : {
             ...loadedProfile,
             effective: { requireCallApproval: true },
-            instruction: "",
+            instruction: loadedProfile.status === "missing" ? DEFAULT_CODEX_CALL_PROFILE_INSTRUCTION.trim() : "",
             legacy: false,
           };
       const boundInvocationRationale = codexCallProfile
@@ -1688,12 +2416,17 @@ export function registerAgentPreviewTools(server, {
       const authority = await resolveFormalAgentStartAuthority(cwd ?? null);
       const callerPayload = {
         prompt,
+        callerAccount: resolvedAccount,
+        account: resolvedAccount,
         callerCwd: cwd ?? null,
         cwd: authority.effectiveCwd,
+        presentationLocale: resolvedPresentationLocale,
         callerModel: model ?? null,
         model: model ?? null,
         callerReasoningEffort: agentReasoningEffort ? reasoningEffort ?? null : null,
         permissionProfile: authority.permissionProfile,
+        permissionCeiling: authority.permissionCeiling ?? authority.permissionProfile,
+        authorityPolicyHash: authority.policyHash ?? null,
         ...(codexCallProfile ? {
           callerInvocationRationale: invocationRationale ?? null,
           invocationRationale: boundInvocationRationale,
@@ -1711,6 +2444,7 @@ export function registerAgentPreviewTools(server, {
       if (agentPortableCard && meteredConsent.mode === "always") {
         try {
           preparedSelection = await resolvePreparedModelSelection({
+            account: resolvedAccount,
             requestedModel: model ?? null,
             requestedReasoningEffort: agentReasoningEffort ? reasoningEffort ?? null : null,
           });
@@ -1747,9 +2481,9 @@ export function registerAgentPreviewTools(server, {
           permissionProfile: authority.permissionProfile,
         });
         if (record.terminalSnapshot) return structuredClone(record.terminalSnapshot);
-        const pending = consentRequiredSnapshot({ consent: consent.consent, taskCard: record.taskCard });
+        const pending = consentRequiredSnapshot({ consent: consent.consent, taskCard: record.taskCard, portableTaskBody: record.portableTaskBody });
         pending.taskRef = record.taskRef;
-        pending.taskId = record.taskRef;
+        pending.taskId = record.shortTaskId ?? record.taskRef;
         pending.shortTaskId = record.shortTaskId ?? null;
         pending.turnId = null;
         pending.callProfile = boundProfile;
@@ -1775,15 +2509,7 @@ export function registerAgentPreviewTools(server, {
           cwd: authority.effectiveCwd,
           permissionProfile: authority.permissionProfile,
         });
-        const dispatched = await dispatchPrepared(record);
-        return {
-          ...dispatched,
-          cardRender: {
-            tool: "codex.agent_card_render",
-            taskRef: record.taskRef,
-            mode: isTerminalStatus(dispatched.status) ? "terminal" : "running",
-          },
-        };
+        return dispatchPrepared(record);
       }
 
       const record = directRecord({
@@ -1794,15 +2520,17 @@ export function registerAgentPreviewTools(server, {
         requestId,
       });
       return dispatchPrepared(record);
+      });
     })
   );
 
-  server.registerTool(
+  if (legacyAgentCardInternals) {
+    server.registerTool(
     "codex.agent_card_render",
     {
       title: "Render Codex Task Card",
       description:
-        "Read-only Rich Card mount step for one exact Codex task. Use it in either of two cases: (1) after agent_start/agent_send returns consent_required, to mount the Call Codex decision card; or (2) after a Profile explicitly skips call approval and agent_start/agent_send returns cardRender, to mount the already-running/terminal task card without inventing a Yes/No decision. This tool never starts, continues, approves, or retries Codex work; it only re-reads the server-bound task state. Prefer opaque taskRef for new mounts; consentRef remains a prepared-task compatibility path. On a generic facade that cannot render MCP App resources, do not emulate a text running card—ordinary progress may be reported conversationally and terminal text fallback remains separate.",
+        "Internal historical renderer retained only for bounded diagnostics. It reads one exact server-bound task state and never participates in the normal approval/result correctness path or dispatch authority.",
       inputSchema: z.object({
         taskRef: z.string().min(1).max(512).optional(),
         consentRef: z.string().min(1).max(512).optional(),
@@ -1819,12 +2547,19 @@ export function registerAgentPreviewTools(server, {
         taskCard: z.unknown().nullable().optional(),
         finalResult: z.unknown().nullable().optional(),
         resourceReceipt: z.unknown().nullable().optional(),
+        renderDelivery: z.object({
+          renderDataReady: z.boolean(),
+          userVisibleRender: z.literal("unconfirmed_by_codexless"),
+          confirmationAuthority: z.literal("host"),
+          portableFallbackRequiredUnlessHostConfirmed: z.boolean(),
+        }).optional(),
         timing: z.unknown().optional(),
         execution: z.unknown().optional(),
         latestError: z.string().nullable().optional(),
         events: z.array(z.unknown()).optional(),
         nextSeq: z.number().int().optional(),
         manualFallback: z.unknown().nullable().optional(),
+        chatPresentation: z.unknown().nullable().optional(),
         duplicate: z.boolean().optional(),
         controlAcceptance: z.string().optional(),
         terminal: z.boolean().optional(),
@@ -1834,7 +2569,7 @@ export function registerAgentPreviewTools(server, {
       }).passthrough(),
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       _meta: {
-        ui: { resourceUri: AGENT_TASK_CARD_URI },
+        ui: { resourceUri: AGENT_TASK_CARD_URI, visibility: ["app"] },
         "openai/outputTemplate": AGENT_TASK_CARD_URI,
         "openai/toolInvocation/invoking": "Opening Codex task…",
         "openai/toolInvocation/invoked": "Codex task ready.",
@@ -1844,16 +2579,22 @@ export function registerAgentPreviewTools(server, {
       if ((taskRef ? 1 : 0) + (consentRef ? 1 : 0) !== 1) {
         throw new Error("exactly one of taskRef or consentRef is required");
       }
+      const renderDelivery = {
+        renderDataReady: true,
+        userVisibleRender: "unconfirmed_by_codexless",
+        confirmationAuthority: "host",
+        portableFallbackRequiredUnlessHostConfirmed: false,
+      };
       if (taskRef) {
         const live = taskRecords.get(taskRef);
-        if (live) return preparedCardState(live);
+        if (live) return { ...(await preparedCardState(live)), renderDelivery };
         const recovered = recoveredTaskState(taskRef);
-        if (recovered) return recovered;
+        if (recovered) return { ...recovered, renderDelivery };
         throw new Error("unknown or stale Codex taskRef");
       }
       const record = preparedMetered.get(consentRef);
       if (!record) throw new Error("unknown or stale prepared metered consentRef");
-      return preparedCardState(record);
+      return { ...(await preparedCardState(record)), renderDelivery };
     })
   );
 
@@ -1862,7 +2603,7 @@ export function registerAgentPreviewTools(server, {
     {
       title: "Read Codex Task Card State",
       description:
-        "App-only read-only state endpoint for one already mounted Codex Task Card. New cards use opaque taskRef so state remains task-specific even without a metered consentRef; consentRef remains a legacy in-runtime fallback. Persisted terminal snapshots survive Codexless restarts. Persisted non-terminal tasks recover as LOST/uncertain and are never replayed.",
+        "Internal historical read-only task-state endpoint retained only for bounded diagnostics. Persisted terminal snapshots survive restarts; persisted non-terminal tasks recover as LOST/uncertain and are never replayed.",
       inputSchema: z.object({
         taskRef: z.string().min(1).max(512).optional(),
         consentRef: z.string().min(1).max(512).optional(),
@@ -1886,12 +2627,14 @@ export function registerAgentPreviewTools(server, {
     })
   );
 
+  }
+
   server.registerTool(
     "codex.agent_show",
     {
       title: "Show Codex Agent",
       description:
-        "Experimental Preview. Read the bounded operational state of one Codexless-owned Codex agent by opaque agentRef. Returns status, sendability, minimal pending-approval summary, a conservative approvalRiskReference, final result, bounded native progress (latest agent message, latest plan, and active item identity), and a bounded event tail. Progress is deliberately not a Codex transcript: it excludes reasoning text, command output, file diffs, and prior message history. approvalRiskReference is internal default guidance for the common 'handle routine low-risk actions for me' instruction, not a server-side decision and not an override of a more specific user-authored Profile rule. The caller must apply the bound Profile instruction to each pending action. If the user expresses a durable preference such as 'don't ask me about this kind next time' or 'always ask me before this kind', offer to update the Profile and persist only after explicit confirmation.",
+        "Experimental Preview. Read the bounded operational state of one Codexless-owned Codex agent by opaque agentRef. Returns status, sendability, minimal pending-approval summary, a conservative approvalRiskReference, final result, bounded native progress (latest agent message, latest plan, and active item identity), and a bounded event tail. Progress is deliberately not a Codex transcript: it excludes reasoning text, command output, file diffs, and prior message history. approvalRiskReference is internal default guidance for the common 'handle routine low-risk actions for me' instruction, not a server-side decision and not an override of a more specific user-authored Profile rule. The caller must apply the in-turn priority rule to each pending action: explicit current-task user instruction first, otherwise the valid bound Profile, and the recommended default only when the Profile is missing. If the user expresses a durable preference such as 'don't ask me about this kind next time' or 'always ask me before this kind', offer to update the Profile and persist only after explicit confirmation.",
       inputSchema: z.object({
         agentRef: z.string().min(1).max(512),
         afterSeq: z.number().int().min(0).optional(),
@@ -1905,7 +2648,10 @@ export function registerAgentPreviewTools(server, {
       const suppress = isTerminalStatus(snapshot?.status)
         && (record?.suppressTerminalFallback === true || record?.terminalSnapshot?.suppressManualFallback === true)
         && (!record?.turnId || !snapshot?.turnId || record.turnId === snapshot.turnId);
-      return publicAgentSnapshot(snapshot, card, { suppressManualFallback: suppress });
+      return publicAgentSnapshot(snapshot, card, {
+        suppressManualFallback: suppress,
+        portableTaskBody: record?.portableTaskBody ?? null,
+      });
     })
   );
 
@@ -1943,20 +2689,20 @@ export function registerAgentPreviewTools(server, {
     {
       title: "Continue Codex Agent",
       description:
-        `Experimental Preview. Continue one exact Codexless-owned Codex agent by opaque agentRef. The start-bound Codex Call Profile snapshot remains attached to the thread so its hard requireCallApproval setting and user instruction stay stable for that running task; later global Profile edits do not silently rewrite an in-flight thread. Before each follow-up, apply that natural-language instruction again to the current task state. model/reasoning are explicit per-call choices; if omitted, keep the current thread selection rather than reading a fixed Profile field. Local metered consent mode is ${meteredConsent.mode}; unless the bound Profile explicitly skips call approval, each logical follow-up returns consent_required and must present the Call Codex card/initial fallback before a new metered turn. If call approval is skipped, the follow-up starts immediately and returns cardRender; on a native Rich-UI Host call codex.agent_card_render with its taskRef so the existing task card resumes at RUNNING/terminal, while generic text facades should not manufacture a running fallback card. requestId is caller-stable and MUST be reused after uncertain responses.${agentReasoningEffort ? " reasoningEffort is validated against the current effective model catalog." : ""} If an in-turn action becomes pending, apply the bound Profile instruction to the exact action; approvalRiskReference is only conservative default guidance. Active turns, stale parent turns, and pre-existing pending approvals fail visibly; Codexless never auto-replays an accepted or uncertain send.`,
+        `Experimental Preview. Continue one exact Codexless-owned agent by opaque agentRef. The start-bound Codex Call Profile snapshot remains attached to the thread so its hard requireCallApproval setting and user instruction stay stable for this running task. Apply that instruction again before each follow-up. model/reasoning are explicit per-call choices; if omitted, keep the current thread selection. Unless the bound Profile explicitly sets requireCallApproval=false, each logical follow-up prepares one exact server-bound task and returns consent_required plus fixed compact chatPresentation text with an exact Task ID. The next user-visible assistant response MUST equal the returned content[0].text / chatPresentation.text verbatim, with no prose before or after, no summary, rewrite, reordering, translation, or field omission; do not reconstruct it from structuredContent. Then map literal Yes / No only to codex.agent_commit or codex.agent_decline with that exact taskId. Do not retry agent_send as an approval action. Pass presentationLocale from the current Chat/Host when available. If Call Approval is skipped, the follow-up starts immediately. RUNNING has no mechanical presentation. requestId is caller-stable and MUST be reused only for retries of the same logical send.${agentReasoningEffort ? " reasoningEffort is validated against the current effective model catalog." : ""} If an in-turn action becomes pending, apply explicit current-task instructions first, otherwise the valid bound Profile, and the recommended default only when the Profile is missing. If user confirmation is required, present the returned conspicuous ordinary-text decision with exact Task ID/action/scope/reason/risk and literal Yes / No. Active turns, stale parent turns, and pre-existing pending approvals fail visibly; Codexless never auto-replays an accepted or uncertain send.`,
       inputSchema: z.object({
         agentRef: z.string().min(1).max(512),
         message: z.string().min(1).max(200_000),
         requestId: z.string().min(1).max(512)
           .describe("Stable caller-generated idempotency key. Reuse this exact value for retries of the same logical send."),
+        presentationLocale: z.string().min(2).max(64).optional()
+          .describe("Optional current Chat/Host locale used only for the fixed approval/result text. It is bound to this prepared follow-up and never changes Codex authority."),
         model: z.string().min(1).max(512).optional()
           .describe("Optional exact model id from codex.model_list. Omit to keep the current Codex thread model."),
         ...(agentReasoningEffort ? {
           reasoningEffort: z.string().min(1).max(128).optional()
             .describe("Optional per-turn reasoning effort supported by the effective model's current codex.model_list entry. Runtime validation is per-model; no global effort enum is hard-coded."),
         } : {}),
-        consentRef: z.string().min(1).max(512).optional()
-          .describe("When local metered consent mode is always, retry the same logical send with this exact consentRef only after the user approves the returned quota/context card."),
       }).strict(),
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
       _meta: {
@@ -1964,31 +2710,17 @@ export function registerAgentPreviewTools(server, {
         "openai/toolInvocation/invoked": "Codex follow-up ready.",
       },
     },
-    async ({ agentRef, message, requestId, model, reasoningEffort, consentRef }) => structuredCard(async () => {
+    async ({ agentRef, message, requestId, presentationLocale, model, reasoningEffort }, toolContext) => structuredCard(async () => {
       assertFormalAgentAvailable();
+      const resolvedPresentationLocale = resolvePresentationLocale(presentationLocale, toolContext);
       const sendCallerIntent = {
         message,
+        presentationLocale: resolvedPresentationLocale,
         callerModel: model ?? null,
         callerReasoningEffort: agentReasoningEffort ? reasoningEffort ?? null : null,
       };
-      if (consentRef) {
-        const record = preparedMetered.get(consentRef);
-        if (!record || record.action !== "send" || record.agentRef !== agentRef || record.consent?.requestId !== requestId) {
-          throw new Error("consentRef is unknown, stale, or does not match this prepared Codex follow-up");
-        }
-        if (record.callerIntentHash && callerIntentHash("send", sendCallerIntent, agentRef) !== record.callerIntentHash) {
-          throw new Error("prepared Codex follow-up selection changed; prepare and present a new task card with a fresh requestId");
-        }
-        if (!record.callerIntentHash) {
-          const originalModel = Object.hasOwn(record.payload ?? {}, "callerModel") ? record.payload.callerModel ?? null : record.payload?.model ?? null;
-          const originalEffort = Object.hasOwn(record.payload ?? {}, "callerReasoningEffort") ? record.payload.callerReasoningEffort ?? null : record.payload?.reasoningEffort ?? null;
-          if (record.payload?.message !== message || (model ?? null) !== originalModel || (agentReasoningEffort ? reasoningEffort ?? null : null) !== originalEffort) {
-            throw new Error("prepared Codex follow-up selection changed; prepare and present a new task card with a fresh requestId");
-          }
-        }
-        return dispatchPrepared(record);
-      }
 
+      return prepareOnce({ requestId, action: "send", payload: sendCallerIntent, agentRef }, async () => {
       const priorByCallerIntent = await existingRequestByCallerIntent({
         requestId,
         action: "send",
@@ -2002,7 +2734,14 @@ export function registerAgentPreviewTools(server, {
         ? structuredClone(parentCard.callProfile)
         : null;
       const current = await agentExecutor.show({ agentRef, afterSeq: 0 });
-      if (current.status !== "idle" || current.canSend !== true || !current.turnId) {
+      const boundAccount = typeof current?.account === "string"
+        ? current.account
+        : typeof parentCard?.account === "string"
+          ? parentCard.account
+          : typeof agentExecutor.accountForAgent === "function"
+            ? agentExecutor.accountForAgent(agentRef)
+            : null;
+      if (current.canSend !== true || !current.turnId) {
         throw new Error(`agent ${agentRef} is not ready for a follow-up: ${current.status}`);
       }
 
@@ -2013,6 +2752,7 @@ export function registerAgentPreviewTools(server, {
       if (agentPortableCard && meteredConsent.mode === "always") {
         try {
           preparedSelection = await resolvePreparedModelSelection({
+            account: boundAccount,
             requestedModel,
             requestedReasoningEffort: requestedEffort,
             currentModel: current.execution?.resolvedModel ?? null,
@@ -2028,6 +2768,8 @@ export function registerAgentPreviewTools(server, {
 
       const payload = {
         message,
+        account: boundAccount,
+        presentationLocale: resolvedPresentationLocale,
         callerModel: model ?? null,
         callerReasoningEffort: agentReasoningEffort ? reasoningEffort ?? null : null,
         model: preparedSelection?.selectedModel ?? requestedModel ?? null,
@@ -2071,9 +2813,9 @@ export function registerAgentPreviewTools(server, {
           agentRef,
         });
         if (record.terminalSnapshot) return structuredClone(record.terminalSnapshot);
-        const pending = consentRequiredSnapshot({ agentRef, consent: consent.consent, taskCard: record.taskCard });
+        const pending = consentRequiredSnapshot({ agentRef, consent: consent.consent, taskCard: record.taskCard, portableTaskBody: record.portableTaskBody });
         pending.taskRef = record.taskRef;
-        pending.taskId = record.taskRef;
+        pending.taskId = record.shortTaskId ?? record.taskRef;
         pending.shortTaskId = record.shortTaskId ?? null;
         pending.turnId = null;
         pending.callProfile = boundProfile;
@@ -2098,15 +2840,7 @@ export function registerAgentPreviewTools(server, {
           permissionProfile: parentCard?.permissionProfile ?? null,
           agentRef,
         });
-        const dispatched = await dispatchPrepared(record);
-        return {
-          ...dispatched,
-          cardRender: {
-            tool: "codex.agent_card_render",
-            taskRef: record.taskRef,
-            mode: isTerminalStatus(dispatched.status) ? "terminal" : "running",
-          },
-        };
+        return dispatchPrepared(record);
       }
 
       const record = directRecord({
@@ -2118,85 +2852,46 @@ export function registerAgentPreviewTools(server, {
         requestId,
       });
       return dispatchPrepared(record);
+      });
     })
   );
 
   server.registerTool(
     "codex.agent_decline",
     {
-      title: "Decline Prepared Metered Codex Task",
+      title: "Decline Prepared Codex Task",
       description:
-        "App-only terminal decline for one prepared Codex task card. It never starts Codex work. After decline the same consentRef is sealed; a cached Yes/commit cannot revive this task. A rerun requires a new requestId and a new task card.",
+        "Decline exactly one prepared Call Approval by the exact Task ID shown in the fixed approval text. The Task ID resolves only to the existing server-bound prepared record; no prompt/message, cwd, model, reasoningEffort, subject, or authority fields can be replaced here. Decline never starts Codex work, seals this prepared approval terminally, and an exact duplicate or later stale Yes cannot revive it. A changed task requires a fresh requestId and a newly prepared Task ID.",
       inputSchema: z.object({
-        consentRef: z.string().min(1).max(512),
+        taskId: z.string().min(1).max(512)
+          .describe("Exact Task ID from the currently presented fixed Call Approval text."),
       }).strict(),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      _meta: { ui: { visibility: ["app"] } },
     },
-    async ({ consentRef }) => structured(async () => {
-      const record = preparedMetered.get(consentRef);
-      if (!record) throw new Error("unknown or stale prepared metered consentRef");
-      return declinePrepared(record);
-    })
+    async ({ taskId }) => structuredCard(async () => declinePrepared(preparedRecordByTaskId(taskId)))
   );
 
   server.registerTool(
     "codex.agent_commit",
     {
-      title: "Commit Prepared Metered Codex Task",
+      title: "Approve Prepared Codex Task",
       description:
-        "App-only exact commit for a previously prepared metered Codex start/send. The UI supplies only the opaque consentRef; Codexless retrieves the bound action, requestId, prompt/message, cwd, model, reasoningEffort, and subject from server memory and cannot accept replacements at commit time. Repeated exact commits reuse the same idempotency key and never create a second logical turn.",
+        "Approve exactly one prepared Call Approval by the exact Task ID shown in the fixed approval text. Codexless resolves the existing server-bound record and dispatches only its already bound action, requestId, prompt/message, cwd, model, reasoningEffort, subject, and permission profile; this tool accepts no replacements or authority overrides. Exact duplicate commits return the same task state and never create a second logical start/send. Unknown, stale, consumed, or ambiguous Task IDs fail closed.",
       inputSchema: z.object({
-        consentRef: z.string().min(1).max(512),
+        taskId: z.string().min(1).max(512)
+          .describe("Exact Task ID from the currently presented fixed Call Approval text."),
       }).strict(),
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
-      _meta: { ui: { visibility: ["app"] } },
     },
-    async ({ consentRef }) => structured(async () => {
-      const record = preparedMetered.get(consentRef);
-      if (!record) throw new Error("unknown or stale prepared metered consentRef");
-      return dispatchPrepared(record);
-    })
+    async ({ taskId }) => structuredCard(async () => dispatchPrepared(preparedRecordByTaskId(taskId)))
   );
-
-  if (agentPortableCard) {
-    server.registerTool(
-      "codex.agent_portable_commit",
-      {
-        title: "Approve Portable Codex Task",
-        description:
-          "Household Portable Card decision wrapper. Approve exactly one already prepared metered Codex task by its short Task ID. The server resolves the original prepared record and dispatches only its bound requestId, prompt/message, cwd, model, reasoningEffort, subject, and permission profile. No caller-supplied task fields or authority overrides are accepted. Unknown, stale, missing, or ambiguous IDs fail closed.",
-        inputSchema: z.object({
-          taskId: z.string().regex(/^C-[A-F0-9]{10}$/)
-            .describe("Exact short Task ID shown on the Portable Card, for example C-1A2B3C4D5E."),
-        }).strict(),
-        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
-      },
-      async ({ taskId }) => structuredCard(async () => dispatchPrepared(preparedRecordByShortTaskId(taskId)))
-    );
-
-    server.registerTool(
-      "codex.agent_portable_decline",
-      {
-        title: "Decline Portable Codex Task",
-        description:
-          "Household Portable Card decision wrapper. Decline exactly one already prepared metered Codex task by its short Task ID without starting Codex work. The short ID resolves only to the server-bound prepared record; no prompt/message, cwd, model, reasoningEffort, subject, or permission fields are accepted. A declined task is terminal and cannot be revived by either portable commit or the app-only consentRef commit.",
-        inputSchema: z.object({
-          taskId: z.string().regex(/^C-[A-F0-9]{10}$/)
-            .describe("Exact short Task ID shown on the Portable Card, for example C-1A2B3C4D5E."),
-        }).strict(),
-        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      },
-      async ({ taskId }) => structuredCard(async () => declinePrepared(preparedRecordByShortTaskId(taskId)))
-    );
-  }
 
   server.registerTool(
     "codex.agent_approve",
     {
       title: "Approve Pending Codex Agent Action",
       description:
-        "Experimental Preview. Resolve exactly the currently pending Codex approval identified by approvalRequestId using Codex's narrow one-turn approval response. Call only after either (a) the user explicitly approves this exact action, or (b) the caller has applied the bound natural-language Codex Call Profile to this exact action and reasonably concluded that the user's rule permits approval without another prompt. approvalRiskReference from agent_show is conservative default guidance only; specific user-authored rules may be stricter or more permissive within the existing Codex authority ceiling. Unknown or ambiguous Profile meaning should come back to the user. requestId is caller-stable and must be reused for retries of the same logical approval. Codexless never grants permissions beyond the exact subset requested by Codex and this tool cannot widen authority.",
+        "Experimental Preview. Resolve exactly the currently pending Codex approval identified by approvalRequestId using Codex's narrow one-turn approval response. Call only after either (a) the user explicitly approves this exact action, or (b) the caller has applied the bound natural-language Codex Call Profile to this exact action and reasonably concluded that the user's rule permits approval without another prompt. approvalRiskReference from agent_show is conservative default guidance only; specific user-authored rules may be stricter or more permissive within the existing Codex authority ceiling. Unknown or ambiguous Profile meaning should come back to the user. Current-task explicit user instructions take priority over the Profile for this in-turn decision, while never bypassing the hard Call Codex gate. If asking the user, use the returned visually separate ordinary-text confirmation with exact Task ID, action, scope, reason, risk, and literal Yes / No. requestId is caller-stable and must be reused for retries of the same logical approval. Codexless never grants permissions beyond the exact subset requested by Codex and this tool cannot widen authority.",
       inputSchema: z.object({
         agentRef: z.string().min(1).max(512),
         approvalRequestId: z.string().min(1).max(512)
@@ -2214,7 +2909,9 @@ export function registerAgentPreviewTools(server, {
         clientRequestId: requestId,
         decision: "approve",
       });
-      return publicAgentSnapshot(snapshot, cardForAgent(snapshot?.agentRef));
+      const card = cardForAgent(snapshot?.agentRef ?? agentRef);
+      const record = card?.taskRef ? taskRecords.get(card.taskRef) ?? null : null;
+      return publicAgentSnapshot(snapshot, card, { portableTaskBody: record?.portableTaskBody ?? null });
     })
   );
 
@@ -2243,13 +2940,9 @@ export function registerAgentPreviewTools(server, {
       });
       const card = cardForAgent(snapshot?.agentRef ?? agentRef);
       const record = card?.taskRef ? taskRecords.get(card.taskRef) ?? null : null;
-      if (record && (!record.turnId || !snapshot?.turnId || record.turnId === snapshot.turnId)) {
-        record.suppressTerminalFallback = true;
-        persistRecord(record, null, record.authorized ? "active" : "pending");
-      }
-      const payload = publicAgentSnapshot(snapshot, card, { suppressManualFallback: true });
+      const payload = publicAgentSnapshot(snapshot, card, { portableTaskBody: record?.portableTaskBody ?? null });
       if (record && isTerminalStatus(payload.status) && (!record.turnId || !payload.turnId || record.turnId === payload.turnId)) {
-        freezeRecord(record, { ...payload, suppressManualFallback: true });
+        return freezeRecord(record, payload);
       }
       return payload;
     })
@@ -2275,13 +2968,9 @@ export function registerAgentPreviewTools(server, {
       const snapshot = await agentExecutor.cancel({ agentRef, expectedTurnId: expectedTurnId ?? null, clientRequestId: requestId });
       const card = cardForAgent(snapshot?.agentRef ?? agentRef);
       const record = card?.taskRef ? taskRecords.get(card.taskRef) ?? null : null;
-      if (record && (!record.turnId || !snapshot?.turnId || record.turnId === snapshot.turnId)) {
-        record.suppressTerminalFallback = true;
-        persistRecord(record, null, record.authorized ? "active" : "pending");
-      }
-      const payload = publicAgentSnapshot(snapshot, card, { suppressManualFallback: true });
+      const payload = publicAgentSnapshot(snapshot, card, { portableTaskBody: record?.portableTaskBody ?? null });
       if (record && isTerminalStatus(payload.status) && (!record.turnId || !payload.turnId || record.turnId === payload.turnId)) {
-        freezeRecord(record, { ...payload, suppressManualFallback: true });
+        return freezeRecord(record, payload);
       }
       return payload;
     })
@@ -2289,25 +2978,43 @@ export function registerAgentPreviewTools(server, {
 
 }
 
-function agentContentText(payload) {
-  const fallback = payload?.manualFallback;
-  if (
-    fallback
-    && typeof fallback.text === "string"
-    && fallback.text
-    && (fallback.portable === true || fallback.mustPresentToUser === true)
-  ) {
-    return fallback.text;
+function modelVisibleAgentPayload(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  const visible = structuredClone(payload);
+  delete visible.taskRef;
+  delete visible.shortTaskId;
+  delete visible.cardRender;
+  delete visible.manualFallback;
+  delete visible.suppressManualFallback;
+  delete visible.taskCard;
+  if (visible.meteredConsent && typeof visible.meteredConsent === "object") {
+    visible.meteredConsent = {
+      status: visible.meteredConsent.status ?? null,
+      expiresAt: Number.isFinite(visible.meteredConsent.expiresAt) ? visible.meteredConsent.expiresAt : null,
+      quota: visible.meteredConsent.quota ?? null,
+    };
   }
-  return JSON.stringify(payload);
+  return visible;
+}
+
+function agentContentText(payload) {
+  if (payload?.approvalPresentation?.kind === "in_turn_approval" && typeof payload.approvalPresentation.text === "string") {
+    return payload.approvalPresentation.text;
+  }
+  const presentation = payload?.chatPresentation;
+  if (presentation && typeof presentation.text === "string" && presentation.text && presentation.mustPresentToUser === true) {
+    return presentation.text;
+  }
+  return JSON.stringify(modelVisibleAgentPayload(payload));
 }
 
 async function structuredCard(task) {
   try {
     const payload = await task();
+    const visiblePayload = modelVisibleAgentPayload(payload);
     return {
-      content: [{ type: "text", text: agentContentText(payload) }],
-      structuredContent: payload,
+      content: [{ type: "text", text: agentContentText(visiblePayload) }],
+      structuredContent: visiblePayload,
       _meta: { toolwireAgentState: payload },
       isError: false,
     };
@@ -2329,9 +3036,10 @@ async function structuredCard(task) {
 async function structured(task) {
   try {
     const payload = await task();
+    const visiblePayload = modelVisibleAgentPayload(payload);
     return {
-      content: [{ type: "text", text: agentContentText(payload) }],
-      structuredContent: payload,
+      content: [{ type: "text", text: agentContentText(visiblePayload) }],
+      structuredContent: visiblePayload,
       isError: false,
     };
   } catch (error) {

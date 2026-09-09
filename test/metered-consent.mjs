@@ -89,4 +89,19 @@ const effortApproved = await effortGate.authorize({
 });
 assert.equal(effortApproved.authorized, true);
 
+let quotaContext = null;
+const accountGate = new MeteredConsentGate({
+  mode: "always",
+  quotaProvider: async (context) => { quotaContext = context; return quota; },
+});
+await accountGate.authorize({
+  action: "start",
+  requestId: "account-1",
+  payload: { prompt: "ACCOUNT_TASK", account: "secondary" },
+});
+assert.equal(quotaContext?.action, "start");
+assert.equal(quotaContext?.requestId, "account-1");
+assert.equal(quotaContext?.subjectRef, null);
+assert.equal(quotaContext?.payload?.account, "secondary");
+
 console.log("metered-consent: ok");

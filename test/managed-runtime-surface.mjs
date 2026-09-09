@@ -25,10 +25,11 @@ function freshManagedChildEnv() {
   const env = { ...process.env };
   // This fixture proves the no-product-override bootstrap; production Managed launch intentionally preserves this policy input.
   delete env.CODEX_TOOLBOX_CONFIG_OVERRIDES_FILE;
+  delete env.CODEXLESS_CONFIG_OVERRIDES_FILE;
   return env;
 }
 
-async function withManagedClient(run, { entrypoint = "mcp-stdio-household.mjs" } = {}) {
+async function withManagedClient(run, { entrypoint = "mcp-stdio-runtime.mjs", mode = "household" } = {}) {
   const tempHome = await mkdtemp(path.join(os.tmpdir(), "codexless-managed-surface-"));
   const client = new Client({ name: "codexless-managed-runtime-surface-test", version: "1" });
   const transport = new StdioClientTransport({
@@ -37,10 +38,14 @@ async function withManagedClient(run, { entrypoint = "mcp-stdio-household.mjs" }
     cwd: root,
     env: {
       ...freshManagedChildEnv(),
+      HOME: tempHome,
+      USERPROFILE: tempHome,
+      CODEXLESS_RUNTIME_MODE: mode,
       CODEXLESS_CODEX_RUNTIME: "managed",
-      CODEXLESS_MANAGED_CODEX_HOME: tempHome,
-      CODEX_TOOLBOX_DEFAULT_CWD: root,
-      CODEX_TOOLBOX_AGENT_METERED_CONSENT: "always",
+      CODEXLESS_MANAGED_CODEX_HOME: path.join(tempHome, "managed-codex-home"),
+      ...(mode === "public"
+        ? { CODEXLESS_DEFAULT_CWD: root, CODEXLESS_AGENT_METERED_CONSENT: "always" }
+        : { CODEX_TOOLBOX_DEFAULT_CWD: root, CODEX_TOOLBOX_AGENT_METERED_CONSENT: "always" }),
       CODEXLESS_CALL_PROFILE_FILE: path.join(tempHome, "missing-profile.md"),
       CODEX_BIN: "C:\\managed-test-must-not-resolve-existing\\codex.exe",
       CODEX_CLI_PATH: "C:\\managed-test-must-not-resolve-desktop\\codex.exe",
@@ -59,7 +64,7 @@ async function withManagedClient(run, { entrypoint = "mcp-stdio-household.mjs" }
   }
 }
 
-test("public command_exec blocks direct Formal Codex before executor dispatch", async () => {
+test("public command_exec blocks any nested Codex CLI before executor dispatch", async () => {
   let execCalls = 0;
   const createServer = createCodexToolboxServerFactory({
     executor: {
@@ -87,6 +92,8 @@ test("public command_exec blocks direct Formal Codex before executor dispatch", 
     for (const command of [
       ["C:\\fake-managed\\codex.exe", "exec", "MUST_NOT_RUN"],
       ["codex.exe", "review", "MUST_NOT_RUN"],
+      ["codex.exe", "--version"],
+      ["cmd.exe", "/d", "/c", "codex --version"],
     ]) {
       const blocked = await client.callTool({
         name: "codex.command_exec",
@@ -117,9 +124,9 @@ test("persisted dual_ready keeps Managed model-free serving when Existing is bro
     stateRoot,
     managedRuntime: {
       packageName: "@openai/codex",
-      packageVersion: "0.147.0",
+      packageVersion: "0.153.4",
       platformPackageName: platformSpec.packageName,
-      platformPackageVersion: `0.147.0-${platformSpec.versionSuffix}`,
+      platformPackageVersion: `0.153.4-${platformSpec.versionSuffix}`,
       binarySha256: "d".repeat(64),
     },
     readiness: {
@@ -216,6 +223,10 @@ test("managed household surface is model-free and hard-blocks Formal Agent befor
     const listed = await client.listTools();
     const names = listed.tools.map((tool) => tool.name);
     assert.deepEqual(names, [...HOUSEHOLD_TOOL_ALLOWLIST]);
+    assert.equal(names.includes("codex.browser_webmcp_discover"), false, "external Chrome/Edge WebMCP must stay hidden until the upstream extension runtime exposes webmcp");
+    assert.equal(names.includes("codex.browser_webmcp_call"), false, "external Chrome/Edge WebMCP must stay hidden until the upstream extension runtime exposes webmcp");
+    assert.equal(PUBLIC_TOOL_ALLOWLIST.includes("codex.browser_webmcp_discover"), false, "Q75 exposure rollback must not widen the public preview");
+    assert.equal(PUBLIC_TOOL_ALLOWLIST.includes("codex.browser_webmcp_call"), false, "Q75 exposure rollback must not widen the public preview");
     for (const forbidden of ["thread/start", "thread/resume", "turn/start", "turn/interrupt", "model/execute", "codex.raw_rpc"]) {
       assert.equal(names.includes(forbidden), false, `raw model/control RPC leaked into managed surface: ${forbidden}`);
     }
@@ -237,7 +248,7 @@ test("managed household surface is model-free and hard-blocks Formal Agent befor
     const project = await client.callTool({ name: "codex.project_context", arguments: { cwd: root } });
     assert.equal(project.isError, false);
     assert.equal(typeof project.structuredContent?.threadId, "string");
-    assert.equal(project.structuredContent?.cliVersion, "0.147.0");
+    assert.equal(project.structuredContent?.cliVersion, "0.153.4");
 
     const safeCommand = await client.callTool({
       name: "codex.command_exec",
@@ -354,6 +365,21 @@ test("managed public surface keeps model-free toolbox usable while Call Codex is
     assert.equal(blockedWrappedFormal.isError, true);
     assert.equal(blockedWrappedFormal.structuredContent?.errorCode, "FORMAL_CODEX_AGENT_REQUIRED");
 
+    const ordinaryTextMentionsCodex = process.platform === "win32"
+      ? ["powershell.exe", "-NoProfile", "-Command", "Write-Output 'direct Codex is ordinary text here'"]
+      : ["/bin/sh", "-lc", "printf '%s' 'direct Codex is ordinary text here'"];
+    const allowedOrdinaryText = await client.callTool({
+      name: "codex.command_exec",
+      arguments: {
+        command: ordinaryTextMentionsCodex,
+        cwd: root,
+        access: "readOnly",
+        timeoutMs: 5_000,
+      },
+    });
+    assert.equal(allowedOrdinaryText.isError, false);
+    assert.match(allowedOrdinaryText.structuredContent?.stdout ?? "", /direct Codex is ordinary text here/);
+
     const blocked = await client.callTool({
       name: "codex.agent_start",
       arguments: {
@@ -366,5 +392,5 @@ test("managed public surface keeps model-free toolbox usable while Call Codex is
     assert.equal(blocked.structuredContent?.errorCode, "MANAGED_CODEX_MODEL_INVOCATION_DISABLED");
     assert.match(blocked.structuredContent?.error ?? "", /Managed toolbox is available/i);
     assert.match(blocked.structuredContent?.error ?? "", /no Existing fallback was performed/i);
-  }, { entrypoint: "mcp-stdio-public.mjs" });
+  }, { entrypoint: "mcp-stdio-public.mjs", mode: "public" });
 });

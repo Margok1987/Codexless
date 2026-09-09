@@ -29,7 +29,7 @@ export const RELEASE_STATE_COMPATIBILITY = Object.freeze({
   migration: "none",
   stores: Object.freeze({
     "recent-calls": Object.freeze({ schemaVersion: 1 }),
-    "agent-task-cards": Object.freeze({ schemaVersion: 1 }),
+    "agent-task-cards": Object.freeze({ schemaVersion: 2 }),
   }),
 });
 
@@ -97,6 +97,7 @@ export function computeReleaseBuildId({
   sourceRevision = null,
   hostContractVersion,
   stateCompatibility = RELEASE_STATE_COMPATIBILITY,
+  allowLegacyAgentTaskCards = false,
   buildIdAlgorithm = RELEASE_BUILD_ID_ALGORITHM,
   fileHashAlgorithm = RELEASE_FILE_HASH_ALGORITHM,
   files,
@@ -106,7 +107,7 @@ export function computeReleaseBuildId({
   const normalizedVersion = requireString(version, "release build version");
   const normalizedSourceRevision = normalizeSourceRevision(sourceRevision);
   const normalizedHostContractVersion = requireString(hostContractVersion, "release build hostContractVersion");
-  const normalizedStateCompatibility = normalizeStateCompatibility(stateCompatibility);
+  const normalizedStateCompatibility = normalizeStateCompatibility(stateCompatibility, { allowLegacyAgentTaskCards });
   if (buildIdAlgorithm !== RELEASE_BUILD_ID_ALGORITHM) throw new Error(`unsupported buildId algorithm ${String(buildIdAlgorithm)}`);
   if (fileHashAlgorithm !== RELEASE_FILE_HASH_ALGORITHM) throw new Error(`unsupported file hash algorithm ${String(fileHashAlgorithm)}`);
   if (!Array.isArray(files)) throw new Error("release files must be an array");
@@ -131,11 +132,11 @@ export function computeReleaseBuildId({
   return sha256(Buffer.from(`${preimage}\n`, "utf8"));
 }
 
-export async function readReleaseManifest(root) {
+export async function readReleaseManifest(root, { allowLegacyAgentTaskCards = false } = {}) {
   const releaseRoot = requireRoot(root);
   const target = path.join(releaseRoot, ...RELEASE_MANIFEST_RELATIVE_PATH.split("/"));
   const parsed = JSON.parse(await readFile(target, "utf8"));
-  return validateReleaseManifest(parsed);
+  return validateReleaseManifest(parsed, { allowLegacyAgentTaskCards });
 }
 
 export async function readReleaseIdentity(root) {
@@ -150,7 +151,7 @@ export async function readReleaseIdentity(root) {
   };
 }
 
-export function validateReleaseManifest(manifest) {
+export function validateReleaseManifest(manifest, { allowLegacyAgentTaskCards = false } = {}) {
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) throw new Error("release manifest must be an object");
   if (manifest.manifestVersion !== RELEASE_MANIFEST_VERSION) throw new Error(`unsupported release manifest version ${String(manifest.manifestVersion)}`);
   if (manifest.productId !== RELEASE_PRODUCT_ID) throw new Error(`release manifest productId must be ${RELEASE_PRODUCT_ID}`);
@@ -160,7 +161,7 @@ export function validateReleaseManifest(manifest) {
   if (manifest.fileHashAlgorithm !== RELEASE_FILE_HASH_ALGORITHM) throw new Error(`unsupported file hash algorithm ${String(manifest.fileHashAlgorithm)}`);
   if (manifest.sourceRevision !== null) requireString(manifest.sourceRevision, "release manifest sourceRevision");
   const normalizedHostContractVersion = requireString(manifest.hostContractVersion, "release manifest hostContractVersion");
-  const normalizedStateCompatibility = normalizeStateCompatibility(manifest.stateCompatibility);
+  const normalizedStateCompatibility = normalizeStateCompatibility(manifest.stateCompatibility, { allowLegacyAgentTaskCards });
   if (!Array.isArray(manifest.files) || !manifest.files.length) throw new Error("release manifest files must be a non-empty array");
   const normalizedFiles = manifest.files.map((entry) => ({
     path: normalizeReleasePath(entry?.path),
@@ -180,6 +181,7 @@ export function validateReleaseManifest(manifest) {
     buildIdAlgorithm: manifest.buildIdAlgorithm,
     fileHashAlgorithm: manifest.fileHashAlgorithm,
     files: normalizedFiles,
+    allowLegacyAgentTaskCards,
   });
   if (recomputedBuildId !== manifest.buildId) {
     throw new Error("release manifest buildId does not match its identity metadata and file manifest");
@@ -246,18 +248,20 @@ async function selectFrozenLockfile(root) {
   throw new Error("release source is missing a frozen npm lockfile: npm-shrinkwrap.json or package-lock.json");
 }
 
-function normalizeStateCompatibility(value) {
+function normalizeStateCompatibility(value, { allowLegacyAgentTaskCards = false } = {}) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("stateCompatibility must be an object");
   if (value.migration !== "none") throw new Error("stateCompatibility migration must be none for this release contract");
   const recentCalls = value.stores?.["recent-calls"];
   const agentTaskCards = value.stores?.["agent-task-cards"];
   if (recentCalls?.schemaVersion !== 1) throw new Error("recent-calls state compatibility must be schema v1");
-  if (agentTaskCards?.schemaVersion !== 1) throw new Error("agent-task-cards state compatibility must be schema v1");
+  if (agentTaskCards?.schemaVersion !== 2 && !(allowLegacyAgentTaskCards && agentTaskCards?.schemaVersion === 1)) {
+    throw new Error("agent-task-cards state compatibility must be schema v2");
+  }
   return {
     migration: "none",
     stores: {
       "recent-calls": { schemaVersion: 1 },
-      "agent-task-cards": { schemaVersion: 1 },
+      "agent-task-cards": { schemaVersion: agentTaskCards.schemaVersion },
     },
   };
 }

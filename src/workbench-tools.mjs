@@ -6,7 +6,7 @@ const z = require("zod/v4");
 export function registerWorkbenchPreviewTools(
   server,
   workbench,
-  { directFormalCodexGuard = null, processDescriptionSuffix = "" } = {}
+  { directFormalCodexGuard = null, processDescriptionSuffix = "", accountPreflightProvider = null } = {}
 ) {
   if (!workbench) return;
 
@@ -27,11 +27,22 @@ export function registerWorkbenchPreviewTools(
     {
       title: "Codex Preview Account Preflight",
       description:
-        "Experimental Workbench Preview. Run a model-free account/quota preflight from the selected Codexless toolbox runtime using an independent short-lived Codex App Server client with the same binary/home/config context. Returns only sanitized account-presence/auth/plan and quota status/error facts; it never returns credentials and does not start a model turn. When the explicit managed runtime is selected but its isolated CODEX_HOME is not logged in, the result includes the official ChatGPT login journey without exposing auth URL query data, tokens, cookies, or credential contents.",
-      inputSchema: z.object({}).strict(),
+        "Experimental Workbench Preview. Run a model-free account/quota preflight from the selected Codexless toolbox runtime using an independent short-lived Codex App Server client with the same binary/home/config context. Returns only sanitized account-presence/auth/plan facts plus bounded quota percentage/reset windows and status/error facts; it never returns credentials, raw usage/credit payloads, or upstream diagnostic text and does not start a model turn. When the explicit managed runtime is selected but its isolated CODEX_HOME is not logged in, the result includes the official ChatGPT login journey without exposing auth URL query data, tokens, cookies, or credential contents.",
+      inputSchema: z.object({
+        account: z.string().min(1).max(32).optional()
+          .describe("Optional configured Codex account id. Required when multiple accounts are configured."),
+      }).strict(),
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
-    async () => structured(() => workbench.accountPreflight())
+    async (input) => structured(() => {
+      if (accountPreflightProvider) return accountPreflightProvider(input);
+      if (input?.account) {
+        const error = new Error("Codex account selection is unavailable on this runtime lane");
+        error.code = "CODEX_ACCOUNT_SELECTION_UNAVAILABLE";
+        throw error;
+      }
+      return workbench.accountPreflight();
+    })
   );
 
   server.registerTool(
