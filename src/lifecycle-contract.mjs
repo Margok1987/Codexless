@@ -478,8 +478,8 @@ export async function readInstalledIdentity(root) {
   const installedRoot = path.resolve(requireString(root, "installed root"));
   let manifestProblem = null;
   try {
-    const manifest = await readReleaseManifest(installedRoot);
-    assertStateCompatibility(manifest.stateCompatibility, "installed release");
+    const manifest = await readReleaseManifest(installedRoot, { allowLegacyAgentTaskCards: true });
+    assertStateCompatibility(manifest.stateCompatibility, "installed release", { allowLegacyAgentTaskCards: true });
     return publicIdentity(manifest);
   } catch (error) {
     if (looksLikeProductMismatch(error)) {
@@ -533,7 +533,7 @@ export function requiresHostRefreshForIdentity(current, target) {
     || current.hostContractVersion !== target?.hostContractVersion;
 }
 
-export function assertStateCompatibility(value, label = "release") {
+export function assertStateCompatibility(value, label = "release", { allowLegacyAgentTaskCards = false } = {}) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new LifecycleContractError(`${label} stateCompatibility must be an object`, { code: "STATE_INCOMPATIBLE", stage: "state-compatibility" });
   }
@@ -542,7 +542,9 @@ export function assertStateCompatibility(value, label = "release") {
   }
   const expected = RELEASE_STATE_COMPATIBILITY.stores;
   for (const storeName of ["recent-calls", "agent-task-cards"]) {
-    if (value.stores?.[storeName]?.schemaVersion !== expected[storeName].schemaVersion) {
+    const actual = value.stores?.[storeName]?.schemaVersion;
+    const legacyAgentTaskCards = storeName === "agent-task-cards" && allowLegacyAgentTaskCards && actual === 1;
+    if (actual !== expected[storeName].schemaVersion && !legacyAgentTaskCards) {
       throw new LifecycleContractError(`${label} ${storeName} schema must be v${expected[storeName].schemaVersion}`, {
         code: "STATE_INCOMPATIBLE",
         stage: "state-compatibility",

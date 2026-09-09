@@ -598,7 +598,7 @@ export async function createCodexlessRuntime({
     if (formalAgentUsesExisting) {
       agentExecutor = new CodexAccountAgentExecutor({
         registry: accountRegistry,
-        factory: async (account) => {
+        factory: async (account, hooks) => {
           const runtime = await runtimeForAccount(account);
           return new CodexAgentExecutor({
             codexBin: runtime.bin,
@@ -611,6 +611,8 @@ export async function createCodexlessRuntime({
             // Terminal resource receipts must traverse the account pool so the
             // same per-account telemetry serialization/quarantine contract applies.
             resourceSnapshotProvider: ({ agentRef }) => agentExecutor.quotaSnapshot({ agentRef }),
+            admissionCheck: hooks.assertHealthy,
+            cleanupFailureHandler: hooks.quarantine,
           });
         },
         quotaProvider: (account) => snapshotForAccount(account),

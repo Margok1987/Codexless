@@ -352,7 +352,7 @@ function makeManifest(version, hostContractVersion, sourceRevision) {
     migration: "none",
     stores: {
       "recent-calls": { schemaVersion: 1 },
-      "agent-task-cards": { schemaVersion: 1 },
+      "agent-task-cards": { schemaVersion: 2 },
     },
   };
   const files = [{ path: "payload.bin", sha256: sha256(Buffer.from(`payload:${version}`, "utf8")) }];

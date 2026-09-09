@@ -16,6 +16,9 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   if (process.argv[2] === 'invalid') { process.stdout.write('SENTRY_NOT_JSON\\n'); return; }
   if (process.argv[2] === 'null') { process.stdout.write('null\\n'); return; }
   if (process.argv[2] === 'oversize') { process.stdout.write('X'.repeat(1024)); return; }
+  if (process.argv[2] === 'missing-result' && request.id !== undefined) { process.stdout.write(JSON.stringify({ id: request.id }) + '\\n'); return; }
+  if (process.argv[2] === 'array-id' && request.id !== undefined) { process.stdout.write(JSON.stringify({ id: [request.id], result: { pid: process.pid } }) + '\\n'); return; }
+  if (process.argv[2] === 'init-then-invalid' && request.id !== undefined) { process.stdout.write(JSON.stringify({ id: request.id, result: { pid: process.pid } }) + '\\nSENTRY_NOT_JSON\\n'); return; }
   if (request.id !== undefined) process.stdout.write(JSON.stringify({ id: request.id, result: { pid: process.pid } }) + '\\n');
 });
 `;
@@ -128,6 +131,39 @@ test("valid JSON with an invalid protocol envelope is rejected and closes the ow
   });
 });
 
+test("response envelopes require exactly one result or error field", { timeout: 8_000 }, async () => {
+  await fixture(async ({ root, spec, setClient }) => {
+    const client = new CodexAppServerClient({ cwd: root, requestTimeoutMs: 2_000, stderrHandler: () => {},
+      launch: () => ({ ...spec, args: [...spec.args, "missing-result"] }),
+    });
+    setClient(client);
+    await assert.rejects(client.start(), /Invalid.*envelope/i);
+    assert.equal(client.running, false);
+  });
+});
+
+test("array response IDs cannot alias numeric pending request IDs", { timeout: 8_000 }, async () => {
+  await fixture(async ({ root, spec, setClient }) => {
+    const client = new CodexAppServerClient({ cwd: root, requestTimeoutMs: 2_000, stderrHandler: () => {},
+      launch: () => ({ ...spec, args: [...spec.args, "array-id"] }),
+    });
+    setClient(client);
+    await assert.rejects(client.start(), /Invalid.*id/i);
+    assert.equal(client.running, false);
+  });
+});
+
+test("malformed data after initialize in the same stdout chunk still fails start closed", { timeout: 8_000 }, async () => {
+  await fixture(async ({ root, spec, setClient }) => {
+    const client = new CodexAppServerClient({ cwd: root, requestTimeoutMs: 2_000, stderrHandler: () => {},
+      launch: () => ({ ...spec, args: [...spec.args, "init-then-invalid"] }),
+    });
+    setClient(client);
+    await assert.rejects(client.start(), /cancelled|Invalid.*JSON/i);
+    assert.equal(client.running, false);
+  });
+});
+
 test("unterminated App Server frames are bounded and close the owned process", { timeout: 8_000 }, async () => {
   await fixture(async ({ root, spec, setClient }) => {
     const client = new CodexAppServerClient({ cwd: root, requestTimeoutMs: 2_000, maxStdoutBufferBytes: 128, stderrHandler: () => {},
@@ -151,15 +187,18 @@ test("initialization timeout closes its owned process without a recursive-close 
   });
 });
 
-test("cleanup failure quarantines client and all close callers receive the failure", { timeout: 8_000 }, async () => {
+test("cleanup failure quarantines client and reports once to its owner", { timeout: 8_000 }, async () => {
   await fixture(async ({ root, spec, setClient }) => {
+    const reported = [];
     const client = new CodexAppServerClient({ cwd: root, requestTimeoutMs: 2_000, stderrHandler: () => {},
+      cleanupFailureHandler: (error) => { reported.push(error?.message ?? String(error)); },
       launch: () => ({ ...spec, cleanup: () => { throw new Error("fixture cleanup failure"); } }),
     });
     setClient(client); await client.start();
     await assert.rejects(client.close(), /fixture cleanup failure/);
     await assert.rejects(client.close(), /fixture cleanup failure/);
     await assert.rejects(client.start(), /cleanup failed|closing/i);
+    assert.deepEqual(reported, ["fixture cleanup failure"], "owned cleanup failure must reach the account owner exactly once");
     assert.equal(client.running, false);
   });
 });

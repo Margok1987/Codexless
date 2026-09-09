@@ -47,8 +47,10 @@ function normalizeAccount(response) {
   };
 }
 
+const SAFE_LIMIT_KEYS = new Set(["codex"]);
+
 function safeLimitKey(value) {
-  return typeof value === "string" && /^[A-Za-z0-9._:-]{1,64}$/.test(value) ? value : null;
+  return SAFE_LIMIT_KEYS.has(value) ? value : null;
 }
 
 function projectRateLimitWindows(entry) {

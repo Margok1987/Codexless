@@ -18,6 +18,16 @@ export class CodexRpcTimeoutError extends Error {
   }
 }
 
+function rpcIdKey(value) {
+  if (Number.isSafeInteger(value)) return `n:${value}`;
+  if (typeof value === "string" && value.length > 0 && value.length <= 512) return `s:${value}`;
+  return null;
+}
+
+function isRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 export class CodexAppServerClient {
   #cwd;
   #launchFactory;
@@ -42,6 +52,9 @@ export class CodexAppServerClient {
   #closePromise = null;
   #closeError = null;
   #stderrHandler;
+  #cleanupFailureHandler;
+  #cleanupFailureReported = false;
+  #protocolError = null;
 
   constructor({
     bin,
@@ -53,6 +66,7 @@ export class CodexAppServerClient {
     initializeCapabilities = null,
     serverRequestHandler = null,
     stderrHandler = null,
+    cleanupFailureHandler = null,
   }) {
     if (!launch && !bin) {
       throw new Error("CodexAppServerClient requires either a codex binary path or a launch factory");
@@ -70,6 +84,9 @@ export class CodexAppServerClient {
     if (stderrHandler !== null && typeof stderrHandler !== "function") {
       throw new Error("stderrHandler must be a function when provided");
     }
+    if (cleanupFailureHandler !== null && typeof cleanupFailureHandler !== "function") {
+      throw new Error("cleanupFailureHandler must be a function when provided");
+    }
 
     this.#cwd = cwd;
     this.#defaultRequestTimeoutMs = requestTimeoutMs;
@@ -77,6 +94,7 @@ export class CodexAppServerClient {
     this.#initializeCapabilities = initializeCapabilities;
     this.#serverRequestHandler = serverRequestHandler;
     this.#stderrHandler = stderrHandler ?? ((chunk) => process.stderr.write(`[codex-app-server] ${chunk}`));
+    this.#cleanupFailureHandler = cleanupFailureHandler;
     this.#launchFactory = launch ?? (() => ({
       command: bin,
       args: ["app-server", "--stdio"],
@@ -131,13 +149,15 @@ export class CodexAppServerClient {
     if (this.#closing || generation !== this.#generation) throw new Error("Codex App Server start was cancelled by close");
     this.#buffer = "";
     this.#initializedResult = null;
+    this.#protocolError = null;
+    this.#cleanupFailureReported = false;
     const launching = Promise.resolve().then(async () => {
       const spec = await this.#launchFactory();
       if (!spec?.command) throw new Error("Codex App Server launch factory returned no command");
       if (this.#closing || generation !== this.#generation) {
         if (typeof spec.cleanup === "function") {
           try { await spec.cleanup(); }
-          catch (error) { this.#closeError = error; throw error; }
+          catch (error) { this.#closeError = error; this.#reportCleanupFailure(error); throw error; }
         }
         throw new Error("Codex App Server start was cancelled by close");
       }
@@ -178,6 +198,7 @@ export class CodexAppServerClient {
       if (this.#initializeCapabilities) initializeParams.capabilities = this.#initializeCapabilities;
       this.#initializedResult = await this.request("initialize", initializeParams,
         { timeoutMs: Math.min(this.#defaultRequestTimeoutMs, 15_000) });
+      if (this.#protocolError) throw this.#protocolError;
       if (this.#closing || generation !== this.#generation) throw new Error("Codex App Server start was cancelled by close");
       this.notify("initialized", {});
       return this.#initializedResult;
@@ -193,7 +214,7 @@ export class CodexAppServerClient {
     if (!this.#child || this.#closing || this.#closeError) throw new Error("codex app-server is not available for requests");
     const id = this.#nextId++;
     return new Promise((resolve, reject) => {
-      const key = String(id);
+      const key = rpcIdKey(id);
       const timer = Number.isFinite(timeoutMs) && timeoutMs > 0
         ? setTimeout(() => {
             const waiter = this.#pending.get(key);
@@ -270,7 +291,7 @@ export class CodexAppServerClient {
     });
     this.#closePromise = closing;
     try { return await closing; }
-    catch (error) { this.#closeError = error; throw error; }
+    catch (error) { this.#closeError = error; this.#reportCleanupFailure(error); throw error; }
     finally {
       this.#closing = false;
       if (!this.#closeError && this.#closePromise === closing) this.#closePromise = null;
@@ -330,17 +351,34 @@ export class CodexAppServerClient {
         return;
       }
 
-      const key = message.id === undefined ? null : String(message.id);
+      const hasId = Object.hasOwn(message, "id");
+      const key = hasId ? rpcIdKey(message.id) : null;
+      const hasMethod = typeof message.method === "string" && message.method.length > 0;
+      const hasResult = Object.hasOwn(message, "result");
+      const hasError = Object.hasOwn(message, "error");
+      if (hasId && key === null) {
+        this.#protocolFailure(new Error("Invalid Codex App Server response id; protocol contents are withheld"));
+        return;
+      }
+
       if (key !== null && this.#pending.has(key)) {
+        if (hasMethod || hasResult === hasError || (hasError && !isRecord(message.error))) {
+          this.#protocolFailure(new Error("Invalid Codex App Server response envelope; protocol contents are withheld"));
+          return;
+        }
         const waiter = this.#pending.get(key);
         this.#pending.delete(key);
         if (waiter.timer) clearTimeout(waiter.timer);
-        if (message.error) waiter.reject(new CodexRpcError(waiter.method, message.error));
+        if (hasError) waiter.reject(new CodexRpcError(waiter.method, message.error));
         else waiter.resolve(message.result);
         continue;
       }
 
-      if (key !== null && typeof message.method === "string") {
+      if (key !== null && hasMethod) {
+        if (hasResult || hasError) {
+          this.#protocolFailure(new Error("Invalid Codex App Server request envelope; protocol contents are withheld"));
+          return;
+        }
         this.#serverRequestMethods.add(message.method);
         if (!this.#serverRequestHandler) {
           this.#send({
@@ -356,7 +394,7 @@ export class CodexAppServerClient {
         if (this.#pendingServerRequests.has(key)) {
           this.#send({
             id: message.id,
-            error: { code: -32600, message: `Duplicate server request id: ${String(message.id)}` },
+            error: { code: -32600, message: "Duplicate server request id" },
           });
           continue;
         }
@@ -385,7 +423,11 @@ export class CodexAppServerClient {
         continue;
       }
 
-      if (typeof message.method === "string") {
+      if (!hasId && hasMethod) {
+        if (hasResult || hasError) {
+          this.#protocolFailure(new Error("Invalid Codex App Server notification envelope; protocol contents are withheld"));
+          return;
+        }
         this.#notificationMethods.add(message.method);
         if (message.method === "serverRequest/resolved") {
           this.#settleServerRequestFromServer(message.params);
@@ -397,12 +439,16 @@ export class CodexAppServerClient {
             process.stderr.write(`[codex-app-server] notification handler failure: ${error instanceof Error ? error.message : String(error)}\n`);
           }
         }
+        continue;
       }
+
+      this.#protocolFailure(new Error("Invalid Codex App Server response envelope; protocol contents are withheld"));
+      return;
     }
   }
 
   #createServerRequestHandle(message) {
-    const key = String(message.id);
+    const key = rpcIdKey(message.id);
     const entry = {
       id: message.id,
       method: message.method,
@@ -451,7 +497,8 @@ export class CodexAppServerClient {
   #settleServerRequestFromServer(params) {
     const requestId = params?.requestId;
     if (requestId === undefined || requestId === null) return false;
-    const key = String(requestId);
+    const key = rpcIdKey(requestId);
+    if (key === null) return false;
     const entry = this.#pendingServerRequests.get(key);
     if (!entry) return false;
     entry.settled = true;
@@ -488,12 +535,20 @@ export class CodexAppServerClient {
   }
 
   #protocolFailure(error) {
+    if (this.#protocolError) return;
+    this.#protocolError = error;
     this.#failAll(error);
     this.#abandonServerRequests(error);
-    // During initialization, #startInternal owns the close and awaits it before
-    // rejecting start(). After initialization, no start waiter exists, so the
-    // protocol failure must close the owned process itself.
+    // During initialization #startInternal owns and awaits cleanup. The latched
+    // protocol error is checked immediately after initialize resolves, covering
+    // a valid response followed by malformed data in the same stdout chunk.
     if (!this.#startPromise) void this.close().catch(() => {});
+  }
+
+  #reportCleanupFailure(error) {
+    if (this.#cleanupFailureReported) return;
+    this.#cleanupFailureReported = true;
+    try { this.#cleanupFailureHandler?.(error); } catch {}
   }
 
   #failAll(error) {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, mkdir, readFile, writeFile, rm, link } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm, link, rename, stat } from "node:fs/promises";
 import { CodexAccountAgentExecutor } from "../src/codex-account-agent-executor.mjs";
 import { CodexAgentExecutor } from "../src/codex-agent-executor.mjs";
 import { computeCodexAuthorityPolicyHash } from "../src/codex-authority-executor.mjs";
@@ -18,6 +18,7 @@ const registry = Object.freeze({ source: "registry", accounts: Object.freeze([
   Object.freeze({ id: "primary", codexHome: null }), Object.freeze({ id: "secondary", codexHome: null }),
 ]) });
 function gate() { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; }
+function taskStateDataFile(filePath) { return path.resolve(filePath) + ".v2"; }
 function fakeDelegate(id, overrides = {}) {
   return {
     running: false,
@@ -435,6 +436,102 @@ for (const accountType of [null, "apiKey", "amazonBedrock"]) {
   });
 }
 
+test("account quarantine during pre-turn authentication blocks the first paid dispatch", async () => {
+  const entered = gate(), release = gate();
+  class QuarantineStartClient extends FollowupPolicyClient {
+    async request(method, params = {}) {
+      if (method === "account/read") {
+        this.requests.push({ method, params });
+        entered.resolve();
+        await release.promise;
+        return { account: { type: "chatgpt" } };
+      }
+      return super.request(method, params);
+    }
+  }
+  const client = new QuarantineStartClient();
+  const cleanupFailure = Object.assign(new Error("fixture cleanup"), { code: "CODEX_ACCOUNT_CLEANUP_FAILED" });
+  const router = new CodexAccountAgentExecutor({
+    registry,
+    factory: async (account, hooks) => new CodexAgentExecutor({
+      defaultCwd: cwd, clientFactory: () => client, requireAuthorityPolicy: true, requireChatgptAuth: true,
+      admissionCheck: hooks.assertHealthy, cleanupFailureHandler: hooks.quarantine,
+    }),
+    quotaProvider: async () => { throw cleanupFailure; },
+  });
+  const starting = router.start({ account: "secondary", task: "must not turn", clientRequestId: "quarantine-auth-start",
+    permissionProfile: ":read-only", permissionCeiling: ":read-only", authorityPolicyHash: client.hash() });
+  await entered.promise;
+  await assert.rejects(router.quotaSnapshot({ account: "secondary" }), (error) => error.code === "CODEX_ACCOUNT_CLEANUP_FAILED");
+  release.resolve();
+  await assert.rejects(starting, (error) => error.code === "CODEX_ACCOUNT_CLEANUP_FAILED");
+  assert.equal(client.turnCount, 0, "quarantine must win before the final turn/start boundary");
+  assert.deepEqual(client.deletedThreads, [client.threadId], "the pre-turn thread must be cleaned up");
+  await assert.rejects(router.close(), (error) => error.code === "CODEX_ACCOUNT_CLEANUP_FAILED");
+});
+
+test("account quarantine during follow-up authentication blocks the next paid dispatch", async () => {
+  const entered = gate(), release = gate();
+  class QuarantineSendClient extends FollowupPolicyClient {
+    pauseAuth = false;
+    async request(method, params = {}) {
+      if (method === "account/read" && this.pauseAuth) {
+        this.requests.push({ method, params });
+        entered.resolve();
+        await release.promise;
+        return { account: { type: "chatgpt" } };
+      }
+      return super.request(method, params);
+    }
+  }
+  const client = new QuarantineSendClient();
+  const cleanupFailure = Object.assign(new Error("fixture cleanup"), { code: "CODEX_ACCOUNT_CLEANUP_FAILED" });
+  const router = new CodexAccountAgentExecutor({
+    registry,
+    factory: async (account, hooks) => new CodexAgentExecutor({
+      defaultCwd: cwd, clientFactory: () => client, requireAuthorityPolicy: true, requireChatgptAuth: true,
+      admissionCheck: hooks.assertHealthy, cleanupFailureHandler: hooks.quarantine,
+    }),
+    quotaProvider: async () => { throw cleanupFailure; },
+  });
+  const started = await router.start({ account: "secondary", task: "first", clientRequestId: "quarantine-send-start",
+    permissionProfile: ":read-only", permissionCeiling: ":read-only", authorityPolicyHash: client.hash() });
+  assert.equal(client.turnCount, 1);
+  client.pauseAuth = true;
+  const sending = router.send({ agentRef: started.agentRef, message: "must not turn", clientRequestId: "quarantine-send-next", expectedParentTurnId: started.turnId });
+  await entered.promise;
+  await assert.rejects(router.quotaSnapshot({ agentRef: started.agentRef }), (error) => error.code === "CODEX_ACCOUNT_CLEANUP_FAILED");
+  release.resolve();
+  await assert.rejects(sending, (error) => error.code === "CODEX_ACCOUNT_CLEANUP_FAILED");
+  assert.equal(client.turnCount, 1, "quarantine must block the follow-up turn/start boundary");
+  await assert.rejects(router.close(), (error) => error.code === "CODEX_ACCOUNT_CLEANUP_FAILED");
+});
+
+test("long-lived client cleanup failure callback quarantines its account pool", async () => {
+  let client, quotaCalls = 0, preflightCalls = 0;
+  const router = new CodexAccountAgentExecutor({
+    registry,
+    factory: async (account, hooks) => {
+      client = new PausedClient();
+      return new CodexAgentExecutor({
+        defaultCwd: cwd,
+        clientFactory: (options) => { client.reportCleanupFailure = options.cleanupFailureHandler; return client; },
+        admissionCheck: hooks.assertHealthy, cleanupFailureHandler: hooks.quarantine,
+      });
+    },
+    quotaProvider: async () => { quotaCalls += 1; return { status: "ok" }; },
+    preflightProvider: async () => { preflightCalls += 1; return { status: "ok" }; },
+  });
+  await router.start({ account: "secondary", task: "first", clientRequestId: "long-lived-cleanup-start" });
+  client.reportCleanupFailure(Object.assign(new Error("SENTRY_PROCESS_EXIT"), { code: "CODEX_PROCESS_EXIT_UNVERIFIED" }));
+  await assert.rejects(router.quotaSnapshot({ account: "secondary" }), (error) => error.code === "CODEX_ACCOUNT_CLEANUP_FAILED");
+  await assert.rejects(router.accountPreflight({ account: "secondary" }), (error) => error.code === "CODEX_ACCOUNT_CLEANUP_FAILED");
+  await assert.rejects(router.start({ account: "secondary", task: "blocked", clientRequestId: "long-lived-cleanup-next" }), (error) => error.code === "CODEX_ACCOUNT_CLEANUP_FAILED");
+  assert.equal(quotaCalls, 0);
+  assert.equal(preflightCalls, 0);
+  await assert.rejects(router.close(), (error) => error.code === "CODEX_ACCOUNT_CLEANUP_FAILED");
+});
+
 test("matching follow-up policy accepts pagination metadata without changing authority", async () => {
   const { client, executor, started } = await startedPolicyFixture();
   try {
@@ -546,6 +643,14 @@ test("pre-multi-account schema-v1 task state never acquires a named account or e
       previewState: createAgentPreviewState({ taskStateFile, meteredConsentMode: "always" }),
       legacyAgentCardInternals: true,
     });
+    const fenceInfo = await stat(taskStateFile);
+    assert.equal(fenceInfo.isDirectory(), true, "v1 path must become a writer-fence directory before v2 runtime is exposed");
+    const migratedState = JSON.parse(await readFile(taskStateDataFile(taskStateFile), "utf8"));
+    assert.equal(migratedState.version, 2);
+    assert.equal(migratedState.requestTombstones.some((entry) => entry.requestId === requestId), true);
+    const staleWriterTmp = taskStateFile + ".tmp-old-runtime";
+    await writeFile(staleWriterTmp, JSON.stringify({ version: 1, records: [] }), "utf8");
+    await assert.rejects(rename(staleWriterTmp, taskStateFile), /EISDIR|EPERM|EACCES|ENOTEMPTY/i, "a stale v1 writer must not be able to replace the fence");
     const recovered = await restarted.invoke("codex.agent_card_state", { taskRef });
     assert.equal(recovered.isError, false);
     assert.equal(recovered.structuredContent.status, "lost");
@@ -587,10 +692,10 @@ test("expired persisted task detail retains a durable request tombstone and cann
     const first = toolHarness({ accountAware: true, previewState: createAgentPreviewState({ meteredConsentMode: "always", taskStateFile, taskStateTtlMs: 60_000 }) });
     const prepared = await first.invoke("codex.agent_start", input);
     assert.equal(prepared.isError, false);
-    const persisted = JSON.parse(await readFile(taskStateFile, "utf8"));
+    const persisted = JSON.parse(await readFile(taskStateDataFile(taskStateFile), "utf8"));
     assert.equal(persisted.requestTombstones.length, 1);
     persisted.records[0].updatedAt = Date.now() - 120_000;
-    await writeFile(taskStateFile, JSON.stringify(persisted), "utf8");
+    await writeFile(taskStateDataFile(taskStateFile), JSON.stringify(persisted), "utf8");
     const restarted = toolHarness({ accountAware: true, previewState: createAgentPreviewState({ meteredConsentMode: "always", taskStateFile, taskStateTtlMs: 60_000 }) });
     const exactRetry = await restarted.invoke("codex.agent_start", input);
     assert.equal(exactRetry.isError, true);
@@ -612,7 +717,7 @@ test("task-record eviction preserves request tombstones across restart", async (
       const prepared = await first.invoke("codex.agent_start", input);
       assert.equal(prepared.isError, false);
     }
-    const persisted = JSON.parse(await readFile(taskStateFile, "utf8"));
+    const persisted = JSON.parse(await readFile(taskStateDataFile(taskStateFile), "utf8"));
     assert.equal(persisted.records.length, 10, "full task records remain bounded");
     assert.equal(persisted.requestTombstones.length, 11, "compact request bindings must outlive full-record eviction");
     const restarted = toolHarness({ accountAware: true, previewState: createAgentPreviewState({ meteredConsentMode: "always", taskStateFile, taskStateMaxEntries: 10 }) });
@@ -635,7 +740,7 @@ test("request tombstone capacity fails closed instead of forgetting old request 
     const blocked = await harness.invoke("codex.agent_start", { prompt: "must block", account: "primary", requestId: "capacity-request-10", cwd });
     assert.equal(blocked.isError, true);
     assert.match(blocked.structuredContent.error, /tombstone capacity|blocked without forgetting/i);
-    const persisted = JSON.parse(await readFile(taskStateFile, "utf8"));
+    const persisted = JSON.parse(await readFile(taskStateDataFile(taskStateFile), "utf8"));
     assert.equal(persisted.requestTombstones.length, 10);
     assert.equal(persisted.requestTombstones.some((entry) => entry.requestId === "capacity-request-0"), true);
     assert.equal(persisted.requestTombstones.some((entry) => entry.requestId === "capacity-request-10"), false);
@@ -810,6 +915,39 @@ test("account preflight exposes only sanitized live quota windows needed for sup
   assert.doesNotMatch(JSON.stringify(result), /SENTRY/);
 });
 
+test("quota projection maps hostile upstream bucket IDs to an opaque null label", async () => {
+  const clients = [
+    {
+      async start() {}, async close() {},
+      async request(method) {
+        if (method === "account/read") return { account: { type: "chatgpt", planType: "team" }, requiresOpenaiAuth: true };
+        if (method === "account/usage/read") return {};
+        if (method === "account/rateLimits/read") return { rateLimitsByLimitId: {
+          "sk-SENTRY-secret-fragment": { primary: { usedPercent: 5, resetsAt: 1, windowDurationMins: 300 } },
+        } };
+        throw new Error("unexpected fixture method");
+      },
+    },
+    {
+      async start() {}, async close() {},
+      async request(method) {
+        if (method === "account/read") return { account: { type: "chatgpt", planType: "team" }, requiresOpenaiAuth: true };
+        if (method === "account/usage/read") return {};
+        if (method === "account/rateLimits/read") return { rateLimits: {
+          limitId: "sk-SENTRY-legacy-secret", primary: { usedPercent: 7, resetsAt: 2, windowDurationMins: 300 },
+        } };
+        throw new Error("unexpected fixture method");
+      },
+    },
+  ];
+  for (const client of clients) {
+    const result = await readPreviewAccountPreflight({ codexBin: "fixture-codex", defaultCwd: cwd, clientFactory: () => client });
+    assert.equal(result.quota.rateLimits.windows.length, 1);
+    assert.equal(result.quota.rateLimits.windows[0].limitKey, null);
+    assert.doesNotMatch(JSON.stringify(result), /SENTRY|secret-fragment|legacy-secret/);
+  }
+});
+
 test("telemetry cleanup failure quarantines the account and blocks queued provider recreation", async () => {
   const entered = gate();
   const release = gate();
@@ -929,7 +1067,7 @@ test("multiple preview runtimes cannot overwrite each other's durable request to
     const b = { prompt: "runtime B", account: "secondary", requestId: "multi-runtime-b", cwd };
     assert.equal((await first.invoke("codex.agent_start", a)).isError, false);
     assert.equal((await second.invoke("codex.agent_start", b)).isError, false);
-    const persisted = JSON.parse(await readFile(taskStateFile, "utf8"));
+    const persisted = JSON.parse(await readFile(taskStateDataFile(taskStateFile), "utf8"));
     const ids = new Set((persisted.requestTombstones ?? []).map((entry) => entry.requestId));
     assert.equal(ids.has("multi-runtime-a"), true, "runtime B must not erase runtime A tombstone");
     assert.equal(ids.has("multi-runtime-b"), true);
@@ -954,22 +1092,24 @@ test("a second preview runtime cannot prepare the same durable requestId again",
     const retry = await second.invoke("codex.agent_start", input);
     assert.equal(second.starts.length, 0, "second runtime must not dispatch or create replacement work for a durable requestId");
     assert.ok(retry.isError === true || retry.structuredContent?.status === "lost", "second runtime must fail closed or recover the existing task");
-    const persisted = JSON.parse(await readFile(taskStateFile, "utf8"));
+    const persisted = JSON.parse(await readFile(taskStateDataFile(taskStateFile), "utf8"));
     assert.equal((persisted.requestTombstones ?? []).filter((entry) => entry.requestId === "multi-runtime-shared").length, 1);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("task-state persistence reclaims a lock owned by a dead process before writing", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "codexless-task-lock-dead-"));
+test("task-state persistence fails closed on a stale lock instead of unlinking it", { timeout: 5_000 }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codexless-task-lock-stale-"));
   try {
     const taskStateFile = path.join(root, "task-state.json");
-    await writeFile(taskStateFile + ".lock", JSON.stringify({ version: 1, pid: 2147483647, createdAt: Date.now() - 60_000 }), "utf8");
+    const lockFile = taskStateDataFile(taskStateFile) + ".lock";
+    await writeFile(lockFile, JSON.stringify({ version: 1, pid: 2147483647, createdAt: Date.now() - 60_000 }), "utf8");
     const harness = toolHarness({ accountAware: true, previewState: createAgentPreviewState({ meteredConsentMode: "always", taskStateFile }) });
-    const prepared = await harness.invoke("codex.agent_start", { prompt: "dead lock recovery", account: "primary", requestId: "dead-lock-recovery", cwd });
-    assert.equal(prepared.isError, false);
-    assert.equal(prepared.structuredContent.status, "consent_required");
-    const persisted = JSON.parse(await readFile(taskStateFile, "utf8"));
-    assert.equal(persisted.requestTombstones.some((entry) => entry.requestId === "dead-lock-recovery"), true);
+    const blocked = await harness.invoke("codex.agent_start", { prompt: "stale lock must not be reclaimed automatically", account: "primary", requestId: "stale-lock-block", cwd });
+    assert.equal(blocked.isError, true);
+    assert.match(blocked.structuredContent.error, /durable task state|locked|recorded safely/i);
+    assert.equal(harness.starts.length, 0);
+    assert.equal(typeof await readFile(lockFile, "utf8"), "string", "stale lock evidence must remain for explicit recovery");
+    await assert.rejects(readFile(taskStateDataFile(taskStateFile), "utf8"), (error) => error.code === "ENOENT");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -977,13 +1117,13 @@ test("task-state persistence fails closed while a live runtime owns the lock", {
   const root = await mkdtemp(path.join(os.tmpdir(), "codexless-task-lock-live-"));
   try {
     const taskStateFile = path.join(root, "task-state.json");
-    await writeFile(taskStateFile + ".lock", JSON.stringify({ version: 1, pid: process.pid, createdAt: Date.now() }), "utf8");
+    await writeFile(taskStateDataFile(taskStateFile) + ".lock", JSON.stringify({ version: 1, pid: process.pid, createdAt: Date.now() }), "utf8");
     const harness = toolHarness({ accountAware: true, previewState: createAgentPreviewState({ meteredConsentMode: "always", taskStateFile }) });
     const blocked = await harness.invoke("codex.agent_start", { prompt: "live lock must block", account: "primary", requestId: "live-lock-block", cwd });
     assert.equal(blocked.isError, true);
     assert.match(blocked.structuredContent.error, /durable task state|locked|recorded safely/i);
     assert.equal(harness.starts.length, 0);
-    await assert.rejects(readFile(taskStateFile, "utf8"), (error) => error.code === "ENOENT");
+    await assert.rejects(readFile(taskStateDataFile(taskStateFile), "utf8"), (error) => error.code === "ENOENT");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

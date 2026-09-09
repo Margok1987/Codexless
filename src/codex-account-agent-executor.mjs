@@ -99,7 +99,7 @@ export class CodexAccountAgentExecutor {
       // flight own cleanup of their unpublished delegate when they observe close.
       const closing = [...this.#delegates.entries()].map(async ([id, delegate]) => {
         try { await delegate.close(); }
-        catch { this.#cleanupFailures.set(id, true); }
+        catch { this.#quarantineAccount(id); }
       });
       await Promise.allSettled([...closing, ...this.#operations, ...this.#delegatePromises.values()]);
       this.#delegates.clear();
@@ -269,6 +269,10 @@ export class CodexAccountAgentExecutor {
     return operation;
   }
 
+  #quarantineAccount(accountId) {
+    this.#cleanupFailures.set(accountId, true);
+  }
+
   #assertAccountHealthy(account) {
     if (this.#cleanupFailures.has(account.id)) {
       throw poolError("CODEX_ACCOUNT_CLEANUP_FAILED", "Account runtime cleanup failed; automatic recreation is blocked");
@@ -290,7 +294,7 @@ export class CodexAccountAgentExecutor {
         return await provider(account);
       } catch (error) {
         if (error?.code === "CODEX_ACCOUNT_CLEANUP_FAILED") {
-          this.#cleanupFailures.set(account.id, true);
+          this.#quarantineAccount(account.id);
           throw poolError("CODEX_ACCOUNT_CLEANUP_FAILED", "Account telemetry cleanup failed; automatic recreation is blocked");
         }
         throw error;
@@ -322,7 +326,10 @@ export class CodexAccountAgentExecutor {
       pending = (async () => {
         let delegate = null;
         try {
-          delegate = await this.#factory(account);
+          delegate = await this.#factory(account, Object.freeze({
+            assertHealthy: () => this.#assertAccountHealthy(account),
+            quarantine: () => this.#quarantineAccount(account.id),
+          }));
           if (!delegate || typeof delegate.open !== "function" || typeof delegate.close !== "function") {
             throw new Error("Delegate factory returned an invalid account executor");
           }
@@ -338,7 +345,7 @@ export class CodexAccountAgentExecutor {
           if (delegate && typeof delegate.close === "function") {
             try { await delegate.close(); }
             catch {
-              this.#cleanupFailures.set(account.id, true);
+              this.#quarantineAccount(account.id);
               throw poolError("CODEX_ACCOUNT_CLEANUP_FAILED", "Account App Server initialization and cleanup failed; automatic recreation is blocked");
             }
           }

@@ -225,6 +225,9 @@ export class CodexAgentExecutor {
   #maxEvents;
   #nextEventSeq = 1;
   #resourceSnapshotProvider;
+  #admissionCheck;
+  #cleanupFailureHandler;
+  #cleanupFailureReported = false;
   #requireAuthorityPolicy;
   #requireChatgptAuth;
   #maxAgents;
@@ -243,6 +246,8 @@ export class CodexAgentExecutor {
     maxEvents = DEFAULT_MAX_EVENTS,
     clientFactory = null,
     resourceSnapshotProvider = null,
+    admissionCheck = null,
+    cleanupFailureHandler = null,
     requireAuthorityPolicy = false,
     requireChatgptAuth = false,
     maxAgents = 1_000,
@@ -262,6 +267,12 @@ export class CodexAgentExecutor {
     if (resourceSnapshotProvider !== null && typeof resourceSnapshotProvider !== "function") {
       throw new Error("resourceSnapshotProvider must be a function when provided");
     }
+    if (admissionCheck !== null && typeof admissionCheck !== "function") {
+      throw new Error("admissionCheck must be a function when provided");
+    }
+    if (cleanupFailureHandler !== null && typeof cleanupFailureHandler !== "function") {
+      throw new Error("cleanupFailureHandler must be a function when provided");
+    }
 
     if (typeof requireAuthorityPolicy !== "boolean" || typeof requireChatgptAuth !== "boolean") {
       throw new Error("Account authority/authentication requirements must be boolean");
@@ -272,6 +283,8 @@ export class CodexAgentExecutor {
     this.#defaultCwd = path.resolve(defaultCwd);
     this.#maxEvents = maxEvents;
     this.#resourceSnapshotProvider = resourceSnapshotProvider;
+    this.#admissionCheck = admissionCheck;
+    this.#cleanupFailureHandler = cleanupFailureHandler;
     this.#requireAuthorityPolicy = requireAuthorityPolicy;
     this.#requireChatgptAuth = requireChatgptAuth;
     this.#maxAgents = maxAgents;
@@ -280,7 +293,7 @@ export class CodexAgentExecutor {
     this.#maxInFlight = maxInFlight;
     const serverRequestHandler = (request) => this.#onServerRequest(request);
     this.#client = clientFactory
-      ? clientFactory({ cwd: this.#defaultCwd, requestTimeoutMs, serverRequestHandler, launchEnv })
+      ? clientFactory({ cwd: this.#defaultCwd, requestTimeoutMs, serverRequestHandler, launchEnv, cleanupFailureHandler: (error) => this.#reportCleanupFailure(error) })
       : new CodexAppServerClient({
           cwd: this.#defaultCwd,
           launch: () => ({
@@ -295,6 +308,7 @@ export class CodexAgentExecutor {
           requestTimeoutMs,
           initializeCapabilities: { experimentalApi: true },
           serverRequestHandler,
+          cleanupFailureHandler: (error) => this.#reportCleanupFailure(error),
           clientInfo: {
             name: "codexless_agent",
             title: "Codexless Agent",
@@ -352,11 +366,19 @@ export class CodexAgentExecutor {
     return this.#closePromise;
   }
 
+  #reportCleanupFailure(error) {
+    if (this.#cleanupFailureReported) return;
+    this.#cleanupFailureReported = true;
+    this.#shutdownError = error;
+    try { this.#cleanupFailureHandler?.(); } catch {}
+  }
+
   async #closeClient() {
     if (this.#clientClosePromise) return this.#clientClosePromise;
     const closing = Promise.resolve().then(() => this.#client.close());
     this.#clientClosePromise = closing;
     try { return await closing; }
+    catch (error) { this.#reportCleanupFailure(error); throw error; }
     finally { if (this.#clientClosePromise === closing) this.#clientClosePromise = null; }
   }
 
@@ -570,6 +592,7 @@ export class CodexAgentExecutor {
       state.reasoningEffort = acceptedReasoningEffort;
       state.updatedAt = Date.now();
       this.#appendEvent(state, { type: "thread/accepted", threadId, model: state.resolvedModel, at: Date.now() });
+      this.#admissionCheck?.();
     } catch (error) {
       let failure = error;
       if (state.threadId && !this.#closed) {
@@ -898,6 +921,7 @@ export class CodexAgentExecutor {
       // This is the final await before turn dispatch. The per-agent send lock
       // remains held across refresh, policy, authentication and model checks.
       await this.#assertCurrentParent(state, parentTurnId);
+      this.#admissionCheck?.();
       if (clientRequestId) this.#sendRequestIds.set(clientRequestId, { agentRef, requestHash });
     } catch (error) {
       settleSendOperation("reject", error);

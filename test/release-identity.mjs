@@ -105,7 +105,7 @@ assert.deepEqual(first.stateCompatibility, {
   migration: "none",
   stores: {
     "recent-calls": { schemaVersion: 1 },
-    "agent-task-cards": { schemaVersion: 1 },
+    "agent-task-cards": { schemaVersion: 2 },
   },
 });
 assert.equal(RELEASE_STATE_COMPATIBILITY.migration, "none");
@@ -259,7 +259,7 @@ assert.throws(
       migration: "none",
       stores: {
         "recent-calls": { schemaVersion: 2 },
-        "agent-task-cards": { schemaVersion: 1 },
+        "agent-task-cards": { schemaVersion: 2 },
       },
     },
   }),

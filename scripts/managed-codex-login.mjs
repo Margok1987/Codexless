@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CodexAppServerClient } from "../src/codex-app-server-client.mjs";
@@ -207,22 +207,50 @@ export async function runManagedCodexLogin() {
 export async function assertAccountProvisioningIdle({ taskStateFile, accountId } = {}) {
   if (typeof taskStateFile !== "string" || !taskStateFile) throw new TypeError("taskStateFile is required");
   if (typeof accountId !== "string" || !accountId) throw new TypeError("accountId is required");
+  const configuredPath = path.resolve(taskStateFile);
+  const v2Path = configuredPath + ".v2";
+  const retiredPath = configuredPath + ".v1-retired";
+  const unsafe = () => Object.assign(
+    new Error("Selected account provisioning is blocked because persisted task state cannot be verified"),
+    { code: "CODEX_ACCOUNT_TASK_STATE_UNSAFE" }
+  );
+  const kind = async (target) => {
+    try {
+      const info = await stat(target);
+      return info.isFile() ? "file" : info.isDirectory() ? "directory" : "other";
+    } catch (error) {
+      if (error?.code === "ENOENT") return "missing";
+      throw unsafe();
+    }
+  };
   let parsed;
+  const v2Kind = await kind(v2Path);
+  const configuredKind = await kind(configuredPath);
+  const retiredKind = await kind(retiredPath);
   try {
-    parsed = JSON.parse(await readFile(path.resolve(taskStateFile), "utf8"));
+    if (v2Kind === "file") {
+      if (configuredKind !== "directory" || retiredKind !== "missing") throw unsafe();
+      parsed = JSON.parse(await readFile(v2Path, "utf8"));
+      if (parsed?.version !== 2) throw unsafe();
+    } else if (v2Kind !== "missing") {
+      throw unsafe();
+    } else if (configuredKind === "file") {
+      if (retiredKind !== "missing") throw unsafe();
+      parsed = JSON.parse(await readFile(configuredPath, "utf8"));
+      if (parsed?.version !== 1) throw unsafe();
+    } else if (configuredKind === "directory") {
+      if (retiredKind !== "missing") throw unsafe();
+      return { status: "clear", activeTasks: 0 };
+    } else if (configuredKind === "missing" && retiredKind === "missing") {
+      return { status: "clear", activeTasks: 0 };
+    } else {
+      throw unsafe();
+    }
   } catch (error) {
-    if (error?.code === "ENOENT") return { status: "clear", activeTasks: 0 };
-    throw Object.assign(
-      new Error("Selected account provisioning is blocked because persisted task state cannot be verified"),
-      { code: "CODEX_ACCOUNT_TASK_STATE_UNSAFE" }
-    );
+    if (error?.code === "CODEX_ACCOUNT_TASK_STATE_UNSAFE") throw error;
+    throw unsafe();
   }
-  if (parsed?.version !== 1 || !Array.isArray(parsed.records)) {
-    throw Object.assign(
-      new Error("Selected account provisioning is blocked because persisted task state cannot be verified"),
-      { code: "CODEX_ACCOUNT_TASK_STATE_UNSAFE" }
-    );
-  }
+  if (!Array.isArray(parsed.records)) throw unsafe();
   const terminalStatuses = new Set(["idle", "completed", "failed", "interrupted", "rejected", "lost"]);
   let activeTasks = 0;
   for (const record of parsed.records) {

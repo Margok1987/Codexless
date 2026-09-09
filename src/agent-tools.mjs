@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const require = createRequire(import.meta.url);
@@ -928,7 +928,7 @@ function consentRequiredSnapshot({ agentRef = null, consent, taskCard = null, po
   return payload;
 }
 
-const TASK_STORE_VERSION = 1;
+const TASK_STORE_VERSION = 2;
 const DEFAULT_TASK_STORE_TTL_MS = 14 * 24 * 60 * 60_000;
 const DEFAULT_TASK_STORE_MAX_ENTRIES = 2_000;
 const DEFAULT_TASK_STORE_MAX_REQUEST_TOMBSTONES = 100_000;
@@ -945,7 +945,9 @@ function createTaskPersistence({
   if (!Number.isInteger(maxRequestTombstones) || maxRequestTombstones < 10 || maxRequestTombstones > 1_000_000) {
     throw new Error("agent task-state maxRequestTombstones must be 10..1000000");
   }
-  const resolvedPath = path.resolve(filePath);
+  const configuredPath = path.resolve(filePath);
+  const resolvedPath = configuredPath + ".v2";
+  const legacyRetiredPath = configuredPath + ".v1-retired";
   const lockPath = resolvedPath + ".lock";
   const records = new Map();
   const requestTombstones = new Map();
@@ -1001,25 +1003,92 @@ function createTaskPersistence({
     requestTombstones.set(requestId, next);
   }
 
+  function loadStoreObject(parsed, { allowLegacy = false } = {}) {
+    const supportedVersion = parsed?.version === TASK_STORE_VERSION || (allowLegacy && parsed?.version === 1);
+    if (!supportedVersion || !Array.isArray(parsed.records)) throw new Error("unsupported task-state schema");
+    for (const entry of parsed.records) {
+      if (!entry || typeof entry !== "object" || typeof entry.taskRef !== "string") continue;
+      records.set(entry.taskRef, entry);
+      rememberRequestTombstone(entry);
+    }
+    if (parsed.requestTombstones !== undefined && !Array.isArray(parsed.requestTombstones)) {
+      throw new Error("invalid request tombstone store");
+    }
+    for (const tombstone of parsed.requestTombstones ?? []) rememberRequestTombstone(tombstone);
+  }
+
+  function assertWriterFence() {
+    try {
+      if (!lstatSync(configuredPath).isDirectory()) throw new Error("writer fence is not a directory");
+    } catch {
+      blockedError = "agent task-state writer fence is missing or unsafe; incompatible runtime activation is blocked";
+      assertAvailable();
+    }
+  }
+
+  function migrateLegacyStore(sourcePath) {
+    records.clear();
+    requestTombstones.clear();
+    try {
+      const parsed = JSON.parse(readFileSync(sourcePath, "utf8"));
+      loadStoreObject(parsed, { allowLegacy: true });
+      flushUnlocked();
+      unlinkSync(sourcePath);
+    } catch {
+      records.clear();
+      requestTombstones.clear();
+      blockedError = "agent task-state legacy migration could not be completed safely; incompatible runtime activation is blocked";
+    }
+  }
+
+  function ensureWriterFence() {
+    mkdirSync(path.dirname(configuredPath), { recursive: true });
+    const v2Exists = existsSync(resolvedPath);
+    if (v2Exists) {
+      if (!existsSync(configuredPath)) {
+        try { mkdirSync(configuredPath, { mode: 0o700 }); }
+        catch { blockedError = "agent task-state writer fence could not be established safely"; return; }
+      }
+      try {
+        if (!lstatSync(configuredPath).isDirectory()) throw new Error("unsafe fence");
+      } catch { blockedError = "agent task-state writer fence is missing or unsafe; incompatible runtime activation is blocked"; }
+      return;
+    }
+
+    let migrationSource = null;
+    if (existsSync(configuredPath)) {
+      try {
+        if (lstatSync(configuredPath).isDirectory()) {
+          if (existsSync(legacyRetiredPath)) migrationSource = legacyRetiredPath;
+        } else {
+          if (existsSync(legacyRetiredPath)) {
+            blockedError = "agent task-state legacy migration has conflicting recovery evidence";
+            return;
+          }
+          renameSync(configuredPath, legacyRetiredPath);
+          try { mkdirSync(configuredPath, { mode: 0o700 }); }
+          catch { blockedError = "agent task-state writer fence could not be established safely"; return; }
+          migrationSource = legacyRetiredPath;
+        }
+      } catch {
+        blockedError = "agent task-state legacy migration could not establish an exclusive writer fence";
+        return;
+      }
+    } else {
+      try { mkdirSync(configuredPath, { mode: 0o700 }); }
+      catch { blockedError = "agent task-state writer fence could not be established safely"; return; }
+      if (existsSync(legacyRetiredPath)) migrationSource = legacyRetiredPath;
+    }
+    if (migrationSource) migrateLegacyStore(migrationSource);
+  }
+
   function loadFromDisk() {
     records.clear();
     requestTombstones.clear();
-    blockedError = null;
     if (!existsSync(resolvedPath)) return;
     try {
       const parsed = JSON.parse(readFileSync(resolvedPath, "utf8"));
-      if (parsed?.version !== TASK_STORE_VERSION || !Array.isArray(parsed.records)) {
-        throw new Error("unsupported task-state schema");
-      }
-      for (const entry of parsed.records) {
-        if (!entry || typeof entry !== "object" || typeof entry.taskRef !== "string") continue;
-        records.set(entry.taskRef, entry);
-        rememberRequestTombstone(entry);
-      }
-      if (parsed.requestTombstones !== undefined && !Array.isArray(parsed.requestTombstones)) {
-        throw new Error("invalid request tombstone store");
-      }
-      for (const tombstone of parsed.requestTombstones ?? []) rememberRequestTombstone(tombstone);
+      loadStoreObject(parsed);
     } catch {
       records.clear();
       requestTombstones.clear();
@@ -1035,21 +1104,6 @@ function createTaskPersistence({
     if (records.size <= maxEntries) return;
     const oldest = [...records.entries()].sort((a, b) => (a[1]?.updatedAt ?? 0) - (b[1]?.updatedAt ?? 0));
     for (let index = 0; index < oldest.length - maxEntries; index += 1) records.delete(oldest[index][0]);
-  }
-
-  function lockOwnerIsDead() {
-    try {
-      const owner = JSON.parse(readFileSync(lockPath, "utf8"));
-      if (!Number.isInteger(owner?.pid) || owner.pid < 1) return false;
-      try {
-        process.kill(owner.pid, 0);
-        return false;
-      } catch (error) {
-        return error?.code === "ESRCH";
-      }
-    } catch {
-      return false;
-    }
   }
 
   function acquireLock() {
@@ -1074,9 +1128,6 @@ function createTaskPersistence({
         if (error?.code !== "EEXIST") {
           throw persistenceError("CODEX_TASK_STATE_LOCK_FAILED", "agent task-state lock could not be acquired safely");
         }
-        if (lockOwnerIsDead()) {
-          try { unlinkSync(lockPath); continue; } catch {}
-        }
         if (Date.now() >= deadline) {
           throw persistenceError("CODEX_TASK_STATE_LOCKED", "agent task-state is locked by another runtime; new persisted work is blocked");
         }
@@ -1086,6 +1137,7 @@ function createTaskPersistence({
   }
 
   function syncFromDisk() {
+    assertWriterFence();
     loadFromDisk();
     assertAvailable();
     trim();
@@ -1109,7 +1161,8 @@ function createTaskPersistence({
     }
   }
 
-  loadFromDisk();
+  ensureWriterFence();
+  if (!blockedError) loadFromDisk();
   trim();
   return {
     filePath: resolvedPath,
