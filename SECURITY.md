@@ -2,7 +2,7 @@
 
 Codexless is a local execution bridge. Treat it as software that can affect real project files and run real commands under your locally authorized Codex environment.
 
-This document describes the **public Technical Preview** surface in this repository. It does not describe private/internal Toolwire or Workbench capabilities that are intentionally excluded from the public package.
+This document describes the **public Technical Preview tool surface** in this repository. It does not describe private/internal Toolwire or Workbench capabilities that are intentionally excluded from the package.
 
 ## Security model
 
@@ -68,6 +68,20 @@ This lifecycle protects task binding and replay behavior; it is not cryptographi
 Where quota context is available, it may be shown to the user; absence of quota context must not be represented as unlimited or free usage.
 
 Approval of a Codex Agent task does not grant a new local permission universe. Local Codex authority remains the ceiling.
+
+### Managed Codex accounts
+
+Codexless can optionally register multiple managed Codex accounts. The registry maps each account ID to a dedicated direct-child `CODEX_HOME` under the Codexless state root.
+
+- Account homes must be real, distinct directories inside the state root; symlink/junction aliases are rejected.
+- Account authentication remains isolated. `auth.json` must be a regular non-linked file and must never be copied or linked between accounts.
+- When more than one account is registered, a formal `agent_start` requires an explicit valid account selection. Missing or unknown selections fail closed.
+- The selected account is bound to the agent lifecycle. `agent_send` continues that binding rather than choosing a new account.
+- Quota/plan information is observational context only. Codexless does not automatically fail over to another account because of quota, policy, permission, or execution failure.
+- Managed login uses the selected account home and strips inherited OpenAI credential variables rather than borrowing another account's credentials.
+- Registry/Auth state lives outside the replaceable install tree and must survive ordinary update/reinstall without becoming package code.
+
+These constraints isolate Codex login identity. They do not create separate local filesystem or Homelab permission universes; those remain governed by the effective Codex/local execution policy.
 
 ### Active-turn supervision and steering
 
@@ -147,14 +161,12 @@ Before a public release:
 
 ## Known Technical Preview limitations
 
-The Technical Preview is not a claim of production-hardening. Windows and Apple Silicon macOS have both passed real-machine installer/doctor acceptance against the public artifact shape, with broader lifecycle and Tunnel coverage on the Mac path and independent reviewer coverage on the final Windows installer/uninstaller path. Release work still includes final repository/security-reporting hygiene, packed-artifact privacy review, and any clean-machine checks required by release notes.
+The Technical Preview is not a claim of production-hardening. Windows and Apple Silicon macOS have both passed real-machine installer/doctor acceptance against the public artifact shape, with broader lifecycle and Tunnel coverage on the Mac path and independent reviewer coverage on the final Windows installer/uninstaller path. Release work still includes packed-artifact privacy review and any clean-machine checks required by release notes.
 
 Intel Mac, Computer Use, unrestricted direct browser automation, and private Workbench capability parity are not part of the first public security contract.
 
 ## Reporting a vulnerability
 
-Do not post credentials, private project data, or a working exploit in a public issue.
+This maintained fork is currently intended to remain private. Report security findings to the repository owner through a private channel and never place credentials, private project data, or a working exploit in a public ticket.
 
-The public GitHub repository must have **GitHub Private Vulnerability Reporting** enabled before launch. After launch, use the repository's **Security → Advisories → Report a vulnerability** flow so the report is delivered privately to the maintainer. If that private reporting action is not visible, do not disclose the issue in a public ticket; the repository is not release-ready until the private route is enabled and verified.
-
-Enabling and verifying that repository-side setting is a final publication gate, not something the local installer or runtime changes automatically.
+If this repository is made public again, enable and verify GitHub Private Vulnerability Reporting before treating public distribution as release-ready.
