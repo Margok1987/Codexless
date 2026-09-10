@@ -309,11 +309,25 @@ export class CodexAccountAgentExecutor {
     return operation;
   }
 
+  #hasAgentBindings(accountId) {
+    for (const boundAccountId of this.#agentAccounts.values()) {
+      if (boundAccountId === accountId) return true;
+    }
+    return false;
+  }
+
+  #runtimeLost(account) {
+    return poolError(
+      "CODEX_ACCOUNT_RUNTIME_LOST",
+      `Codex account runtime for ${account.id} is no longer running; existing agent bindings cannot be recovered in-process`
+    );
+  }
+
   async #delegateForAgentCall(account, safetyControl = false) {
     if (safetyControl && this.#cleanupFailures.has(account.id)) {
       const existing = this.#delegates.get(account.id);
-      if (existing) return existing;
-      throw poolError("CODEX_ACCOUNT_CLEANUP_FAILED", "Account runtime cleanup failed; no existing executor remains for safety control");
+      if (existing?.running === true) return existing;
+      throw poolError("CODEX_ACCOUNT_CLEANUP_FAILED", "Account runtime cleanup failed; no live existing executor remains for safety control");
     }
     return this.#delegate(account);
   }
@@ -322,11 +336,27 @@ export class CodexAccountAgentExecutor {
     this.#assertOpen();
     this.#assertAccountHealthy(account);
     const existing = this.#delegates.get(account.id);
-    if (existing) return existing;
+    if (existing?.running === true) return existing;
+
     let pending = this.#delegatePromises.get(account.id);
     if (!pending) {
       pending = (async () => {
-        let delegate = null;
+        let delegate = this.#delegates.get(account.id) ?? null;
+
+        if (delegate?.running === true) return delegate;
+
+        if (delegate) {
+          if (this.#hasAgentBindings(account.id)) throw this.#runtimeLost(account);
+          try {
+            await delegate.close();
+          } catch {
+            this.#quarantineAccount(account.id);
+            throw poolError("CODEX_ACCOUNT_CLEANUP_FAILED", "Dead account App Server could not be closed; automatic recreation is blocked");
+          }
+          if (this.#delegates.get(account.id) === delegate) this.#delegates.delete(account.id);
+          delegate = null;
+        }
+
         try {
           delegate = await this.#factory(account, Object.freeze({
             assertHealthy: () => this.#assertAccountHealthy(account),
@@ -341,6 +371,9 @@ export class CodexAccountAgentExecutor {
           // Telemetry can fail cleanup while delegate initialization is in flight.
           // Recheck quarantine after the last await and before publication/dispatch.
           this.#assertAccountHealthy(account);
+          if (delegate.running !== true) {
+            throw new Error("Account executor did not report running after open");
+          }
           this.#delegates.set(account.id, delegate);
           return delegate;
         } catch (error) {
