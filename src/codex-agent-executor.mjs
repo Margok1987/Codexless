@@ -1245,29 +1245,16 @@ export class CodexAgentExecutor {
 
     let executionProjection = projection;
     if (freshProbe) {
-      let probeThreadId = null;
-      try {
-        const probe = await this.#request("thread/start", {
-          cwd: state.cwd,
-          ephemeral: true,
-          permissions: state.permissionProfile,
-          config: buildQuietSessionConfig(effectiveConfig),
-        });
-        probeThreadId = probe?.thread?.id ?? null;
-        if (typeof probeThreadId !== "string" || !probeThreadId) throw mismatch();
-        if (probe?.activePermissionProfile?.id !== state.permissionProfile) throw mismatch();
-        executionProjection = probe;
-      } finally {
-        if (probeThreadId) {
-          try { await this.#request("thread/delete", { threadId: probeThreadId }); }
-          catch {
-            this.#preTurnCleanupFailed = true;
-            const failure = Object.assign(new Error("CODEX_AGENT_CLEANUP_FAILED: follow-up authority probe thread could not be deleted; no Codex turn was started and new turns are blocked"), { code: "CODEX_AGENT_CLEANUP_FAILED" });
-            this.#reportCleanupFailure(failure);
-            throw failure;
-          }
-        }
-      }
+      const probe = await this.#request("thread/start", {
+        cwd: state.cwd,
+        ephemeral: true,
+        permissions: state.permissionProfile,
+        config: buildQuietSessionConfig(effectiveConfig),
+      });
+      const probeThreadId = probe?.thread?.id ?? null;
+      if (typeof probeThreadId !== "string" || !probeThreadId) throw mismatch();
+      if (probe?.activePermissionProfile?.id !== state.permissionProfile) throw mismatch();
+      executionProjection = probe;
     }
 
     const observedPolicyHash = computeCodexAuthorityPolicyHash({

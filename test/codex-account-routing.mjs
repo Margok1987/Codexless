@@ -500,6 +500,11 @@ try {
   const [firstSendResult, duplicateSendResult] = await Promise.all([firstSend, duplicateSend]);
   assert.equal(matchingPolicyClient.turnStartCount, 2, "one initial turn plus one concurrent-safe follow-up turn expected");
   assert.equal(matchingPolicyClient.policyProbeCount, 1, "follow-up must revalidate authority with one fresh ephemeral policy probe");
+  assert.equal(
+    matchingPolicyClient.requests.some(({ method, params }) => method === "thread/delete" && String(params?.threadId ?? "").startsWith("thread-probe-")),
+    false,
+    "ephemeral follow-up policy probes must not be explicitly deleted"
+  );
   assert.equal(firstSendResult.turnId, duplicateSendResult.turnId);
   assert.equal(duplicateSendResult.duplicate, true);
 
