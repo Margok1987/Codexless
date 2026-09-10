@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -58,7 +59,7 @@ function getMcpServers(config) {
   return config?.mcpServers ?? config?.mcp_servers ?? {};
 }
 
-function buildQuietSessionConfig(config) {
+export function buildQuietSessionConfig(config) {
   const disabledMcpServers = Object.fromEntries(
     Object.keys(getMcpServers(config)).map((name) => [name, { enabled: false }])
   );
@@ -69,6 +70,77 @@ function buildQuietSessionConfig(config) {
     },
     mcp_servers: disabledMcpServers,
   };
+}
+
+// Compare unknown fields conservatively. A name-based security filter silently
+// lost cwd, tools, features, MCP configuration and approvalsReviewer. These small
+// exception sets contain only independently bound model choices/presentation or
+// the identity which account selection is explicitly allowed to change.
+const ACCOUNT_IDENTITY_AND_MODEL_CONFIG_KEYS = new Set([
+  "model", "model_reasoning_effort", "model_reasoning_summary", "model_verbosity", "service_tier",
+  "forced_chatgpt_workspace_id", "forced_login_method",
+]);
+const THREAD_IDENTITY_AND_MODEL_KEYS = new Set([
+  "thread", "model", "reasoningEffort", "serviceTier",
+  // Resume-only pagination cursors contain no execution authority.
+  "turnsBackwardsCursor", "itemsBackwardsCursor",
+]);
+
+function stableSecurityProjection(value, { depth = 0, budget = { nodes: 0 } } = {}) {
+  budget.nodes += 1;
+  if (depth > 24 || budget.nodes > 20_000) {
+    throw Object.assign(new Error("Codex authority policy projection exceeds its depth or complexity limit"), { code: "CODEX_AUTHORITY_PROJECTION_INVALID" });
+  }
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (Array.isArray(value)) return value.map((entry) => stableSecurityProjection(entry, { depth: depth + 1, budget }));
+  if (typeof value !== "object") {
+    throw Object.assign(new Error("Codex authority policy projection requires JSON data"), { code: "CODEX_AUTHORITY_PROJECTION_INVALID" });
+  }
+  // Retain JSON keys such as __proto__ as data instead of mutating a prototype.
+  const result = Object.create(null);
+  for (const key of Object.keys(value).sort()) {
+    result[key] = stableSecurityProjection(value[key], { depth: depth + 1, budget });
+  }
+  return result;
+}
+
+function omitPolicyExceptions(value, exceptions) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !exceptions.has(key)));
+}
+
+export function computeCodexAuthorityPolicyHash({ effectiveConfig, permissionRows, authorityProfile, started = null }) {
+  const rows = Array.isArray(permissionRows)
+    ? permissionRows.map((row) => stableSecurityProjection(row))
+        .sort((left, right) => {
+          const a = JSON.stringify(left), b = JSON.stringify(right);
+          return a < b ? -1 : a > b ? 1 : 0;
+        })
+    : [];
+  const material = stableSecurityProjection({
+    schemaVersion: 2,
+    authorityProfile,
+    allowedProfiles: rows,
+    securityConfig: omitPolicyExceptions(effectiveConfig, ACCOUNT_IDENTITY_AND_MODEL_CONFIG_KEYS),
+    executionProjection: started ? omitPolicyExceptions(started, THREAD_IDENTITY_AND_MODEL_KEYS) : null,
+  });
+  const serialized = JSON.stringify(material);
+  if (Buffer.byteLength(serialized, "utf8") > 1024 * 1024) {
+    throw Object.assign(new Error("Codex authority policy projection exceeds its byte limit"), { code: "CODEX_AUTHORITY_PROJECTION_INVALID" });
+  }
+  // Raw configuration, including any sensitive values, never leaves this hash.
+  return createHash("sha256").update(serialized, "utf8").digest("hex");
+}
+
+function authorityPolicyHash({ effectiveConfig, allowedProfiles, authorityProfile, started = null }) {
+  return computeCodexAuthorityPolicyHash({
+    effectiveConfig,
+    permissionRows: Array.isArray(allowedProfiles?.policyRows) ? allowedProfiles.policyRows : [],
+    authorityProfile,
+    started,
+  });
 }
 
 function findTrustedAncestor(config, cwd) {
@@ -111,10 +183,12 @@ function explicitDefaultPermissionProfile(config) {
 function supportedLegacyPermissionProfile(config) {
   const sandboxMode = config?.sandbox_mode ?? config?.sandboxMode ?? null;
   const approvalPolicy = config?.approval_policy ?? config?.approvalPolicy ?? null;
-  if (sandboxMode === "workspace-write" && approvalPolicy === "on-request") {
-    return ":workspace";
-  }
-  return null;
+  if (approvalPolicy !== "on-request") return null;
+  return new Map([
+    ["read-only", ":read-only"],
+    ["workspace-write", ":workspace"],
+    ["danger-full-access", ":danger-full-access"],
+  ]).get(sandboxMode) ?? null;
 }
 
 export function normalizeCodexAuthorityProjection({
@@ -540,6 +614,12 @@ export class CodexAuthorityExecutor {
         permissionCeiling: ":read-only",
         authoritySource: "untrusted-read-only-bootstrap",
         trustedAncestor: null,
+        policyHash: authorityPolicyHash({
+          effectiveConfig,
+          allowedProfiles,
+          authorityProfile: { permissionProfile: ":read-only", permissionCeiling: ":read-only" },
+          trustedAncestor: null,
+        }),
       };
     }
     if (this.#profileOverride && !trusted) {
@@ -573,12 +653,35 @@ export class CodexAuthorityExecutor {
       throw new Error(`requested Codexless downscope is not available in Codex: ${permissionProfile}`);
     }
 
+    const policyProbe = await client.request(
+      "thread/start",
+      {
+        cwd: effectiveCwd,
+        ephemeral: true,
+        permissions: permissionProfile,
+        config: buildQuietSessionConfig(effectiveConfig),
+      },
+      { timeoutMs: Math.min(timeoutMs + this.#watchdogGraceMs, 15_000) }
+    );
+    if (policyProbe?.activePermissionProfile?.id !== permissionProfile) {
+      throw new Error(
+        `authority resolver policy probe mismatch: expected ${permissionProfile}, got ${String(policyProbe?.activePermissionProfile?.id ?? "missing")}`
+      );
+    }
+    assertNoModelOrRuntimeSideEffects(client);
+
     return {
       effectiveCwd,
       permissionProfile,
       permissionCeiling: authority.profileId,
       authoritySource: authority.source,
       trustedAncestor: authority.trustedAncestor,
+      policyHash: authorityPolicyHash({
+        effectiveConfig,
+        allowedProfiles,
+        authorityProfile: { permissionProfile, permissionCeiling: authority.profileId },
+        started: policyProbe,
+      }),
     };
   }
 
@@ -728,13 +831,17 @@ export class CodexAuthorityExecutor {
   async #listAllowedProfiles(client, cwd) {
     const listed = await client.request("permissionProfile/list", { cwd });
     const rows = Array.isArray(listed?.data) ? listed.data : [];
-    const allowed = rows
+    const policyRows = rows
       .filter((row) => row?.allowed === true && typeof row?.id === "string")
-      .map((row) => row.id);
+      .map((row) => stableSecurityProjection(row))
+      .sort((left, right) => String(left?.id ?? "").localeCompare(String(right?.id ?? "")));
+    const allowed = policyRows.map((row) => row.id);
     if (!allowed.length) {
       throw new Error("Codex permissionProfile/list returned no allowed profiles");
     }
-    return new Set(allowed);
+    const result = new Set(allowed);
+    Object.defineProperty(result, "policyRows", { value: Object.freeze(policyRows), enumerable: false });
+    return result;
   }
 
   #newClient(cwd, requestTimeoutMs) {

@@ -12,10 +12,12 @@ export async function probeManagedRuntimeReadiness({
   runtime,
   cwd = process.cwd(),
   requestTimeoutMs = 20_000,
+  clientFactory = (options) => new CodexAppServerClient(options),
 } = {}) {
   if (!runtime || runtime.lane !== "managed") throw new Error("Managed runtime readiness requires a resolved Managed runtime");
   const resolvedCwd = path.resolve(cwd);
-  const client = new CodexAppServerClient({
+  if (typeof clientFactory !== "function") throw new TypeError("Managed readiness clientFactory must be a function");
+  const client = clientFactory({
     cwd: resolvedCwd,
     launch: () => ({
       command: runtime.bin,
@@ -28,8 +30,9 @@ export async function probeManagedRuntimeReadiness({
     clientInfo: { name: "codexless_managed_readiness", title: "Codexless Managed Readiness", version: "1" },
   });
 
-  try {
-    await client.start();
+  const readiness = await (async () => {
+    try {
+      await client.start();
     const account = await client.request("account/read", { refreshToken: false });
     const authMode = account?.account?.type ?? null;
     const planType = account?.account?.planType ?? null;
@@ -75,21 +78,36 @@ export async function probeManagedRuntimeReadiness({
       noModelTurnStarted: true,
       noFallbackPerformed: true,
     };
-  } catch (error) {
+    } catch (error) {
+      return {
+        status: "not_ready",
+        reason: "managed_readiness_probe_failed",
+        accountRead: false,
+        modelList: false,
+        configRead: false,
+        account: { accountPresent: false, authMode: null, planType: null },
+        error: safeReadinessError(error),
+        nextAction: "Run the Codexless managed-login/readiness helper again. If the Managed runtime is damaged, repair/reinstall Codexless.",
+        noFallbackPerformed: true,
+      };
+    }
+  })();
+  try {
+    await client.close();
+  } catch {
     return {
       status: "not_ready",
-      reason: "managed_readiness_probe_failed",
+      reason: "managed_readiness_cleanup_failed",
       accountRead: false,
       modelList: false,
       configRead: false,
       account: { accountPresent: false, authMode: null, planType: null },
-      error: safeReadinessError(error),
-      nextAction: "Run the Codexless managed-login/readiness helper again. If the Managed runtime is damaged, repair/reinstall Codexless.",
+      error: "Managed Codex readiness cleanup failed; upstream diagnostics are withheld",
+      nextAction: "Restart the managed-login/readiness workflow only after the prior local App Server has been confirmed stopped.",
       noFallbackPerformed: true,
     };
-  } finally {
-    await client.close().catch(() => {});
   }
+  return readiness;
 }
 
 export async function activateManagedRuntimeIfReady({
@@ -140,8 +158,6 @@ export async function activateManagedRuntimeIfReady({
   };
 }
 
-function safeReadinessError(error) {
-  return (error instanceof Error ? error.message : String(error))
-    .replace(/https?:\/\/\S+/gi, "[official-login-url-redacted]")
-    .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+/gi, "Bearer [redacted]");
+function safeReadinessError() {
+  return "Managed Codex readiness probe failed; upstream diagnostics are withheld";
 }

@@ -10,11 +10,14 @@ function isRecord(value) {
 
 function normalizeError(error) {
   const rpcError = isRecord(error?.rpcError) ? error.rpcError : null;
+  const directRpcCode = Number.isInteger(error?.rpcCode) ? error.rpcCode : null;
   return {
-    name: error instanceof Error ? error.name : "Error",
-    message: error instanceof Error ? error.message : String(error),
-    rpcCode: Number.isInteger(rpcError?.code) ? rpcError.code : null,
-    rpcMessage: typeof rpcError?.message === "string" ? rpcError.message : null,
+    // Authentication and transport diagnostics can contain account identifiers,
+    // URLs, or credential fragments. Public preflight keeps only safe structure.
+    name: "Unavailable",
+    message: "Codex account telemetry is unavailable; upstream diagnostics are withheld",
+    rpcCode: Number.isInteger(rpcError?.code) ? rpcError.code : directRpcCode,
+    rpcMessage: null,
   };
 }
 
@@ -44,10 +47,35 @@ function normalizeAccount(response) {
   };
 }
 
-function projectQuotaEntry(entry) {
+const SAFE_LIMIT_KEYS = new Set(["codex"]);
+
+function safeLimitKey(value) {
+  return SAFE_LIMIT_KEYS.has(value) ? value : null;
+}
+
+function projectRateLimitWindows(entry) {
+  if (entry?.status !== "ok" || !Array.isArray(entry?.value?.limits)) return [];
+  const windows = [];
+  for (const limit of entry.value.limits) {
+    for (const window of Array.isArray(limit?.windows) ? limit.windows : []) {
+      if (!Number.isInteger(window?.usedPercent)) continue;
+      windows.push({
+        limitKey: safeLimitKey(limit?.key),
+        kind: window?.kind === "primary" || window?.kind === "secondary" ? window.kind : null,
+        remainingPercent: Math.max(0, Math.min(100, 100 - window.usedPercent)),
+        resetsAt: Number.isInteger(window?.resetsAt) ? window.resetsAt : null,
+        windowDurationMins: Number.isInteger(window?.windowDurationMins) ? window.windowDurationMins : null,
+      });
+    }
+  }
+  return windows;
+}
+
+function projectQuotaEntry(entry, { includeWindows = false } = {}) {
   return {
     status: entry?.status ?? "unavailable",
-    error: entry?.status === "unavailable" ? entry.error ?? null : null,
+    ...(includeWindows ? { windows: projectRateLimitWindows(entry) } : {}),
+    error: entry?.status === "unavailable" && entry?.error ? normalizeError(entry.error) : null,
   };
 }
 
@@ -56,7 +84,7 @@ function normalizeQuota(snapshot) {
     status: snapshot?.status ?? "unavailable",
     observedAt: typeof snapshot?.observedAt === "string" ? snapshot.observedAt : null,
     usage: projectQuotaEntry(snapshot?.usage),
-    rateLimits: projectQuotaEntry(snapshot?.rateLimits),
+    rateLimits: projectQuotaEntry(snapshot?.rateLimits, { includeWindows: true }),
   };
 }
 
@@ -66,7 +94,7 @@ function unavailableQuota(error, now) {
     status: "unavailable",
     observedAt: new Date(now()).toISOString(),
     usage: { status: "unavailable", error: normalized },
-    rateLimits: { status: "unavailable", error: normalized },
+    rateLimits: { status: "unavailable", windows: [], error: normalized },
   };
 }
 
@@ -77,8 +105,11 @@ async function closeTelemetryClient(client) {
   try {
     await client.close();
     return { status: "ok", error: null };
-  } catch (error) {
-    return { status: "unavailable", error: normalizeError(error) };
+  } catch {
+    throw Object.assign(
+      new Error("Codex account telemetry cleanup failed; upstream diagnostics are withheld"),
+      { code: "CODEX_ACCOUNT_CLEANUP_FAILED" }
+    );
   }
 }
 

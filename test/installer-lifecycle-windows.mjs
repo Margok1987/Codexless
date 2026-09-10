@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -13,6 +13,9 @@ if (process.platform !== "win32") {
   process.exit(0);
 }
 
+const accountStateOnly = process.argv.includes("--account-state-only");
+if (process.argv.slice(2).some((arg) => arg !== "--account-state-only")) throw new Error("Unknown installer lifecycle test mode");
+
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(testDir, "..");
 const packageJson = JSON.parse(await readFile(path.join(projectRoot, "package.json"), "utf8"));
@@ -24,7 +27,7 @@ const stateDir = path.join(stateHome, ".config", "codexless");
 const defaultBootstrapRoot = path.join(stateDir, "bootstrap");
 const secret = "SUPER_SECRET_FIXTURE_MUST_NOT_LEAK";
 
-try {
+async function runScenarios() {
   await mkdir(fakeTools, { recursive: true });
   await writeFile(path.join(fakeTools, "npm.cmd"), "@echo off\r\necho added noisy npm fixture output\r\nexit /b 0\r\n", "utf8");
   await mkdir(stateDir, { recursive: true });
@@ -42,6 +45,30 @@ try {
   await writeFile(taskState, taskBytes, "utf8");
   await writeFile(managedAuthState, managedAuthBytes, "utf8");
   await writeFile(callProfileState, callProfileBytes, "utf8");
+  // Synthetic user state only: exercise the real install/update boundary without
+  // logging in, reading credentials, or changing the executing user's state.
+  const accountRegistry = path.join(stateDir, "codex-accounts.json");
+  const secondaryHome = path.join(stateDir, "managed-codex-home-secondary");
+  const registryBytes = Buffer.from(JSON.stringify({ schemaVersion: 1, accounts: [
+    { id: "primary", home: "managed-codex-home" },
+    { id: "secondary", home: "managed-codex-home-secondary" },
+  ] }, null, 2) + "\n");
+  await writeFile(accountRegistry, registryBytes);
+  for (const [home, label] of [[managedHome, "primary"], [secondaryHome, "secondary"]]) {
+    await mkdir(path.join(home, "sessions", "fixture"), { recursive: true });
+    await writeFile(path.join(home, "auth-sentinel.json"), JSON.stringify({ fixture: label, sentinel: secret }));
+    await writeFile(path.join(home, "config.toml"), `# synthetic ${label} user settings\n`);
+    await writeFile(path.join(home, "sessions", "fixture", "state.bin"), Buffer.from([0, 1, 2, 127, 128, 255]));
+  }
+  // Retain the original single-account sentinel assertion as well.
+  await writeFile(managedAuthState, managedAuthBytes, "utf8");
+  const accountHomeBytes = await Promise.all([snapshotAccountTree(managedHome), snapshotAccountTree(secondaryHome)]);
+  async function assertAccountState(stage) {
+    assert.deepEqual(await readFile(accountRegistry), registryBytes, `${stage}: registry bytes must be unchanged`);
+    assert.deepEqual(await snapshotAccountTree(managedHome), accountHomeBytes[0], `${stage}: primary CODEX_HOME paths and bytes must be unchanged`);
+    assert.deepEqual(await snapshotAccountTree(secondaryHome), accountHomeBytes[1], `${stage}: secondary CODEX_HOME paths and bytes must be unchanged`);
+  }
+
 
   const releaseA = await createFixtureRelease("release-a", "payload-A", "host-v1");
   const releaseB = await createFixtureRelease("release-b", "payload-B", "host-v1");
@@ -73,7 +100,9 @@ try {
   assert.equal(markerAfterA.lastKnownVersion, freshReceipt.to.version);
   assertMarkerSafe(markerAfterA, mainInstall);
   await assertBootstrapPointsTo(defaultBootstrapRoot, freshReceipt.artifactBuildId, "fresh one-command install");
+  await assertAccountState("fresh install");
 
+  if (!accountStateOnly) {
   const advancedInstall = path.join(root, "advanced-existing-only", "Codexless");
   const advancedExistingOnly = runInstaller(releaseA, advancedInstall, { existingOnly: true });
   assert.equal(advancedExistingOnly.status, 0, advancedExistingOnly.stderr || advancedExistingOnly.stdout);
@@ -86,6 +115,7 @@ try {
   assert.equal(advancedReceipt.runtimeInstall.managedOnboardingRequired, false);
   assert.equal(advancedReceipt.runtimeInstall.managedOnboardingCommand, null);
   assert.equal(advancedReceipt.runtimeInstall.noSilentFallback, true);
+  }
 
   const updateSame = runInstaller(releaseB, mainInstall);
   assert.equal(updateSame.status, 0, updateSame.stderr || updateSame.stdout);
@@ -104,6 +134,11 @@ try {
   assert.notEqual(markerAfterB.lastKnownBuildId, markerAfterA.lastKnownBuildId);
   assert.equal(markerAfterB.lastKnownBuildId, sameReceipt.artifactBuildId);
   await assertBootstrapPointsTo(defaultBootstrapRoot, sameReceipt.artifactBuildId, "ordinary install update");
+  await assertAccountState("update");
+  if (accountStateOnly) {
+    process.stdout.write("installer multi-account state preservation PASS: registry, primary home, secondary home unchanged after fresh install and update\n");
+    return;
+  }
 
   const installedFail = runInstaller(releaseC, mainInstall, { doctorFail: "installed" });
   assert.notEqual(installedFail.status, 0);
@@ -120,7 +155,7 @@ try {
     "doctor line one",
     'quoted \"hello world\"',
     String.raw`backslash C:\fixture\doctor`,
-    "Unicode 狐🦊",
+    "Unicode ç‹ðŸ¦Š",
   ].join("\n");
   const stageFailure = runInstaller(releaseC, mainInstall, { doctorFail: "stage", doctorFailureDetail });
   assert.notEqual(stageFailure.status, 0);
@@ -300,7 +335,12 @@ try {
   assert.equal(await readFile(managedAuthState, "utf8"), managedAuthBytes, "Managed CODEX_HOME/login state must remain byte-for-byte untouched");
   assert.equal(await readFile(callProfileState, "utf8"), callProfileBytes, "Codex Call Profile must remain byte-for-byte untouched");
 
+  await assertAccountState("complete lifecycle");
   process.stdout.write(`installer lifecycle Windows E2E PASS ${changedReceipt.artifactBuildId}\n`);
+}
+
+try {
+  await runScenarios();
 } finally {
   await rm(root, { recursive: true, force: true });
 }
@@ -338,7 +378,7 @@ async function createFixtureRelease(name, marker, hostContractVersion, { incompa
     "const command = process.argv[2] || 'status';",
     "let value;",
     "if (command === 'status') value = {ok:true,preference:{mode:null,persisted:false,updatedAt:null},routing:{activation:'existing_only_pending_managed',managedReady:false,persisted:false,updatedAt:null}};",
-    "else if (command === 'verify-managed') value = {ok:true,action:'managed-runtime-provisioned',activationChanged:false,activation:'existing_only_pending_managed',managedReady:false,managed:{packageName:'@openai/codex',packageVersion:'0.147.0',platformPackageName:'@openai/codex-win32-x64',platformPackageVersion:'0.147.0-win32-x64',binarySha256:'f'.repeat(64),codexHome:'fixture-managed-home',source:'fixture'},officialLoginRequiredBeforeFirstDualActivation:true,noExistingCredentialCopy:true,noExistingCodexHomeCopy:true,noSilentFallback:true};",
+    "else if (command === 'verify-managed') value = {ok:true,action:'managed-runtime-provisioned',activationChanged:false,activation:'existing_only_pending_managed',managedReady:false,managed:{packageName:'@openai/codex',packageVersion:'0.153.4',platformPackageName:'@openai/codex-win32-x64',platformPackageVersion:'0.153.4-win32-x64',binarySha256:'f'.repeat(64),codexHome:'fixture-managed-home',source:'fixture'},officialLoginRequiredBeforeFirstDualActivation:true,noExistingCredentialCopy:true,noExistingCodexHomeCopy:true,noSilentFallback:true};",
     "else value = {ok:true,action:command,mode:process.argv.includes('--mode') ? process.argv[process.argv.indexOf('--mode') + 1] : null};",
     "process.stdout.write(JSON.stringify(value) + '\\n');",
     "",
@@ -533,6 +573,24 @@ async function assertNoTransactionDebris(parent, label) {
   assert.equal(entries.some((name) => name.startsWith("Codexless-backup-")), false, `${label}: transaction backup must be cleaned`);
   assert.equal(entries.some((name) => name.startsWith("Codexless-stage-")), false, `${label}: staging directory must be cleaned`);
   assert.equal(entries.some((name) => name.startsWith("Codexless-previous.rollback-")), false, `${label}: previous rollback stash must be cleaned/restored`);
+}
+
+async function snapshotAccountTree(directory, relative = "") {
+  const result = [];
+  const entries = (await readdir(path.join(directory, relative), { withFileTypes: true }))
+    .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  for (const entry of entries) {
+    const name = path.join(relative, entry.name);
+    assert.equal(entry.isSymbolicLink(), false, "preservation fixtures must be real files and directories");
+    if (entry.isDirectory()) {
+      result.push({ path: name, kind: "directory" });
+      result.push(...await snapshotAccountTree(directory, name));
+    } else {
+      assert.equal(entry.isFile(), true);
+      result.push({ path: name, kind: "file", bytes: await readFile(path.join(directory, name)) });
+    }
+  }
+  return result;
 }
 
 async function exists(target) {

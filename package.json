@@ -1,6 +1,6 @@
 {
   "name": "codexless",
-  "version": "0.1.1-preview.5",
+  "version": "0.1.2-preview.0",
   "private": true,
   "license": "Apache-2.0",
   "description": "Windows and Apple Silicon macOS Technical Preview: let ChatGPT use accepted Codex-backed local capabilities and escalate to Codex only when needed.",
@@ -20,13 +20,13 @@
     "start:stdio": "node scripts/launch.mjs stdio",
     "start:http": "node scripts/launch.mjs http",
     "doctor": "node scripts/doctor.mjs",
-    "test:contract": "node test/release-identity.mjs && node test/lifecycle-contract.mjs && node test/bootstrap-archive-policy.mjs && node test/bootstrap-persistence.mjs && node test/codex-version-gate.mjs && node test/browser-runtime-compat.mjs && node test/public-runtime-browser-guardrails.mjs && node test/stock-prompt-input-catalog.mjs && node test/public-command-policy.mjs && node test/public-registration-allowlist.mjs && node test/public-contract.mjs",
-    "test:consent": "node test/metered-consent.mjs && node test/agent-consent-card.mjs && node test/reasoning-effort.mjs && node test/agent-steering-progress.mjs",
+    "test:contract": "node test/release-identity.mjs && node test/lifecycle-contract.mjs && node test/bootstrap-archive-policy.mjs && node test/bootstrap-persistence.mjs && node test/codex-version-gate.mjs && node --test test/codex-app-server-lifecycle.mjs && node --test test/codex-agent-interrupt-recovery.mjs && node --test test/codex-account-official-contract.mjs && node test/browser-runtime-compat.mjs && node test/public-runtime-browser-guardrails.mjs && node test/stock-prompt-input-catalog.mjs && node test/public-command-policy.mjs && node test/public-registration-allowlist.mjs && node test/public-contract.mjs",
+    "test:consent": "node test/metered-consent.mjs && node test/codex-account-routing.mjs && node --test test/codex-account-security.mjs && node test/agent-consent-card.mjs && node test/reasoning-effort.mjs && node test/agent-steering-progress.mjs && node --test test/account-agent-steering.mjs",
     "test:browser-reader": "node test/public-browser-adapter.mjs",
     "test:browser-operator": "node --test test/browser-household-parity.mjs",
     "test:public-registration": "node test/public-registration-allowlist.mjs",
     "test:diagnostics": "node test/recent-call-diagnostics.mjs && node test/recent-call-http.mjs && node test/doctor-health.mjs",
-    "test": "node test/release-identity.mjs && node test/lifecycle-contract.mjs && node test/installer-lifecycle-windows.mjs && node test/bootstrap-archive-policy.mjs && node test/bootstrap-persistence.mjs && node test/codex-version-gate.mjs && node test/browser-runtime-compat.mjs && node test/public-runtime-browser-guardrails.mjs && node test/stock-prompt-input-catalog.mjs && node test/recent-call-diagnostics.mjs && node test/recent-call-http.mjs && node test/doctor-health.mjs && node test/metered-consent.mjs && node test/agent-consent-card.mjs && node test/reasoning-effort.mjs && node test/agent-steering-progress.mjs && node test/public-command-policy.mjs && node test/public-registration-allowlist.mjs && node test/public-browser-adapter.mjs && node --test test/browser-household-parity.mjs && node test/public-contract.mjs",
+    "test": "node test/release-identity.mjs && node test/lifecycle-contract.mjs && node test/installer-lifecycle-windows.mjs && node test/bootstrap-archive-policy.mjs && node test/bootstrap-persistence.mjs && node test/codex-version-gate.mjs && node --test test/codex-app-server-lifecycle.mjs && node --test test/codex-agent-interrupt-recovery.mjs && node --test test/codex-account-official-contract.mjs && node test/browser-runtime-compat.mjs && node test/public-runtime-browser-guardrails.mjs && node test/stock-prompt-input-catalog.mjs && node test/recent-call-diagnostics.mjs && node test/recent-call-http.mjs && node test/doctor-health.mjs && node test/metered-consent.mjs && node test/codex-account-routing.mjs && node --test test/codex-account-security.mjs && node test/agent-consent-card.mjs && node test/reasoning-effort.mjs && node test/agent-steering-progress.mjs && node --test test/account-agent-steering.mjs && node test/public-command-policy.mjs && node test/public-registration-allowlist.mjs && node test/public-browser-adapter.mjs && node --test test/browser-household-parity.mjs && node test/public-contract.mjs",
     "release:manifest": "node scripts/generate-release-manifest.mjs",
     "bootstrap:materialize": "node scripts/materialize-bootstrap.mjs",
     "test:release-identity": "node test/release-identity.mjs",
@@ -45,7 +45,9 @@
   "dependencies": {
     "@modelcontextprotocol/node": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
+    "@napi-rs/canvas": "1.0.8",
     "@openai/codex": "0.153.4",
+    "pdfjs-dist": "6.3.289",
     "zod": "4.4.3"
   },
   "devDependencies": {
