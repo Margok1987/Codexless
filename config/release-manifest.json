@@ -4,7 +4,7 @@
   "version": "0.1.2-preview.0",
   "buildIdAlgorithm": "sha256-release-identity-v1",
   "fileHashAlgorithm": "sha256-raw-file-v1",
-  "sourceRevision": "ce337c1af8815dd684ca8c6d4df4adf93427a50f",
+  "sourceRevision": "c64804989a3cd67d63ae3663271734dc90bb98af",
   "hostContractVersion": "codexless-public-preview-v1",
   "stateCompatibility": {
     "migration": "none",
@@ -17,7 +17,7 @@
       }
     }
   },
-  "buildId": "5fb632372191ba3f0c8c1d4f0f58483d787148e349d92d34cae0f461f61ab7b5",
+  "buildId": "75a3aead3d8d97ae0b7a84c5da1f9c23892d51aedcdaffd6b784c3194ca9320d",
   "files": [
     { "path": "EXPORT_SYNC.md", "sha256": "2016ca37f280451a76cdb95f7223e0aa60f4a4743a41df0e11d6b4157231a839" },
     { "path": "LICENSE", "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4" },
@@ -74,9 +74,9 @@
     { "path": "src/browser-tools.mjs", "sha256": "877ef9ef383fc1208a3d15bdd31d77a9f1477be1e7e29978f05063fc9234c27c" },
     { "path": "src/codex-account-agent-executor.mjs", "sha256": "163443efcb3862373a10c021bbfdfb51a3f4b2eea332c288626a2ee314fc0b1b" },
     { "path": "src/codex-account-registry.mjs", "sha256": "a2b44d7ae57d27a6dd99283e9768487ac1fe334f9502b06cfc3d24eb6dea90dd" },
-    { "path": "src/codex-agent-executor.mjs", "sha256": "0529c3618aa3a79203ee627b6130cf91cfd340550ef84fc1bbb790472819bdd9" },
+    { "path": "src/codex-agent-executor.mjs", "sha256": "541fddfaa9e3ac4eb0d8c4ffdc886013cdbe3d422ba282a1ec17bf90771146b3" },
     { "path": "src/codex-app-server-client.mjs", "sha256": "86f592325fd14403ac34f5b26b08580c000bc137eaca33e2c427456153dc9049" },
-    { "path": "src/codex-authority-executor.mjs", "sha256": "b8b93624e870d34ccef5ce78a26bd905108cd129fcff99f18cf8c4f76d8b641a" },
+    { "path": "src/codex-authority-executor.mjs", "sha256": "837eb0c25eeb32123b4f9fdbc38732f0598031bd479bab1fcae739a0c16d11d1" },
     { "path": "src/codex-bin.mjs", "sha256": "979c26ca4cd52c40a43a93bdc4c30e962b8eb9c374dbee7f1bdff0b67a24094e" },
     { "path": "src/codex-browser-executor.mjs", "sha256": "70d4e35036505012a5fee9250f3b50281bd4998a9e9eaa8e4aea775817b6ff71" },
     { "path": "src/codex-call-profile.mjs", "sha256": "87b136e5cb0e3af7e90a9d7c808ad098a1c5649f94d2490e1c07d3897d180906" },
