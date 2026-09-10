@@ -10,7 +10,7 @@
 
 ![Technical Preview](https://img.shields.io/badge/status-technical_preview-6b7280)
 ![Windows](https://img.shields.io/badge/Windows-supported-0078D4?logo=windows11&logoColor=white)
-![Apple Silicon macOS](https://img.shields.io/badge/macOS-Apple_Silicon-111111?logo=apple)
+![Apple Silicon macOS](https://img.shields.io/badge/macOS-Apple_Silicon-111111?logo=apple&logoColor=white)
 [![Apache-2.0 License](https://img.shields.io/badge/license-Apache--2.0-22c55e.svg)](LICENSE)
 
 **Stay in ChatGPT. Work on your local machine. Bring in Codex only when you actually need it.**
@@ -99,6 +99,8 @@ Before a metered Codex call, normal Chat shows a compact **text approval** with 
 If approved, the task runs in the background. When it reaches a terminal state, Codexless returns a compact text Result with the outcome, mutation/verification evidence, any remaining blocker, quota context, and the same Task ID.
 
 The underlying task binding remains single-use and replay-safe: a stale or already-consumed approval cannot be reused to start the task again.
+
+---
 
 Once an approved Codex turn is running, ChatGPT can supervise it without opening the full Codex transcript: `codex.agent_show` exposes a bounded latest agent message, current plan, and active item identity. If the task needs a course correction, `codex.agent_steer` sends an exact instruction into that same active turn through Codex App Server `turn/steer`; it requires the current turn ID and does not start a replacement turn. `codex.agent_cancel` remains the immediate hard-interrupt path.
 
