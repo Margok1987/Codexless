@@ -104,6 +104,25 @@ The underlying task binding remains single-use and replay-safe: a stale or alrea
 
 Once an approved Codex turn is running, ChatGPT can supervise it without opening the full Codex transcript: `codex.agent_show` exposes a bounded latest agent message, current plan, and active item identity. If the task needs a course correction, `codex.agent_steer` sends an exact instruction into that same active turn through Codex App Server `turn/steer`; it requires the current turn ID and does not start a replacement turn. `codex.agent_cancel` remains the immediate hard-interrupt path.
 
+### Multiple managed Codex accounts
+
+Codexless can optionally keep multiple ChatGPT-authenticated Codex accounts in isolated managed homes under its persistent state root.
+
+- `codex-accounts.json` maps a short account ID to one dedicated `CODEX_HOME` directory.
+- Each account keeps its own authentication state. Do not copy or link `auth.json` between account homes.
+- Sign in an account through the official managed-login path:
+
+```sh
+npm run codexless:managed-login -- --account <id>
+```
+
+- `codex.account_preflight` checks the selected account model-free and returns bounded authentication, plan, and quota/reset context without returning credentials or starting a model turn.
+- When more than one account is configured, `codex.agent_start` requires an explicit account. Missing or unknown selections fail closed.
+- A started agent remains bound to that account. `codex.agent_send` continues the same binding and does not select a different account.
+- Quota information is observational only. Codexless does not automatically route or fail over to another account when quota, policy, permission, or execution problems occur.
+
+Managed-account state lives outside the replaceable install tree, so reinstall/update can preserve it. The exact registry validation and account-binding contract are enforced by the current product source and tests.
+
 ## Before you install
 
 - **Platforms:** Windows and **Apple Silicon macOS (`arm64`)** Technical Preview. Intel Mac is not supported yet.
