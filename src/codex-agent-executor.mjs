@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { CodexAppServerClient, CodexRpcError } from "./codex-app-server-client.mjs";
 import { buildAgentResourceReceipt } from "./agent-resource.mjs";
-import { computeCodexAuthorityPolicyHash } from "./codex-authority-executor.mjs";
+import { buildQuietSessionConfig, computeCodexAuthorityPolicyHash } from "./codex-authority-executor.mjs";
 import { projectCodexModel } from "./codex-model-catalog.mjs";
 
 const TERMINAL_TURN_STATUSES = new Set(["completed", "failed", "interrupted"]);
@@ -1085,7 +1085,7 @@ export class CodexAgentExecutor {
       if (resumed?.thread?.id !== state.threadId) {
         throw new Error("Codex thread/resume changed the bound thread; no follow-up was started");
       }
-      await this.#assertBoundAuthority(state, resumed);
+      await this.#assertBoundAuthority(state, resumed, { freshProbe: true });
       await this.#assertChatgptAuth();
       if (resumed?.thread?.canAcceptDirectInput === false) {
         throw new Error(`Codex thread cannot accept direct input: ${state.threadId}`);
@@ -1228,7 +1228,7 @@ export class CodexAgentExecutor {
     }
   }
 
-  async #assertBoundAuthority(state, projection) {
+  async #assertBoundAuthority(state, projection, { freshProbe = false } = {}) {
     if (!state.authorityPolicyHash) {
       if (!this.#requireAuthorityPolicy) return;
       throw Object.assign(new Error("CODEX_AGENT_AUTHORITY_MISMATCH: no prepared account authority policy"), { code: "CODEX_AGENT_AUTHORITY_MISMATCH" });
@@ -1242,10 +1242,38 @@ export class CodexAgentExecutor {
     const permissionRows = (Array.isArray(listed?.data) ? listed.data : [])
       .filter((row) => row?.allowed === true && typeof row?.id === "string");
     if (!permissionRows.some((row) => row.id === state.permissionProfile)) throw mismatch();
+
+    let executionProjection = projection;
+    if (freshProbe) {
+      let probeThreadId = null;
+      try {
+        const probe = await this.#request("thread/start", {
+          cwd: state.cwd,
+          ephemeral: true,
+          permissions: state.permissionProfile,
+          config: buildQuietSessionConfig(effectiveConfig),
+        });
+        probeThreadId = probe?.thread?.id ?? null;
+        if (typeof probeThreadId !== "string" || !probeThreadId) throw mismatch();
+        if (probe?.activePermissionProfile?.id !== state.permissionProfile) throw mismatch();
+        executionProjection = probe;
+      } finally {
+        if (probeThreadId) {
+          try { await this.#request("thread/delete", { threadId: probeThreadId }); }
+          catch {
+            this.#preTurnCleanupFailed = true;
+            const failure = Object.assign(new Error("CODEX_AGENT_CLEANUP_FAILED: follow-up authority probe thread could not be deleted; no Codex turn was started and new turns are blocked"), { code: "CODEX_AGENT_CLEANUP_FAILED" });
+            this.#reportCleanupFailure(failure);
+            throw failure;
+          }
+        }
+      }
+    }
+
     const observedPolicyHash = computeCodexAuthorityPolicyHash({
       effectiveConfig, permissionRows,
       authorityProfile: { permissionProfile: state.permissionProfile, permissionCeiling: state.permissionCeiling },
-      started: projection,
+      started: executionProjection,
     });
     if (observedPolicyHash !== state.authorityPolicyHash) throw mismatch();
   }

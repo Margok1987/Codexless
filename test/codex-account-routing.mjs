@@ -281,7 +281,7 @@ try {
   await executor.close();
 
   class RacePolicyClient {
-    constructor({ effectiveConfig = {}, permissionRows = [], startedProjection = {}, holdFirstThread = false, holdSecondTurn = false } = {}) {
+    constructor({ effectiveConfig = {}, permissionRows = [], startedProjection = {}, resumeProjection = null, holdFirstThread = false, holdSecondTurn = false } = {}) {
       this.running = false;
       this.initializedResult = null;
       this.serverRequestMethods = [];
@@ -289,9 +289,11 @@ try {
       this.effectiveConfig = structuredClone(effectiveConfig);
       this.permissionRows = structuredClone(permissionRows);
       this.startedProjection = structuredClone(startedProjection);
+      this.resumeProjection = structuredClone(resumeProjection ?? startedProjection);
       this.holdFirstThread = holdFirstThread;
       this.holdSecondTurn = holdSecondTurn;
       this.threadStartCount = 0;
+      this.policyProbeCount = 0;
       this.turnStartCount = 0;
       this.currentThreadId = null;
       this.currentTurnId = null;
@@ -309,6 +311,17 @@ try {
     async request(method, params = {}) {
       this.requests.push({ method, params: structuredClone(params) });
       if (method === "thread/start") {
+        if (params.ephemeral === true) {
+          this.policyProbeCount += 1;
+          return {
+            ...structuredClone(this.startedProjection),
+            thread: { id: `thread-probe-${this.policyProbeCount}`, canAcceptDirectInput: true },
+            model: "fake-model",
+            modelProvider: "fake",
+            serviceTier: null,
+            reasoningEffort: null,
+          };
+        }
         this.threadStartCount += 1;
         if (this.holdFirstThread && this.threadStartCount === 1) {
           this.signalFirstThread();
@@ -356,7 +369,7 @@ try {
       }
       if (method === "thread/resume") {
         return {
-          ...structuredClone(this.startedProjection),
+          ...structuredClone(this.resumeProjection),
           thread: { id: this.currentThreadId, canAcceptDirectInput: true },
           model: "fake-model",
           modelProvider: "fake",
@@ -367,6 +380,7 @@ try {
         };
       }
       if (method === "thread/delete") {
+        if (typeof params.threadId === "string" && params.threadId.startsWith("thread-probe-")) return {};
         assert.equal(params.threadId, this.currentThreadId);
         return {};
       }
@@ -445,6 +459,7 @@ try {
     effectiveConfig: canonicalConfig,
     permissionRows,
     startedProjection,
+    resumeProjection: { ...startedProjection, resumeOnlyDiagnostic: "different-shape" },
     holdSecondTurn: true,
   });
   const matchingPolicyExecutor = new CodexAgentExecutor({
@@ -484,8 +499,21 @@ try {
   matchingPolicyClient.releaseSecondTurn();
   const [firstSendResult, duplicateSendResult] = await Promise.all([firstSend, duplicateSend]);
   assert.equal(matchingPolicyClient.turnStartCount, 2, "one initial turn plus one concurrent-safe follow-up turn expected");
+  assert.equal(matchingPolicyClient.policyProbeCount, 1, "follow-up must revalidate authority with one fresh ephemeral policy probe");
   assert.equal(firstSendResult.turnId, duplicateSendResult.turnId);
   assert.equal(duplicateSendResult.duplicate, true);
+
+  matchingPolicyClient.effectiveConfig.network_access = true;
+  await assert.rejects(
+    () => matchingPolicyExecutor.send({
+      agentRef: policyStarted.agentRef,
+      message: "policy-drift-follow-up",
+      clientRequestId: "policy-drift-follow-up",
+    }),
+    (error) => error?.code === "CODEX_AGENT_AUTHORITY_MISMATCH"
+  );
+  assert.equal(matchingPolicyClient.turnStartCount, 2, "follow-up policy drift must fail before a third model turn");
+  assert.equal(matchingPolicyClient.policyProbeCount, 2, "drifted follow-up must still use a fresh policy probe before failing");
   await matchingPolicyExecutor.close();
 
   console.log("codex-account-routing: ok");

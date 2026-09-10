@@ -59,7 +59,7 @@ function getMcpServers(config) {
   return config?.mcpServers ?? config?.mcp_servers ?? {};
 }
 
-function buildQuietSessionConfig(config) {
+export function buildQuietSessionConfig(config) {
   const disabledMcpServers = Object.fromEntries(
     Object.keys(getMcpServers(config)).map((name) => [name, { enabled: false }])
   );
