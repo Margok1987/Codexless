@@ -72,6 +72,121 @@ test("failed account App Server open is always closed before a retry", async () 
   assert.equal(closes, 1, "partially opened App Server must not be orphaned");
 });
 
+test("dead unbound account delegate is closed and recreated once", async () => {
+  const delegates = [];
+  let closeCount = 0;
+  const router = new CodexAccountAgentExecutor({
+    registry,
+    factory: async (account) => {
+      const generation = delegates.length + 1;
+      const delegate = fakeDelegate(account.id, {
+        async close() { closeCount += 1; this.running = false; },
+        async listModels() { return { models: [{ id: `${account.id}-${generation}` }], nextCursor: null }; },
+      });
+      delegates.push(delegate);
+      return delegate;
+    },
+  });
+  try {
+    assert.equal((await router.listModels({ account: "secondary" })).models[0].id, "secondary-1");
+    delegates[0].running = false;
+    const [a, b] = await Promise.all([
+      router.listModels({ account: "secondary" }),
+      router.listModels({ account: "secondary" }),
+    ]);
+    assert.equal(a.models[0].id, "secondary-2");
+    assert.equal(b.models[0].id, "secondary-2");
+    assert.equal(delegates.length, 2, "dead delegate recreation must be serialized");
+    assert.equal(closeCount, 1, "dead unbound delegate must be closed before replacement");
+  } finally { await router.close(); }
+});
+
+test("dead account recovery stays isolated to the selected account", async () => {
+  const generations = new Map();
+  const delegates = new Map();
+  const closed = [];
+  const router = new CodexAccountAgentExecutor({
+    registry,
+    factory: async (account) => {
+      const generation = (generations.get(account.id) ?? 0) + 1;
+      generations.set(account.id, generation);
+      const delegate = fakeDelegate(account.id, {
+        async close() { closed.push(`${account.id}-${generation}`); this.running = false; },
+        async listModels() { return { models: [{ id: `${account.id}-${generation}` }], nextCursor: null }; },
+      });
+      delegates.set(`${account.id}-${generation}`, delegate);
+      return delegate;
+    },
+  });
+  try {
+    assert.equal((await router.listModels({ account: "primary" })).models[0].id, "primary-1");
+    assert.equal((await router.listModels({ account: "secondary" })).models[0].id, "secondary-1");
+    delegates.get("secondary-1").running = false;
+    assert.equal((await router.listModels({ account: "secondary" })).models[0].id, "secondary-2");
+    assert.equal((await router.listModels({ account: "primary" })).models[0].id, "primary-1");
+    assert.equal(generations.get("primary"), 1, "healthy account executor must not be recreated");
+    assert.equal(generations.get("secondary"), 2);
+    assert.deepEqual(closed, ["secondary-1"], "recovery must close only the dead selected-account executor");
+  } finally { await router.close(); }
+});
+
+test("dead account delegate with bound agents fails closed instead of recreating", async () => {
+  const delegates = [];
+  const router = new CodexAccountAgentExecutor({
+    registry,
+    factory: async (account) => {
+      const delegate = fakeDelegate(account.id);
+      delegates.push(delegate);
+      return delegate;
+    },
+  });
+  try {
+    const agent = await router.start({ account: "secondary", task: "bound runtime", clientRequestId: "bound-runtime-start" });
+    delegates[0].running = false;
+    await assert.rejects(
+      router.show({ agentRef: agent.agentRef }),
+      (error) => error?.code === "CODEX_ACCOUNT_RUNTIME_LOST"
+    );
+    await assert.rejects(
+      router.start({ account: "secondary", task: "must not replace bound runtime", clientRequestId: "bound-runtime-restart" }),
+      (error) => error?.code === "CODEX_ACCOUNT_RUNTIME_LOST"
+    );
+    assert.equal(delegates.length, 1, "bound runtime loss must not silently create a replacement App Server");
+  } finally { await router.close(); }
+});
+
+test("dead unbound delegate cleanup failure quarantines the account", async () => {
+  let factories = 0;
+  const delegates = [];
+  const router = new CodexAccountAgentExecutor({
+    registry,
+    factory: async (account) => {
+      factories += 1;
+      const delegate = fakeDelegate(account.id, {
+        async listModels() { return { models: [{ id: account.id }], nextCursor: null }; },
+        async close() { this.running = false; throw new Error("fixture close failed"); },
+      });
+      delegates.push(delegate);
+      return delegate;
+    },
+  });
+  try {
+    await router.listModels({ account: "secondary" });
+    delegates[0].running = false;
+    await assert.rejects(
+      router.listModels({ account: "secondary" }),
+      (error) => error?.code === "CODEX_ACCOUNT_CLEANUP_FAILED"
+    );
+    await assert.rejects(
+      router.listModels({ account: "secondary" }),
+      (error) => error?.code === "CODEX_ACCOUNT_CLEANUP_FAILED"
+    );
+    assert.equal(factories, 1, "cleanup failure must quarantine instead of spawning a replacement");
+  } finally {
+    await router.close().catch(() => {});
+  }
+});
+
 test("request IDs share one binding across starts and controls", async () => {
   let sends = 0;
   const router = new CodexAccountAgentExecutor({ registry, factory: async (account) => fakeDelegate(account.id, { async send(input) { sends += 1; return { agentRef: input.agentRef }; } }) });

@@ -4,7 +4,7 @@
   "version": "0.1.2-preview.0",
   "buildIdAlgorithm": "sha256-release-identity-v1",
   "fileHashAlgorithm": "sha256-raw-file-v1",
-  "sourceRevision": "719e0a2d6ed1285be987bf1320856a0816b00e6a",
+  "sourceRevision": "ad41d6594347bca68ea2ebecec02fcf2cfd56c37",
   "hostContractVersion": "codexless-public-preview-v1",
   "stateCompatibility": {
     "migration": "none",
@@ -17,13 +17,13 @@
       }
     }
   },
-  "buildId": "00d88eafe458b8eb5f9c1e8cd23414396814d3a7d30b54fae74ca9a702731a9a",
+  "buildId": "2eb969effafeaaed579682ac19cbd3faa476bfe04fc00b8586b16f73eb0646cb",
   "files": [
     { "path": "EXPORT_SYNC.md", "sha256": "2016ca37f280451a76cdb95f7223e0aa60f4a4743a41df0e11d6b4157231a839" },
     { "path": "LICENSE", "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4" },
-    { "path": "README.md", "sha256": "1dcca2ee9d1ae818f47955af92c5fe0e3079d67f4a201e1707cb8cc99f75dec0" },
+    { "path": "README.md", "sha256": "140492dfca16140aff272bad4b6b973db4da4e942723abca62e2285029bc949e" },
     { "path": "README.zh-CN.md", "sha256": "bc05b53e538c6e149582daa65748744a9336f90b923b08b0b189dc0918f12cc5" },
-    { "path": "SECURITY.md", "sha256": "3c3aa46420d26dbf3127117b5d9d3b4a4ac67c7be37f5d28bd721fc9669d566d" },
+    { "path": "SECURITY.md", "sha256": "b84d74fe3310979afa8cf0821c038048a85b309152301167c8fc0d61ecd75db6" },
     { "path": "THIRD_PARTY_NOTICES.md", "sha256": "532d98de514ed71e3e30879366c023e028727435853ea5a47c42b67206228235" },
     { "path": "bin/codexless-doctor.cmd", "sha256": "8433095510e2bcb5248f9b51c9b23e9db5922bd86a6827e37c1f6fc9ffffa5ef" },
     { "path": "bin/codexless-doctor.sh", "sha256": "9fddc99ed66e946894a65d5409a4b6cc1a3288ac89ca776987f759e855bb7897" },
@@ -59,7 +59,7 @@
     { "path": "scripts/runtime-install-state.mjs", "sha256": "ba348cddd9377f8e18eca6e4ae663e1ef976379b96e898f0e8aab8d69e5d75d9" },
     { "path": "scripts/sync-codex-skills.mjs", "sha256": "19ad3742a1a9202368415633cc7cd65e13cdd550c264c9d3b209b66bfa3a7bdf" },
     { "path": "scripts/uninstall.ps1", "sha256": "786c5c751193f50fed1e78242c0f5db39e44aebca737c14eb26f9934a78996fe" },
-    { "path": "scripts/uninstall.sh", "sha256": "452fe015b0ff9cb14859fa5ec2a69a64f6e76dc6e1f17b27f4441f3b3121c02b" },
+    { "path": "scripts/uninstall.sh", "sha256": "452fe015b0ff9cb14859fa5ec2a69a888eb08abb2cc479d36b4f6701775467fb" },
     { "path": "skills/codexless-browser-repair/SKILL.md", "sha256": "43b24574da21f09ee625e56b56ff753a03f6d35043c1fb3203ae47f43097f647" },
     { "path": "src/agent-card-ui.mjs", "sha256": "9c56d509a4ebc9b9593aa65376a1e813aaa9c158679e510cd277f6970e348d61" },
     { "path": "src/agent-resource.mjs", "sha256": "e3432f178622f7c398185d8f39c9ed2cc8e9e9c737da3bac3afb2446101739d1" },
@@ -72,7 +72,7 @@
     { "path": "src/browser-model-route-probe.mjs", "sha256": "2b0cc93ad064543b09a276cb2be8d031b926cc62c6cfe11bd916a8e2a592f07b" },
     { "path": "src/browser-runtime-compat.mjs", "sha256": "97dc1da61d45a7a8b5d4f9e5ed9ae82ba981c01c99e41a038957b3e85631e77a" },
     { "path": "src/browser-tools.mjs", "sha256": "877ef9ef383fc1208a3d15bdd31d77a9f1477be1e7e29978f05063fc9234c27c" },
-    { "path": "src/codex-account-agent-executor.mjs", "sha256": "163443efcb3862373a10c021bbfdfb51a3f4b2eea332c288626a2ee314fc0b1b" },
+    { "path": "src/codex-account-agent-executor.mjs", "sha256": "740b42e6802646c0c59b854ed515adbcacb48760b06393600cdeef5c176b2978" },
     { "path": "src/codex-account-registry.mjs", "sha256": "a2b44d7ae57d27a6dd99283e9768487ac1fe334f9502b06cfc3d24eb6dea90dd" },
     { "path": "src/codex-agent-executor.mjs", "sha256": "4b8941e360de0f95209fe3be7d114deb004762bd75c140b24b7daa30cc222b6e" },
     { "path": "src/codex-app-server-client.mjs", "sha256": "86f592325fd14403ac34f5b26b08580c000bc137eaca33e2c427456153dc9049" },
