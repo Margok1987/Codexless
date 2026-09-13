@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { CodexAppServerClient, CodexRpcError } from "./codex-app-server-client.mjs";
 import { buildAgentResourceReceipt } from "./agent-resource.mjs";
-import { buildQuietSessionConfig, computeCodexAuthorityPolicyHash } from "./codex-authority-executor.mjs";
+import { buildQuietSessionConfig, computeCodexAuthorityPolicyHash, findTrustedAncestor } from "./codex-authority-executor.mjs";
 import { projectCodexModel } from "./codex-model-catalog.mjs";
 
 const TERMINAL_TURN_STATUSES = new Set(["completed", "failed", "interrupted"]);
@@ -446,6 +446,81 @@ export class CodexAgentExecutor {
     };
   }
 
+  async #prepareAuthority({
+    cwd = this.#defaultCwd,
+    permissionProfile,
+    permissionCeiling = permissionProfile,
+  } = {}) {
+    this.#assertOpen();
+    this.#assertTurnAdmission();
+    if (typeof permissionProfile !== "string" || !permissionProfile.trim()) {
+      throw new Error("permissionProfile is required for account authority preparation");
+    }
+    if (typeof permissionCeiling !== "string" || !permissionCeiling.trim()) {
+      throw new Error("permissionCeiling is required for account authority preparation");
+    }
+    const effectiveCwd = path.resolve(cwd);
+    const configRead = await this.#request("config/read", { cwd: effectiveCwd, includeLayers: false });
+    const effectiveConfig = configRead?.config;
+    if (!effectiveConfig || typeof effectiveConfig !== "object" || Array.isArray(effectiveConfig)) {
+      throw Object.assign(new Error("Account authority preparation could not read an effective Codex config"), { code: "CODEX_AGENT_AUTHORITY_INCOMPATIBLE" });
+    }
+    const trusted = findTrustedAncestor(effectiveConfig, effectiveCwd);
+    if (!trusted) {
+      throw Object.assign(new Error("Selected account does not trust the prepared cwd; no Codex turn was started"), { code: "CODEX_AGENT_AUTHORITY_INCOMPATIBLE" });
+    }
+    const listed = await this.#request("permissionProfile/list", { cwd: effectiveCwd });
+    const permissionRows = (Array.isArray(listed?.data) ? listed.data : [])
+      .filter((row) => row?.allowed === true && typeof row?.id === "string");
+    const allowed = new Set(permissionRows.map((row) => row.id));
+    if (!allowed.has(permissionProfile) || !allowed.has(permissionCeiling)) {
+      throw Object.assign(new Error("Selected account does not expose the prepared permission profile/ceiling; no Codex turn was started"), { code: "CODEX_AGENT_AUTHORITY_INCOMPATIBLE" });
+    }
+
+    let probeThreadId = null;
+    let result = null;
+    let primaryError = null;
+    try {
+      const probe = await this.#request("thread/start", {
+        cwd: effectiveCwd,
+        ephemeral: true,
+        permissions: permissionProfile,
+        config: buildQuietSessionConfig(effectiveConfig),
+      });
+      probeThreadId = typeof probe?.thread?.id === "string" && probe.thread.id ? probe.thread.id : null;
+      if (!probeThreadId || probe?.activePermissionProfile?.id !== permissionProfile) {
+        throw Object.assign(new Error("Selected account could not materialize the prepared permission profile; no Codex turn was started"), { code: "CODEX_AGENT_AUTHORITY_INCOMPATIBLE" });
+      }
+      result = {
+        effectiveCwd,
+        permissionProfile,
+        permissionCeiling,
+        authoritySource: "account-delegate",
+        trustedAncestor: trusted.root,
+        policyHash: computeCodexAuthorityPolicyHash({
+          effectiveConfig,
+          permissionRows,
+          authorityProfile: { permissionProfile, permissionCeiling },
+          started: probe,
+        }),
+      };
+    } catch (error) {
+      primaryError = error;
+    }
+
+    if (probeThreadId && !this.#closed) {
+      try {
+        await this.#request("thread/delete", { threadId: probeThreadId });
+      } catch {
+        this.#preTurnCleanupFailed = true;
+        const cleanupFailure = Object.assign(new Error("CODEX_AGENT_CLEANUP_FAILED: account authority probe thread could not be deleted; new starts are blocked until controlled shutdown"), { code: "CODEX_AGENT_CLEANUP_FAILED" });
+        this.#reportCleanupFailure(cleanupFailure);
+        throw cleanupFailure;
+      }
+    }
+    if (primaryError) throw primaryError;
+    return result;
+  }
   async #start({
     cwd = this.#defaultCwd,
     task,
@@ -1175,6 +1250,7 @@ export class CodexAgentExecutor {
   }
 
   async listModels(input) { return this.#track(() => this.#listModels(input)); }
+  async prepareAuthority(input) { return this.#track(() => this.#prepareAuthority(input)); }
   async start(input) { return this.#track(() => this.#start(input)); }
   async show(input) { return this.#track(() => this.#show(input), true); }
   async resolvePendingRequest(input) { return this.#track(() => this.#resolvePendingRequest(input)); }

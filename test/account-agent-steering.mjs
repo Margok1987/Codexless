@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import path from "node:path";
 import { CodexAccountAgentExecutor } from "../src/codex-account-agent-executor.mjs";
+import { computeCodexAuthorityPolicyHash } from "../src/codex-authority-executor.mjs";
+import { createAccountBoundFormalAgentAuthorityExecutor } from "../src/codexless-runtime.mjs";
+import { createFormalAgentAccountContext } from "../src/formal-agent-account-context.mjs";
 import { CodexAgentExecutor } from "../src/codex-agent-executor.mjs";
 
 function gate() {
@@ -134,4 +138,160 @@ test("close drains in-flight account steering and prevents later dispatch", asyn
   await assert.rejects(pool.steer(steer(snapshot, "after-close")), /closed/);
   assert.equal(client.running, false);
   assert.equal(steerCalls(client).length, 1);
+});
+
+test("formal authority hash ignores presentation and unrelated project trust but preserves relevant trust", () => {
+  const cwd = process.cwd();
+  const unrelated = path.resolve(cwd, "..", "unrelated-authority-fixture");
+  const common = {
+    permissionRows: [{ id: ":read-only", allowed: true, sandboxMode: "readOnly", approvalPolicy: "never" }],
+    authorityProfile: { permissionProfile: ":read-only", permissionCeiling: ":read-only" },
+    started: { cwd, thread: { id: "probe", cwd }, activePermissionProfile: { id: ":read-only" } },
+  };
+  const first = {
+    ...common,
+    effectiveConfig: {
+      desktop: { conversationDetailMode: "STEPS_COMMANDS" },
+      projects: { [cwd]: { trust_level: "trusted" } },
+    },
+  };
+  const harmless = {
+    ...common,
+    effectiveConfig: {
+      desktop: { conversationDetailMode: "STEPS_PROSE" },
+      projects: {
+        [cwd]: { trust_level: "trusted" },
+        [unrelated]: { trust_level: "trusted" },
+      },
+    },
+  };
+  assert.equal(computeCodexAuthorityPolicyHash(first), computeCodexAuthorityPolicyHash(harmless));
+  const relevantDrift = structuredClone(harmless);
+  relevantDrift.effectiveConfig.projects[cwd].trust_level = "untrusted";
+  assert.notEqual(computeCodexAuthorityPolicyHash(first), computeCodexAuthorityPolicyHash(relevantDrift));
+});
+
+test("formal account context binds start and commit authority to the existing task account", async () => {
+  const taskState = { taskRecords: new Map() };
+  const accountExecutor = { resolveAccountId(account) { if (!account) throw new Error("account required"); return account; } };
+  const context = createFormalAgentAccountContext({ agentPreviewState: taskState, agentExecutor: accountExecutor });
+  const host = {
+    async resolveAuthority() {
+      return { effectiveCwd: process.cwd(), permissionProfile: ":read-only", permissionCeiling: ":read-only", policyHash: "a".repeat(64) };
+    },
+  };
+  const preparedAccounts = [];
+  const authority = createAccountBoundFormalAgentAuthorityExecutor({
+    hostAuthorityExecutor: host,
+    agentExecutor: {
+      async prepareAuthority(input) {
+        preparedAccounts.push(input.account);
+        return {
+          effectiveCwd: input.cwd,
+          permissionProfile: input.permissionProfile,
+          permissionCeiling: input.permissionCeiling,
+          securityPolicyHash: "a".repeat(64),
+          policyHash: "b".repeat(64),
+        };
+      },
+    },
+    accountProvider: () => context.currentAccount(),
+  });
+  const startHandler = context.wrapToolHandler("codex.agent_start", async () => authority.resolveAuthority({ cwd: process.cwd(), access: "inherit" }));
+  assert.equal((await startHandler({ account: "secondary" })).policyHash, "b".repeat(64));
+  taskState.taskRecords.set("task", { taskId: "C-BOUND", payload: { account: "primary" } });
+  const commitHandler = context.wrapToolHandler("codex.agent_commit", async () => authority.resolveAuthority({ cwd: process.cwd(), access: "inherit" }));
+  assert.equal((await commitHandler({ taskId: "C-BOUND" })).policyHash, "b".repeat(64));
+  assert.deepEqual(preparedAccounts, ["secondary", "primary"]);
+});
+
+test("prepared authority lease is stale after account delegate recreation", async () => {
+  const delegates = [];
+  let startCalls = 0;
+  const pool = new CodexAccountAgentExecutor({
+    registry: { source: "registry", accounts: [{ id: "primary" }, { id: "secondary" }] },
+    preStartAuthorityCheck: async () => {},
+    factory: async () => {
+      const delegate = {
+        running: false,
+        async open() { this.running = true; },
+        async close() { this.running = false; },
+        async prepareAuthority(input) {
+          return { ...input, effectiveCwd: input.cwd, policyHash: "c".repeat(64) };
+        },
+        async start() { startCalls += 1; return { agentRef: `agent-${startCalls}`, turnId: "turn", status: "running" }; },
+      };
+      delegates.push(delegate);
+      return delegate;
+    },
+  });
+  await pool.open();
+  try {
+    const prepared = await pool.prepareAuthority({ account: "secondary", cwd: process.cwd(), permissionProfile: ":read-only", permissionCeiling: ":read-only" });
+    delegates[0].running = false;
+    await assert.rejects(
+      pool.start({ account: "secondary", cwd: process.cwd(), task: "stale", clientRequestId: "stale-lease", permissionProfile: ":read-only", permissionCeiling: ":read-only", authorityPolicyHash: prepared.policyHash }),
+      (error) => error.code === "CODEX_AGENT_PREPARED_DELEGATE_STALE"
+    );
+    assert.equal(startCalls, 0);
+    assert.equal(delegates.length, 2);
+  } finally { await pool.close(); }
+});
+
+test("final account start rechecks host authority and unwraps only the bound security hash", async () => {
+  let drift = false;
+  let observedPolicyHash = null;
+  const pool = new CodexAccountAgentExecutor({
+    registry: { source: "registry", accounts: [{ id: "secondary" }] },
+    preStartAuthorityCheck: async () => {
+      if (drift) {
+        const error = new Error("host authority drift");
+        error.code = "CODEX_AGENT_SECURITY_POLICY_CHANGED";
+        throw error;
+      }
+    },
+    factory: async () => ({
+      running: false,
+      async open() { this.running = true; },
+      async close() { this.running = false; },
+      async prepareAuthority(input) { return { ...input, effectiveCwd: input.cwd, policyHash: "d".repeat(64) }; },
+      async start(input) {
+        observedPolicyHash = input.authorityPolicyHash;
+        return { agentRef: "agent-bound", turnId: "turn-bound", status: "running" };
+      },
+    }),
+  });
+  await pool.open();
+  try {
+    const prepared = await pool.prepareAuthority({ account: "secondary", cwd: process.cwd(), permissionProfile: ":read-only", permissionCeiling: ":read-only" });
+    assert.notEqual(prepared.policyHash, "d".repeat(64));
+    await pool.start({ account: "secondary", cwd: process.cwd(), task: "ok", clientRequestId: "lease-ok", permissionProfile: ":read-only", permissionCeiling: ":read-only", authorityPolicyHash: prepared.policyHash });
+    assert.equal(observedPolicyHash, "d".repeat(64));
+  } finally { await pool.close(); }
+
+  let attempted = 0;
+  const driftPool = new CodexAccountAgentExecutor({
+    registry: { source: "registry", accounts: [{ id: "secondary" }] },
+    preStartAuthorityCheck: async () => {
+      const error = new Error("host authority drift");
+      error.code = "CODEX_AGENT_SECURITY_POLICY_CHANGED";
+      throw error;
+    },
+    factory: async () => ({
+      running: false,
+      async open() { this.running = true; },
+      async close() { this.running = false; },
+      async prepareAuthority(input) { return { ...input, effectiveCwd: input.cwd, policyHash: "e".repeat(64) }; },
+      async start() { attempted += 1; return { agentRef: "unexpected", turnId: "unexpected", status: "running" }; },
+    }),
+  });
+  await driftPool.open();
+  try {
+    const prepared = await driftPool.prepareAuthority({ account: "secondary", cwd: process.cwd(), permissionProfile: ":read-only", permissionCeiling: ":read-only" });
+    await assert.rejects(
+      driftPool.start({ account: "secondary", cwd: process.cwd(), task: "blocked", clientRequestId: "lease-drift", permissionProfile: ":read-only", permissionCeiling: ":read-only", authorityPolicyHash: prepared.policyHash }),
+      (error) => error.code === "CODEX_AGENT_SECURITY_POLICY_CHANGED"
+    );
+    assert.equal(attempted, 0);
+  } finally { await driftPool.close(); }
 });

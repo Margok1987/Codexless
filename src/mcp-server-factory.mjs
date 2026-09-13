@@ -50,6 +50,7 @@ export function createCodexToolboxServerFactory({
   codexCallProfile = false,
   codexCallProfileFile = null,
   formalAgentBlock = null,
+  formalAgentAccountContext = null,
   toolAllowlist = null,
   publicPreview = false,
   guardDirectFormalCodex = false,
@@ -111,10 +112,13 @@ export function createCodexToolboxServerFactory({
         if (allowedTools) registeredAllowedTools.add(name);
         const handlerIndex = args.length - 1;
         const handler = args[handlerIndex];
-        if (typeof handler === "function" && recentCallStore) {
+        if (typeof handler === "function" && formalAgentAccountContext?.wrapToolHandler) {
+          args[handlerIndex] = formalAgentAccountContext.wrapToolHandler(name, handler);
+        }
+        if (typeof args[handlerIndex] === "function" && recentCallStore) {
           args[handlerIndex] = wrapToolHandlerWithRecentCallReceipt({
             toolName: name,
-            handler,
+            handler: args[handlerIndex],
             store: recentCallStore,
           });
         }

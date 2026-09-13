@@ -1,6 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { createAgentPreviewState } from "./agent-tools.mjs";
+import { createFormalAgentAccountContext } from "./formal-agent-account-context.mjs";
 import { readJsonFile } from "./json-file.mjs";
 import {
   HOUSEHOLD_SERVER_VERSION,
@@ -166,6 +167,66 @@ function createManagedFormalAgentExecutor() {
 
 function createManagedFormalAgentAuthorityExecutor() {
   return { async resolveAuthority() { throw managedFormalAgentError(); } };
+}
+
+function isAmbiguousInheritedFormalAuthority(error) {
+  return /activePermissionProfile is null and config\/read provides (?:no explicit default_permissions provenance|neither explicit default_permissions nor supported sandbox_mode\/approval_policy provenance)/.test(
+    error instanceof Error ? error.message : String(error)
+  );
+}
+
+async function resolveFormalHostAuthority(hostAuthorityExecutor, input = {}) {
+  try {
+    return await hostAuthorityExecutor.resolveAuthority(input);
+  } catch (error) {
+    if (input?.access !== "inherit" || !isAmbiguousInheritedFormalAuthority(error)) throw error;
+    return hostAuthorityExecutor.resolveAuthority({ ...input, access: "readOnly" });
+  }
+}
+
+export function createAccountBoundFormalAgentAuthorityExecutor({ hostAuthorityExecutor, agentExecutor, accountProvider = null }) {
+  if (!hostAuthorityExecutor || typeof hostAuthorityExecutor.resolveAuthority !== "function") {
+    throw new TypeError("account-bound authority requires a host authority executor");
+  }
+  if (!agentExecutor || typeof agentExecutor.prepareAuthority !== "function") {
+    throw new TypeError("account-bound authority requires an account agent executor");
+  }
+  if (accountProvider !== null && typeof accountProvider !== "function") {
+    throw new TypeError("accountProvider must be a function when provided");
+  }
+  return {
+    async resolveAuthority(input = {}) {
+      const explicit = typeof input?.account === "string" && input.account ? input.account : null;
+      const account = explicit ?? accountProvider?.() ?? null;
+      if (!account) {
+        const error = new Error("CODEX_ACCOUNT_REQUIRED: formal-agent authority requires an explicit managed account context");
+        error.code = "CODEX_ACCOUNT_REQUIRED";
+        throw error;
+      }
+      const { account: _ignored, ...hostInput } = input;
+      const host = await resolveFormalHostAuthority(hostAuthorityExecutor, hostInput);
+      const selected = await agentExecutor.prepareAuthority({
+        account,
+        cwd: host.effectiveCwd,
+        permissionProfile: host.permissionProfile,
+        permissionCeiling: host.permissionCeiling ?? host.permissionProfile,
+      });
+      const compatible = selected.effectiveCwd === host.effectiveCwd
+        && selected.permissionProfile === host.permissionProfile
+        && selected.permissionCeiling === (host.permissionCeiling ?? host.permissionProfile)
+        && selected.securityPolicyHash === host.policyHash;
+      if (!compatible) {
+        const error = new Error("CODEX_AGENT_AUTHORITY_INCOMPATIBLE: selected account authority is not equivalent to the current host authority; no Codex turn was prepared");
+        error.code = "CODEX_AGENT_AUTHORITY_INCOMPATIBLE";
+        throw error;
+      }
+      return {
+        ...selected,
+        authoritySource: "host+account-bound",
+        hostAuthoritySource: host.authoritySource ?? null,
+      };
+    },
+  };
 }
 
 function compatibilityRuntimeMode(env) {
@@ -574,11 +635,11 @@ export async function createCodexlessRuntime({
       return accountRegistry.source === "legacy" ? result : { ...result, selectedAccount: account.id };
     };
 
-    let agentAuthorityExecutor;
+    let hostAgentAuthorityExecutor;
     if (formalAgentUsesExisting && modelFreeRuntime.lane === "existing") {
-      agentAuthorityExecutor = executor;
+      hostAgentAuthorityExecutor = executor;
     } else if (formalAgentUsesExisting) {
-      agentAuthorityExecutor = new LazyCodexAuthorityExecutor({
+      hostAgentAuthorityExecutor = new LazyCodexAuthorityExecutor({
         factory: async () => {
           const existingRuntime = await resolveFormalAgentRuntime();
           return new CodexAuthorityExecutor({
@@ -593,7 +654,7 @@ export async function createCodexlessRuntime({
         },
       });
     } else {
-      agentAuthorityExecutor = createManagedFormalAgentAuthorityExecutor();
+      hostAgentAuthorityExecutor = createManagedFormalAgentAuthorityExecutor();
     }
 
     if (formalAgentUsesExisting) {
@@ -618,6 +679,20 @@ export async function createCodexlessRuntime({
         },
         quotaProvider: (account) => snapshotForAccount(account),
         preflightProvider: (account) => preflightForAccount(account),
+        preStartAuthorityCheck: accountRegistry.source === "registry"
+          ? async ({ binding, input }) => {
+              const host = await resolveFormalHostAuthority(hostAgentAuthorityExecutor, { cwd: input.cwd, access: "inherit" });
+              const compatible = host.effectiveCwd === binding.effectiveCwd
+                && host.permissionProfile === binding.permissionProfile
+                && (host.permissionCeiling ?? host.permissionProfile) === binding.permissionCeiling
+                && host.policyHash === binding.securityPolicyHash;
+              if (!compatible) {
+                const error = new Error("CODEX_AGENT_SECURITY_POLICY_CHANGED: host authority changed after task preparation; prepare and approve a new Codex task");
+                error.code = "CODEX_AGENT_SECURITY_POLICY_CHANGED";
+                throw error;
+              }
+            }
+          : null,
       });
     } else {
       agentExecutor = createManagedFormalAgentExecutor();
@@ -641,6 +716,16 @@ export async function createCodexlessRuntime({
       meteredQuotaProvider,
       taskStateFile: agentTaskStateFile,
     });
+    const formalAgentAccountContext = formalAgentUsesExisting && accountRegistry.source === "registry"
+      ? createFormalAgentAccountContext({ agentPreviewState, agentExecutor })
+      : null;
+    const agentAuthorityExecutor = formalAgentAccountContext
+      ? createAccountBoundFormalAgentAuthorityExecutor({
+          hostAuthorityExecutor: hostAgentAuthorityExecutor,
+          agentExecutor,
+          accountProvider: () => formalAgentAccountContext.currentAccount(),
+        })
+      : hostAgentAuthorityExecutor;
     // HTTP MCP serving creates a fresh McpServer per request. Excel opaque
     // session refs must therefore live at runtime lifetime too, otherwise a
     // ref minted by excel_status is unknown on the very next tool call.
@@ -687,6 +772,7 @@ export async function createCodexlessRuntime({
       meteredConsentMode,
       meteredQuotaProvider,
       agentPreviewState,
+      formalAgentAccountContext,
       agentPortableCard: privateConstruction || publicPreview,
       legacyAgentCardInternals: false,
       agentReasoningEffort: privateConstruction || publicPreview,
