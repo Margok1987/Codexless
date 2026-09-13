@@ -4,7 +4,7 @@
   "version": "0.1.2-preview.0",
   "buildIdAlgorithm": "sha256-release-identity-v1",
   "fileHashAlgorithm": "sha256-raw-file-v1",
-  "sourceRevision": "4fc52965f056c3448d1d88a3d8cf970a39b50068",
+  "sourceRevision": "ca54480fc41c149a835bb9875b792e720e730e3c",
   "hostContractVersion": "codexless-public-preview-v1",
   "stateCompatibility": {
     "migration": "none",
@@ -17,7 +17,7 @@
       }
     }
   },
-  "buildId": "68d2235e93ec98e2a7643346de372de8377adf4584a72b8a84505820d5e7a533",
+  "buildId": "60cd0a7eb15fc19813105d1214f1aae98d7e266f68ed8684a83163facb2d7bc1",
   "files": [
     { "path": "EXPORT_SYNC.md", "sha256": "2016ca37f280451a76cdb95f7223e0aa60f4a4743a41df0e11d6b4157231a839" },
     { "path": "LICENSE", "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4" },
@@ -74,7 +74,7 @@
     { "path": "src/browser-tools.mjs", "sha256": "877ef9ef383fc1208a3d15bdd31d77a9f1477be1e7e29978f05063fc9234c27c" },
     { "path": "src/codex-account-agent-executor.mjs", "sha256": "8cd91eae35deaf10909a2f1a2ce1f48c739a6b223ec1f0d31e141407eed8aeea" },
     { "path": "src/codex-account-registry.mjs", "sha256": "a2b44d7ae57d27a6dd99283e9768487ac1fe334f9502b06cfc3d24eb6dea90dd" },
-    { "path": "src/codex-agent-executor.mjs", "sha256": "bf6e4c9f5cb41f040897c1579fc59077acbc105ddd6f41362cda20b92e1942d3" },
+    { "path": "src/codex-agent-executor.mjs", "sha256": "4982ccada8e8ddcf6de79d932bca9e60a4cfb9cc1187cc0c6ab1f55ba2db436b" },
     { "path": "src/codex-app-server-client.mjs", "sha256": "86f592325fd14403ac34f5b26b08580c000bc137eaca33e2c427456153dc9049" },
     { "path": "src/codex-authority-executor.mjs", "sha256": "4ef5c6c953c7104f594d2b1237c75276d9f504668dc04f20a89012a43f3e52a0" },
     { "path": "src/codex-bin.mjs", "sha256": "979c26ca4cd52c40a43a93bdc4c30e962b8eb9c374dbee7f1bdff0b67a24094e" },
