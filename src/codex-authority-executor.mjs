@@ -111,6 +111,38 @@ function omitPolicyExceptions(value, exceptions) {
   return Object.fromEntries(Object.entries(value).filter(([key]) => !exceptions.has(key)));
 }
 
+export const CODEX_AUTHORITY_POLICY_SCHEMA_VERSION = 3;
+
+function projectRelevantProjects(projects, effectiveCwd) {
+  if (!projects || typeof projects !== "object" || Array.isArray(projects) || !effectiveCwd) return projects;
+  const target = normalizeConfigPath(effectiveCwd);
+  return Object.fromEntries(Object.entries(projects).filter(([rawRoot]) => {
+    const normalizedRoot = normalizeConfigPath(rawRoot);
+    return target === normalizedRoot || target.startsWith(`${normalizedRoot}\\`);
+  }));
+}
+
+function projectSecurityConfig(effectiveConfig, effectiveCwd) {
+  const config = omitPolicyExceptions(effectiveConfig, ACCOUNT_IDENTITY_AND_MODEL_CONFIG_KEYS);
+  if (!config || typeof config !== "object" || Array.isArray(config)) return config;
+  const projected = structuredClone(config);
+
+  // Desktop rendering preference has no execution-authority effect. Keep every
+  // other desktop field conservative until its non-interference is proven.
+  if (projected.desktop && typeof projected.desktop === "object" && !Array.isArray(projected.desktop)) {
+    delete projected.desktop.conversationDetailMode;
+    if (!Object.keys(projected.desktop).length) delete projected.desktop;
+  }
+
+  // Project trust is cwd-scoped. Trust records that cannot cover this concrete
+  // task cwd must not contaminate the task authority hash.
+  if (projected.projects && typeof projected.projects === "object" && !Array.isArray(projected.projects)) {
+    projected.projects = projectRelevantProjects(projected.projects, effectiveCwd);
+    if (!Object.keys(projected.projects).length) delete projected.projects;
+  }
+  return projected;
+}
+
 export function computeCodexAuthorityPolicyHash({ effectiveConfig, permissionRows, authorityProfile, started = null }) {
   const rows = Array.isArray(permissionRows)
     ? permissionRows.map((row) => stableSecurityProjection(row))
@@ -119,11 +151,16 @@ export function computeCodexAuthorityPolicyHash({ effectiveConfig, permissionRow
           return a < b ? -1 : a > b ? 1 : 0;
         })
     : [];
+  const effectiveCwd = typeof started?.cwd === "string" && started.cwd
+    ? started.cwd
+    : typeof started?.thread?.cwd === "string" && started.thread.cwd
+      ? started.thread.cwd
+      : null;
   const material = stableSecurityProjection({
-    schemaVersion: 2,
+    schemaVersion: CODEX_AUTHORITY_POLICY_SCHEMA_VERSION,
     authorityProfile,
     allowedProfiles: rows,
-    securityConfig: omitPolicyExceptions(effectiveConfig, ACCOUNT_IDENTITY_AND_MODEL_CONFIG_KEYS),
+    securityConfig: projectSecurityConfig(effectiveConfig, effectiveCwd),
     executionProjection: started ? omitPolicyExceptions(started, THREAD_IDENTITY_AND_MODEL_KEYS) : null,
   });
   const serialized = JSON.stringify(material);
@@ -143,7 +180,7 @@ function authorityPolicyHash({ effectiveConfig, allowedProfiles, authorityProfil
   });
 }
 
-function findTrustedAncestor(config, cwd) {
+export function findTrustedAncestor(config, cwd) {
   const target = normalizeConfigPath(cwd);
   const projects = config?.projects ?? {};
   let best = null;
