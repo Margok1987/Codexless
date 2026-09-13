@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { resolveCodexAccount } from "./codex-account-registry.mjs";
 
 function requestBindingHash(method, accountId, input = {}) {
@@ -25,6 +25,18 @@ function requestBindingHash(method, accountId, input = {}) {
   return createHash("sha256").update(JSON.stringify(material), "utf8").digest("hex");
 }
 
+function authorityLeaseHash({ accountId, delegateEpoch, securityPolicyHash, effectiveCwd, permissionProfile, permissionCeiling }) {
+  return createHash("sha256").update(JSON.stringify({
+    schemaVersion: 1,
+    accountId,
+    delegateEpoch,
+    securityPolicyHash,
+    effectiveCwd,
+    permissionProfile,
+    permissionCeiling,
+  }), "utf8").digest("hex");
+}
+
 function poolError(code, message) {
   return Object.assign(new Error(message), { code });
 }
@@ -47,12 +59,15 @@ export class CodexAccountAgentExecutor {
   #factory;
   #quotaProvider;
   #preflightProvider;
+  #preStartAuthorityCheck;
   #maxRequests;
   #maxAgents;
   #maxInFlight;
   #pendingStarts = 0;
   #delegates = new Map();
   #delegatePromises = new Map();
+  #delegateEpochs = new Map();
+  #authorityBindings = new Map();
   #agentAccounts = new Map();
   #requestBindings = new Map();
   #operations = new Set();
@@ -61,7 +76,7 @@ export class CodexAccountAgentExecutor {
   #closePromise = null;
   #closed = false;
 
-  constructor({ registry, factory, quotaProvider = null, preflightProvider = null,
+  constructor({ registry, factory, quotaProvider = null, preflightProvider = null, preStartAuthorityCheck = null,
     maxRequests = 10_000, maxAgents = 1_000, maxInFlight = 128 } = {}) {
     if (!registry || !Array.isArray(registry.accounts) || !registry.accounts.length || registry.accounts.length > 32) {
       throw new Error("CodexAccountAgentExecutor requires an account registry with 1..32 accounts");
@@ -69,6 +84,7 @@ export class CodexAccountAgentExecutor {
     if (typeof factory !== "function") throw new Error("CodexAccountAgentExecutor requires a delegate factory");
     if (quotaProvider !== null && typeof quotaProvider !== "function") throw new Error("quotaProvider must be a function when provided");
     if (preflightProvider !== null && typeof preflightProvider !== "function") throw new Error("preflightProvider must be a function when provided");
+    if (preStartAuthorityCheck !== null && typeof preStartAuthorityCheck !== "function") throw new Error("preStartAuthorityCheck must be a function when provided");
     for (const [name, value] of Object.entries({ maxRequests, maxAgents, maxInFlight })) {
       if (!Number.isInteger(value) || value < 1 || value > 100_000) throw new Error(`${name} must be 1..100000`);
     }
@@ -78,6 +94,7 @@ export class CodexAccountAgentExecutor {
     this.#factory = factory;
     this.#quotaProvider = quotaProvider;
     this.#preflightProvider = preflightProvider;
+    this.#preStartAuthorityCheck = preStartAuthorityCheck;
     this.#maxRequests = maxRequests;
     this.#maxAgents = maxAgents;
     this.#maxInFlight = maxInFlight;
@@ -96,8 +113,6 @@ export class CodexAccountAgentExecutor {
     if (this.#closePromise) return this.#closePromise;
     this.#closed = true;
     this.#closePromise = (async () => {
-      // Close clients first so their pending RPCs unblock. Factories still in
-      // flight own cleanup of their unpublished delegate when they observe close.
       const closing = [...this.#delegates.entries()].map(async ([id, delegate]) => {
         try { await delegate.close(); }
         catch { this.#quarantineAccount(id); }
@@ -105,6 +120,8 @@ export class CodexAccountAgentExecutor {
       await Promise.allSettled([...closing, ...this.#operations, ...this.#delegatePromises.values()]);
       this.#delegates.clear();
       this.#delegatePromises.clear();
+      this.#delegateEpochs.clear();
+      this.#authorityBindings.clear();
       this.#agentAccounts.clear();
       this.#requestBindings.clear();
       this.#operations.clear();
@@ -136,6 +153,47 @@ export class CodexAccountAgentExecutor {
     });
   }
 
+  async prepareAuthority({ account = null, ...input } = {}) {
+    this.#assertOpen();
+    const selected = resolveCodexAccount(this.#registry, account);
+    const bound = structuredClone(input);
+    return this.#track(async () => {
+      const delegate = await this.#delegate(selected);
+      const delegateEpoch = this.#delegateEpochs.get(selected.id) ?? null;
+      if (!delegateEpoch || typeof delegate.prepareAuthority !== "function") {
+        throw poolError("CODEX_AGENT_AUTHORITY_UNAVAILABLE", "Selected account runtime cannot prepare formal-agent authority");
+      }
+      const authority = await delegate.prepareAuthority(bound);
+      if (this.#delegates.get(selected.id) !== delegate || this.#delegateEpochs.get(selected.id) !== delegateEpoch || delegate.running !== true) {
+        throw poolError("CODEX_AGENT_PREPARED_DELEGATE_STALE", "Selected account runtime changed while authority was being prepared; prepare a new Codex task");
+      }
+      const securityPolicyHash = authority?.policyHash;
+      if (typeof securityPolicyHash !== "string" || !/^[0-9a-f]{64}$/.test(securityPolicyHash)) {
+        throw poolError("CODEX_AGENT_AUTHORITY_UNAVAILABLE", "Selected account runtime returned no valid authority policy hash");
+      }
+      const leaseHash = authorityLeaseHash({
+        accountId: selected.id,
+        delegateEpoch,
+        securityPolicyHash,
+        effectiveCwd: authority.effectiveCwd,
+        permissionProfile: authority.permissionProfile,
+        permissionCeiling: authority.permissionCeiling,
+      });
+      if (!this.#authorityBindings.has(leaseHash) && this.#authorityBindings.size >= this.#maxRequests) {
+        throw poolError("CODEX_ACCOUNT_CAPACITY", "Prepared authority binding capacity reached; new formal-agent starts are blocked without evicting existing bindings");
+      }
+      this.#authorityBindings.set(leaseHash, Object.freeze({
+        accountId: selected.id,
+        delegateEpoch,
+        securityPolicyHash,
+        effectiveCwd: authority.effectiveCwd,
+        permissionProfile: authority.permissionProfile,
+        permissionCeiling: authority.permissionCeiling,
+      }));
+      return { ...authority, securityPolicyHash, policyHash: leaseHash };
+    });
+  }
+
   async accountPreflight({ account = null } = {}) {
     this.#assertOpen();
     if (!this.#preflightProvider) throw new Error("account preflight is unavailable");
@@ -163,7 +221,28 @@ export class CodexAccountAgentExecutor {
       try {
         const delegate = await this.#delegate(selected);
         this.#assertOpen();
-        const snapshot = await delegate.start(bound);
+        let delegateInput = bound;
+        if (this.#registry.source === "registry" && bound.authorityPolicyHash && this.#preStartAuthorityCheck) {
+          const leaseHash = bound.authorityPolicyHash;
+          const binding = typeof leaseHash === "string" ? this.#authorityBindings.get(leaseHash) : null;
+          const currentEpoch = this.#delegateEpochs.get(selected.id) ?? null;
+          if (!binding || binding.accountId !== selected.id || binding.delegateEpoch !== currentEpoch
+            || binding.effectiveCwd !== bound.cwd || binding.permissionProfile !== bound.permissionProfile
+            || binding.permissionCeiling !== bound.permissionCeiling) {
+            throw poolError("CODEX_AGENT_PREPARED_DELEGATE_STALE", "Prepared Codex authority is not bound to the current selected-account runtime; prepare a new Codex task");
+          }
+          await this.#preStartAuthorityCheck({
+            account: selected,
+            binding: structuredClone(binding),
+            input: structuredClone(bound),
+          });
+          this.#assertOpen();
+          if (this.#delegates.get(selected.id) !== delegate || this.#delegateEpochs.get(selected.id) !== currentEpoch || delegate.running !== true) {
+            throw poolError("CODEX_AGENT_PREPARED_DELEGATE_STALE", "Selected account runtime changed during final authority validation; prepare a new Codex task");
+          }
+          delegateInput = { ...bound, authorityPolicyHash: binding.securityPolicyHash };
+        }
+        const snapshot = await delegate.start(delegateInput);
         this.#assertOpen();
         const agentRef = snapshot?.agentRef;
         if (typeof agentRef !== "string" || !agentRef || agentRef.length > 512) {
@@ -224,8 +303,6 @@ export class CodexAccountAgentExecutor {
         };
       }, safetyControl);
     }
-    // Never evict idempotency tombstones to make room: that would permit replay.
-    // Cancellation/rejection has separate headroom even when new work is full.
     const limit = this.#maxRequests + (safetyControl ? this.#maxAgents * 4 : 0);
     if (this.#requestBindings.size >= limit) {
       throw poolError("CODEX_ACCOUNT_CAPACITY", "Request capacity reached; new work is blocked without forgetting replay bindings");
@@ -290,9 +367,6 @@ export class CodexAccountAgentExecutor {
       this.#assertOpen();
       this.#assertAccountHealthy(account);
       try {
-        // close() drains already-started read-only telemetry. Once the provider
-        // has started under an open/healthy account, its observed result may
-        // complete while close waits; no new provider can start after closure.
         return await provider(account);
       } catch (error) {
         if (error?.code === "CODEX_ACCOUNT_CLEANUP_FAILED") {
@@ -332,6 +406,12 @@ export class CodexAccountAgentExecutor {
     return this.#delegate(account);
   }
 
+  #dropAuthorityBindings(accountId) {
+    for (const [leaseHash, binding] of this.#authorityBindings) {
+      if (binding?.accountId === accountId) this.#authorityBindings.delete(leaseHash);
+    }
+  }
+
   async #delegate(account) {
     this.#assertOpen();
     this.#assertAccountHealthy(account);
@@ -342,9 +422,7 @@ export class CodexAccountAgentExecutor {
     if (!pending) {
       pending = (async () => {
         let delegate = this.#delegates.get(account.id) ?? null;
-
         if (delegate?.running === true) return delegate;
-
         if (delegate) {
           if (this.#hasAgentBindings(account.id)) throw this.#runtimeLost(account);
           try {
@@ -354,9 +432,10 @@ export class CodexAccountAgentExecutor {
             throw poolError("CODEX_ACCOUNT_CLEANUP_FAILED", "Dead account App Server could not be closed; automatic recreation is blocked");
           }
           if (this.#delegates.get(account.id) === delegate) this.#delegates.delete(account.id);
+          this.#delegateEpochs.delete(account.id);
+          this.#dropAuthorityBindings(account.id);
           delegate = null;
         }
-
         try {
           delegate = await this.#factory(account, Object.freeze({
             assertHealthy: () => this.#assertAccountHealthy(account),
@@ -368,13 +447,13 @@ export class CodexAccountAgentExecutor {
           this.#assertOpen();
           await delegate.open();
           this.#assertOpen();
-          // Telemetry can fail cleanup while delegate initialization is in flight.
-          // Recheck quarantine after the last await and before publication/dispatch.
           this.#assertAccountHealthy(account);
           if (delegate.running !== true) {
             throw new Error("Account executor did not report running after open");
           }
           this.#delegates.set(account.id, delegate);
+          this.#delegateEpochs.set(account.id, randomUUID());
+          this.#dropAuthorityBindings(account.id);
           return delegate;
         } catch (error) {
           if (delegate && typeof delegate.close === "function") {
