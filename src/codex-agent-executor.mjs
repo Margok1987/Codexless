@@ -477,49 +477,33 @@ export class CodexAgentExecutor {
       throw Object.assign(new Error("Selected account does not expose the prepared permission profile/ceiling; no Codex turn was started"), { code: "CODEX_AGENT_AUTHORITY_INCOMPATIBLE" });
     }
 
-    let probeThreadId = null;
-    let result = null;
-    let primaryError = null;
-    try {
-      const probe = await this.#request("thread/start", {
-        cwd: effectiveCwd,
-        ephemeral: true,
-        permissions: permissionProfile,
-        config: buildQuietSessionConfig(effectiveConfig),
-      });
-      probeThreadId = typeof probe?.thread?.id === "string" && probe.thread.id ? probe.thread.id : null;
-      if (!probeThreadId || probe?.activePermissionProfile?.id !== permissionProfile) {
-        throw Object.assign(new Error("Selected account could not materialize the prepared permission profile; no Codex turn was started"), { code: "CODEX_AGENT_AUTHORITY_INCOMPATIBLE" });
-      }
-      result = {
-        effectiveCwd,
-        permissionProfile,
-        permissionCeiling,
-        authoritySource: "account-delegate",
-        trustedAncestor: trusted.root,
-        policyHash: computeCodexAuthorityPolicyHash({
-          effectiveConfig,
-          permissionRows,
-          authorityProfile: { permissionProfile, permissionCeiling },
-          started: probe,
-        }),
-      };
-    } catch (error) {
-      primaryError = error;
+    // Authority probes are deliberately ephemeral. Codex App Server owns their
+    // lifecycle; the protocol does not require (or guarantee) an explicit
+    // thread/delete for an ephemeral thread. Other persistent Codexless
+    // contexts use the same contract.
+    const probe = await this.#request("thread/start", {
+      cwd: effectiveCwd,
+      ephemeral: true,
+      permissions: permissionProfile,
+      config: buildQuietSessionConfig(effectiveConfig),
+    });
+    const probeThreadId = typeof probe?.thread?.id === "string" && probe.thread.id ? probe.thread.id : null;
+    if (!probeThreadId || probe?.activePermissionProfile?.id !== permissionProfile) {
+      throw Object.assign(new Error("Selected account could not materialize the prepared permission profile; no Codex turn was started"), { code: "CODEX_AGENT_AUTHORITY_INCOMPATIBLE" });
     }
-
-    if (probeThreadId && !this.#closed) {
-      try {
-        await this.#request("thread/delete", { threadId: probeThreadId });
-      } catch {
-        this.#preTurnCleanupFailed = true;
-        const cleanupFailure = Object.assign(new Error("CODEX_AGENT_CLEANUP_FAILED: account authority probe thread could not be deleted; new starts are blocked until controlled shutdown"), { code: "CODEX_AGENT_CLEANUP_FAILED" });
-        this.#reportCleanupFailure(cleanupFailure);
-        throw cleanupFailure;
-      }
-    }
-    if (primaryError) throw primaryError;
-    return result;
+    return {
+      effectiveCwd,
+      permissionProfile,
+      permissionCeiling,
+      authoritySource: "account-delegate",
+      trustedAncestor: trusted.root,
+      policyHash: computeCodexAuthorityPolicyHash({
+        effectiveConfig,
+        permissionRows,
+        authorityProfile: { permissionProfile, permissionCeiling },
+        started: probe,
+      }),
+    };
   }
   async #start({
     cwd = this.#defaultCwd,

@@ -295,3 +295,47 @@ test("final account start rechecks host authority and unwraps only the bound sec
     assert.equal(attempted, 0);
   } finally { await driftPool.close(); }
 });
+
+test("account authority preparation relies on ephemeral thread lifecycle without thread/delete", async () => {
+  const requests = [];
+  const cwd = process.cwd();
+  const client = {
+    running: false,
+    async start() { this.running = true; return {}; },
+    async close() { this.running = false; },
+    onNotification() { return () => {}; },
+    async request(method, params) {
+      requests.push({ method, params: structuredClone(params) });
+      if (method === "config/read") {
+        return { config: { projects: { [cwd]: { trust_level: "trusted" } } } };
+      }
+      if (method === "permissionProfile/list") {
+        return { data: [{ id: ":read-only", allowed: true, sandboxMode: "readOnly", approvalPolicy: "never" }] };
+      }
+      if (method === "thread/start") {
+        return {
+          cwd,
+          thread: { id: "authority-probe", cwd, ephemeral: true },
+          activePermissionProfile: { id: ":read-only" },
+        };
+      }
+      if (method === "thread/delete") throw new Error("thread/delete must not be used for ephemeral authority probes");
+      throw new Error(`unexpected fixture RPC ${method}`);
+    },
+  };
+  const executor = new CodexAgentExecutor({ defaultCwd: cwd, clientFactory: () => client });
+  await executor.open();
+  try {
+    const prepared = await executor.prepareAuthority({
+      cwd,
+      permissionProfile: ":read-only",
+      permissionCeiling: ":read-only",
+    });
+    assert.match(prepared.policyHash, /^[0-9a-f]{64}$/);
+    const probe = requests.find(({ method }) => method === "thread/start");
+    assert.equal(probe?.params?.ephemeral, true);
+    assert.equal(requests.some(({ method }) => method === "thread/delete"), false);
+  } finally {
+    await executor.close();
+  }
+});

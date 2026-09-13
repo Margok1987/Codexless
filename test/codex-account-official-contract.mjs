@@ -73,6 +73,17 @@ for (const changedPolicy of [false, true]) {
         },
       });
       await executor.open();
+      const accountPrepared = await executor.prepareAuthority({
+        cwd: workspace,
+        permissionProfile: ":read-only",
+        permissionCeiling: ":read-only",
+      });
+      assert.match(accountPrepared.policyHash, /^[a-f0-9]{64}$/);
+      assert.equal(
+        observedMethods.filter((method) => method === "thread/delete").length,
+        0,
+        "ephemeral account authority preparation must not issue thread/delete"
+      );
       const input = { cwd: workspace, task: "This fixture must never reach a model", clientRequestId: "official-policy-fixture",
         permissionProfile: prepared.permissionProfile, permissionCeiling: prepared.permissionCeiling, authorityPolicyHash: prepared.policyHash };
       if (changedPolicy) {
