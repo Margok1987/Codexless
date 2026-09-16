@@ -127,6 +127,21 @@ function projectSecurityConfig(effectiveConfig, effectiveCwd) {
   if (!config || typeof config !== "object" || Array.isArray(config)) return config;
   const projected = structuredClone(config);
 
+  // CODEX_HOME for the built-in node_repl MCP is account-runtime identity, not
+  // execution authority. Codex Desktop may materialize the owner home here,
+  // while managed Codexless accounts bind their own CODEX_HOME at process
+  // launch. Ignore only this exact redundant env field; keep every other MCP
+  // server field and env entry fail-closed in the authority hash.
+  for (const rootKey of ["mcp_servers", "mcpServers"]) {
+    const servers = projected?.[rootKey];
+    const nodeRepl = servers?.node_repl;
+    const env = nodeRepl?.env;
+    if (env && typeof env === "object" && !Array.isArray(env) && Object.hasOwn(env, "CODEX_HOME")) {
+      delete env.CODEX_HOME;
+      if (!Object.keys(env).length) delete nodeRepl.env;
+    }
+  }
+
   // Desktop rendering preference has no execution-authority effect. Keep every
   // other desktop field conservative until its non-interference is proven.
   if (projected.desktop && typeof projected.desktop === "object" && !Array.isArray(projected.desktop)) {

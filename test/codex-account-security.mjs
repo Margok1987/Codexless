@@ -338,6 +338,18 @@ test("policy hash excludes only independently bound model choice and account ide
   assert.equal(computeCodexAuthorityPolicyHash(first), computeCodexAuthorityPolicyHash(second));
   assert.equal(computeCodexAuthorityPolicyHash(policyBase), computeCodexAuthorityPolicyHash({ ...policyBase, started: { ...policyBase.started, thread: { id: "another-thread" }, model: "another-model" } }));
 });
+test("policy hash ignores only node_repl CODEX_HOME account-runtime identity", () => {
+  const owner = { ...policyBase, effectiveConfig: { mcp_servers: { node_repl: { env: { CODEX_HOME: "C:\\Users\\Dennis\\.codex", KEEP: "same" } } } } };
+  const managed = { ...policyBase, effectiveConfig: { mcp_servers: { node_repl: { env: { KEEP: "same" } } } } };
+  assert.equal(computeCodexAuthorityPolicyHash(owner), computeCodexAuthorityPolicyHash(managed));
+
+  const changedOtherEnv = { ...policyBase, effectiveConfig: { mcp_servers: { node_repl: { env: { CODEX_HOME: "C:\\other", KEEP: "changed" } } } } };
+  assert.notEqual(computeCodexAuthorityPolicyHash(owner), computeCodexAuthorityPolicyHash(changedOtherEnv));
+
+  const otherServerCodexHome = { ...policyBase, effectiveConfig: { mcp_servers: { other: { env: { CODEX_HOME: "C:\\one" } } } } };
+  const otherServerChanged = { ...policyBase, effectiveConfig: { mcp_servers: { other: { env: { CODEX_HOME: "C:\\two" } } } } };
+  assert.notEqual(computeCodexAuthorityPolicyHash(otherServerCodexHome), computeCodexAuthorityPolicyHash(otherServerChanged));
+});
 test("policy hash retains prototype-named JSON keys and rejects excessive depth", () => {
   const configA = JSON.parse('{"sandbox":{"__proto__":{"allowed":false}}}');
   const configB = JSON.parse('{"sandbox":{"__proto__":{"allowed":true}}}');
