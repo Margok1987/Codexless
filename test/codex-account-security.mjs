@@ -130,28 +130,64 @@ test("dead account recovery stays isolated to the selected account", async () =>
   } finally { await router.close(); }
 });
 
-test("dead account delegate with bound agents fails closed instead of recreating", async () => {
+test("dead account runtime recreates for new work without rebinding stale agents", async () => {
   const delegates = [];
+  let generation = 0;
   const router = new CodexAccountAgentExecutor({
     registry,
+    maxAgents: 1,
     factory: async (account) => {
-      const delegate = fakeDelegate(account.id);
+      generation += 1;
+      const currentGeneration = generation;
+      const delegate = fakeDelegate(account.id, {
+        async listModels() {
+          return { models: [{ id: `${account.id}-${currentGeneration}` }], nextCursor: null };
+        },
+      });
       delegates.push(delegate);
       return delegate;
     },
   });
   try {
-    const agent = await router.start({ account: "secondary", task: "bound runtime", clientRequestId: "bound-runtime-start" });
+    const staleAgent = await router.start({
+      account: "secondary",
+      task: "bound runtime",
+      clientRequestId: "bound-runtime-start",
+    });
+    assert.equal(router.accountForAgent(staleAgent.agentRef), "secondary");
+
     delegates[0].running = false;
     await assert.rejects(
-      router.show({ agentRef: agent.agentRef }),
+      router.show({ agentRef: staleAgent.agentRef }),
       (error) => error?.code === "CODEX_ACCOUNT_RUNTIME_LOST"
+    );
+
+    const catalog = await router.listModels({ account: "secondary" });
+    assert.equal(catalog.models[0].id, "secondary-2");
+    assert.equal(delegates.length, 2, "new account work must recreate the dead delegate once");
+
+    const freshAgent = await router.start({
+      account: "secondary",
+      task: "fresh runtime",
+      clientRequestId: "fresh-runtime-start",
+    });
+    assert.equal(router.accountForAgent(freshAgent.agentRef), "secondary");
+    assert.equal((await router.show({ agentRef: freshAgent.agentRef })).agentRef, freshAgent.agentRef);
+
+    await assert.rejects(
+      router.show({ agentRef: staleAgent.agentRef }),
+      (error) => error?.code === "CODEX_ACCOUNT_RUNTIME_LOST",
+      "stale agentRef must never be routed to the replacement runtime"
     );
     await assert.rejects(
-      router.start({ account: "secondary", task: "must not replace bound runtime", clientRequestId: "bound-runtime-restart" }),
-      (error) => error?.code === "CODEX_ACCOUNT_RUNTIME_LOST"
+      router.start({
+        account: "secondary",
+        task: "bound runtime",
+        clientRequestId: "bound-runtime-start",
+      }),
+      (error) => error?.code === "CODEX_ACCOUNT_RUNTIME_LOST",
+      "idempotent replay of a stale start must fail closed rather than start a paid replacement turn"
     );
-    assert.equal(delegates.length, 1, "bound runtime loss must not silently create a replacement App Server");
   } finally { await router.close(); }
 });
 

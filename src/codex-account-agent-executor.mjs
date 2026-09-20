@@ -141,7 +141,8 @@ export class CodexAccountAgentExecutor {
   }
 
   accountForAgent(agentRef) {
-    return this.#registry.source === "legacy" ? null : this.#agentAccounts.get(agentRef) ?? null;
+    const binding = this.#agentAccounts.get(agentRef) ?? null;
+    return this.#registry.source === "legacy" ? null : binding?.accountId ?? null;
   }
 
   async listModels({ account = null, ...input } = {}) {
@@ -216,13 +217,17 @@ export class CodexAccountAgentExecutor {
     const selected = resolveCodexAccount(this.#registry, account);
     const bound = { ...structuredClone(input), clientRequestId: requestId(clientRequestId) };
     return this.#boundRequest("start", selected, bound, async () => {
-      if (this.#agentAccounts.size + this.#pendingStarts >= this.#maxAgents) {
-        throw poolError("CODEX_ACCOUNT_CAPACITY", "Agent capacity reached; new starts are blocked without evicting existing bindings");
+      const delegate = await this.#delegate(selected);
+      this.#assertOpen();
+      if (this.#activeAgentBindingCount() + this.#pendingStarts >= this.#maxAgents) {
+        throw poolError("CODEX_ACCOUNT_CAPACITY", "Agent capacity reached; new starts are blocked without evicting live bindings");
       }
       this.#pendingStarts += 1;
       try {
-        const delegate = await this.#delegate(selected);
-        this.#assertOpen();
+        const delegateEpoch = this.#delegateEpochs.get(selected.id) ?? null;
+        if (!delegateEpoch || this.#delegates.get(selected.id) !== delegate || delegate.running !== true) {
+          throw poolError("CODEX_ACCOUNT_RUNTIME_LOST", "Selected account runtime changed before agent start");
+        }
         let delegateInput = bound;
         if (this.#registry.source === "registry" && bound.authorityPolicyHash && this.#preStartAuthorityCheck) {
           const leaseHash = bound.authorityPolicyHash;
@@ -250,11 +255,14 @@ export class CodexAccountAgentExecutor {
         if (typeof agentRef !== "string" || !agentRef || agentRef.length > 512) {
           throw poolError("CODEX_ACCOUNT_BINDING_INVALID", "Account executor returned no valid agent reference; do not replay automatically");
         }
-        const prior = this.#agentAccounts.get(agentRef);
-        if (prior && prior !== selected.id) {
-          throw poolError("CODEX_ACCOUNT_BINDING_INVALID", "Account executor returned an agent reference already bound to another account");
+        if (this.#delegates.get(selected.id) !== delegate || this.#delegateEpochs.get(selected.id) !== delegateEpoch || delegate.running !== true) {
+          throw poolError("CODEX_ACCOUNT_RUNTIME_LOST", "Selected account runtime changed while agent start was completing");
         }
-        this.#agentAccounts.set(agentRef, selected.id);
+        const prior = this.#agentAccounts.get(agentRef);
+        if (prior && (prior.accountId !== selected.id || prior.delegateEpoch !== delegateEpoch)) {
+          throw poolError("CODEX_ACCOUNT_BINDING_INVALID", "Account executor returned an agent reference already bound to another account runtime");
+        }
+        this.#agentAccounts.set(agentRef, Object.freeze({ accountId: selected.id, delegateEpoch }));
         return this.#withAccount(snapshot, selected.id);
       } finally { this.#pendingStarts -= 1; }
     });
@@ -273,10 +281,11 @@ export class CodexAccountAgentExecutor {
     if (Object.hasOwn(input, "account")) throw poolError("CODEX_ACCOUNT_IMMUTABLE", "An existing agent cannot select or override its account");
     const bound = structuredClone(input);
     bound.clientRequestId = requestId(bound.clientRequestId);
-    const selected = this.#accountForAgent(bound.agentRef);
+    const binding = this.#agentBinding(bound.agentRef);
+    const selected = resolveCodexAccount(this.#registry, binding.accountId);
     const safetyControl = isSafetyControl(method, bound);
     return this.#boundRequest(method, selected, bound, async () => {
-      const delegate = await this.#delegateForAgentCall(selected, safetyControl);
+      const delegate = await this.#delegateForAgentCall(selected, binding.delegateEpoch, safetyControl);
       this.#assertOpen();
       const result = await delegate[method](bound);
       this.#assertOpen();
@@ -297,9 +306,14 @@ export class CodexAccountAgentExecutor {
       if (prior.promise) return prior.promise.then((snapshot) => ({ ...structuredClone(snapshot), duplicate: true }));
       if (prior.error) throw poolError(prior.error.code, prior.error.message);
       return this.#track(async () => {
-        const delegate = await this.#delegateForAgentCall(selected, safetyControl);
+        const replayAgentRef = prior.agentRef ?? input.agentRef ?? null;
+        const binding = this.#agentBinding(replayAgentRef);
+        if (binding.accountId !== selected.id) {
+          throw poolError("CODEX_ACCOUNT_BINDING_INVALID", "Replay binding no longer matches the selected Codex account");
+        }
+        const delegate = await this.#delegateForAgentCall(selected, binding.delegateEpoch, safetyControl);
         this.#assertOpen();
-        const snapshot = await delegate.show({ agentRef: prior.agentRef, afterSeq: 0 });
+        const snapshot = await delegate.show({ agentRef: replayAgentRef, afterSeq: 0 });
         return { ...this.#withAccount(snapshot, selected.id), duplicate: true,
           ...(prior.controlAcceptance ? { controlAcceptance: prior.controlAcceptance } : {}),
         };
@@ -325,10 +339,22 @@ export class CodexAccountAgentExecutor {
     return operation;
   }
 
+  #agentBinding(agentRef) {
+    const binding = this.#agentAccounts.get(agentRef);
+    if (!binding) throw poolError("CODEX_ACCOUNT_BINDING_UNKNOWN", "Unknown Codex account binding for agentRef");
+    return binding;
+  }
+
   #accountForAgent(agentRef) {
-    const id = this.#agentAccounts.get(agentRef);
-    if (!id) throw poolError("CODEX_ACCOUNT_BINDING_UNKNOWN", "Unknown Codex account binding for agentRef");
-    return resolveCodexAccount(this.#registry, id);
+    return resolveCodexAccount(this.#registry, this.#agentBinding(agentRef).accountId);
+  }
+
+  #activeAgentBindingCount() {
+    let count = 0;
+    for (const binding of this.#agentAccounts.values()) {
+      if (binding?.delegateEpoch && this.#delegateEpochs.get(binding.accountId) === binding.delegateEpoch) count += 1;
+    }
+    return count;
   }
 
   #withAccount(snapshot, account) {
@@ -390,13 +416,6 @@ export class CodexAccountAgentExecutor {
     return operation;
   }
 
-  #hasAgentBindings(accountId) {
-    for (const boundAccountId of this.#agentAccounts.values()) {
-      if (boundAccountId === accountId) return true;
-    }
-    return false;
-  }
-
   #runtimeLost(account) {
     return poolError(
       "CODEX_ACCOUNT_RUNTIME_LOST",
@@ -404,13 +423,15 @@ export class CodexAccountAgentExecutor {
     );
   }
 
-  async #delegateForAgentCall(account, safetyControl = false) {
-    if (safetyControl && this.#cleanupFailures.has(account.id)) {
-      const existing = this.#delegates.get(account.id);
-      if (existing?.running === true) return existing;
-      throw poolError("CODEX_ACCOUNT_CLEANUP_FAILED", "Account runtime cleanup failed; no live existing executor remains for safety control");
+  async #delegateForAgentCall(account, delegateEpoch, safetyControl = false) {
+    const existing = this.#delegates.get(account.id);
+    const currentEpoch = this.#delegateEpochs.get(account.id) ?? null;
+    if (this.#cleanupFailures.has(account.id)) {
+      if (safetyControl && existing?.running === true && currentEpoch === delegateEpoch) return existing;
+      throw poolError("CODEX_ACCOUNT_CLEANUP_FAILED", "Account runtime cleanup failed; existing agent binding cannot be recovered");
     }
-    return this.#delegate(account);
+    if (existing?.running === true && currentEpoch === delegateEpoch) return existing;
+    throw this.#runtimeLost(account);
   }
 
   #dropAuthorityBindings(accountId) {
@@ -433,7 +454,6 @@ export class CodexAccountAgentExecutor {
         if (delegate?.running === true) return delegate;
 
         if (delegate) {
-          if (this.#hasAgentBindings(account.id)) throw this.#runtimeLost(account);
           try {
             await delegate.close();
           } catch {
