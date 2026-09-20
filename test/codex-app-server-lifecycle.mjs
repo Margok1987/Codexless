@@ -13,6 +13,8 @@ const timer = setInterval(() => {}, 1000);
 readline.createInterface({ input: process.stdin }).on('line', line => {
   const request = JSON.parse(line);
   if (request.method === 'exit-now') process.exit(0);
+  if (request.method === 'stall-request') return;
+  if (request.method === 'late-response') { setTimeout(() => { process.stdout.write(JSON.stringify({ id: request.id, result: { pid: process.pid, late: true } }) + '\\n'); }, 250); return; }
   if (process.argv[2] === 'peer-id' && request.method === 'initialize') { process.stdout.write(JSON.stringify({ id: request.id, method: 'peer/check', params: {} }) + '\\n'); return; }
   if (process.argv[2] === 'peer-id' && request.result) { process.stdout.write(JSON.stringify({ id: request.id, result: { pid: process.pid } }) + '\\n'); return; }
   if (request.method === 'emit-approval') { process.stdout.write(JSON.stringify({ id: 'approval', method: 'peer/approval', params: {} }) + '\\n'); return; }
@@ -192,6 +194,54 @@ test("initialization timeout closes its owned process without a recursive-close 
     setClient(client);
     await assert.rejects(client.start(), /timed out/i);
     assert.equal(client.running, false); assert.equal(cleanups, 1);
+  });
+});
+
+test("an isolated RPC timeout does not kill a healthy persistent App Server", { timeout: 8_000 }, async () => {
+  await fixture(async ({ root, spec, setClient }) => {
+    const client = new CodexAppServerClient({ cwd: root, requestTimeoutMs: 100, stderrHandler: () => {}, launch: () => spec });
+    setClient(client);
+    const started = await client.start();
+    await assert.rejects(client.request("stall-request", {}), error => error?.name === "CodexRpcTimeoutError");
+    assert.equal(client.running, true, "one timed-out RPC must not tear down the persistent account runtime");
+    const healthy = await client.request("healthy-after-timeout", {});
+    assert.equal(healthy.pid, started.pid, "subsequent healthy requests must reuse the same App Server process");
+    await assert.rejects(client.request("stall-request", {}), error => error?.name === "CodexRpcTimeoutError");
+    assert.equal(client.running, true, "a successful response must reset the consecutive-timeout circuit breaker");
+  });
+});
+
+test("a late response to a timed-out RPC is discarded without poisoning the protocol", { timeout: 8_000 }, async () => {
+  await fixture(async ({ root, spec, setClient }) => {
+    const client = new CodexAppServerClient({ cwd: root, requestTimeoutMs: 75, stderrHandler: () => {}, launch: () => spec });
+    setClient(client);
+    const started = await client.start();
+    await assert.rejects(client.request("late-response", {}), error => error?.name === "CodexRpcTimeoutError");
+    assert.equal(client.running, true);
+    await new Promise(resolve => setTimeout(resolve, 350));
+    const healthy = await client.request("healthy-after-late-response", {});
+    assert.equal(healthy.pid, started.pid);
+    assert.equal(client.running, true, "late response tombstones must prevent a false protocol failure");
+  });
+});
+
+test("repeated consecutive RPC timeouts trip a bounded transport circuit breaker", { timeout: 8_000 }, async () => {
+  await fixture(async ({ root, spec, setClient }) => {
+    let cleanups = 0;
+    const client = new CodexAppServerClient({
+      cwd: root,
+      requestTimeoutMs: 100,
+      timeoutFailureThreshold: 2,
+      stderrHandler: () => {},
+      launch: () => ({ ...spec, cleanup: () => { cleanups += 1; } }),
+    });
+    setClient(client);
+    await client.start();
+    await assert.rejects(client.request("stall-request", {}), error => error?.name === "CodexRpcTimeoutError");
+    assert.equal(client.running, true);
+    await assert.rejects(client.request("stall-request", {}), error => error?.name === "CodexRpcTimeoutError");
+    assert.equal(client.running, false, "repeated consecutive timeouts must recycle a persistently unhealthy transport");
+    assert.equal(cleanups, 1);
   });
 });
 
