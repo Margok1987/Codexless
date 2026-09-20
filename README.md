@@ -123,6 +123,8 @@ npm run codexless:managed-login -- --account <id>
 
 Managed-account state lives outside the replaceable install tree, so reinstall/update can preserve it. The exact registry validation and account-binding contract are enforced by the current product source and tests.
 
+For the managed-account App Server lifecycle — including RPC timeout handling, late-response tombstones, delegate-generation recovery, stale-agent fail-closed behavior, and replay safety — see [`docs/managed-account-runtime-lifecycle.md`](docs/managed-account-runtime-lifecycle.md).
+
 ## Before you install
 
 - **Platforms:** Windows and **Apple Silicon macOS (`arm64`)** Technical Preview. Intel Mac is not supported yet.
