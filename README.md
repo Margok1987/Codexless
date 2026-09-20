@@ -204,6 +204,8 @@ Uninstall:
 
 To upgrade or reinstall, get the newer release/tag and run the same installer again. User state stored outside the install tree is preserved. Codexless does not silently widen Codex trust, configure your Tunnel, or change browser file permissions for you.
 
+For Windows installer process semantics — including why native stderr with exit code `0` is not treated as a failure and how rollback remains fail-closed for real command failures — see [`docs/windows-installer-lifecycle.md`](docs/windows-installer-lifecycle.md).
+
 ---
 
 ## FAQ
