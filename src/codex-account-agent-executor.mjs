@@ -426,11 +426,11 @@ export class CodexAccountAgentExecutor {
   async #delegateForAgentCall(account, delegateEpoch, safetyControl = false) {
     const existing = this.#delegates.get(account.id);
     const currentEpoch = this.#delegateEpochs.get(account.id) ?? null;
-    if (existing?.running === true && currentEpoch === delegateEpoch) return existing;
     if (this.#cleanupFailures.has(account.id)) {
       if (safetyControl && existing?.running === true && currentEpoch === delegateEpoch) return existing;
       throw poolError("CODEX_ACCOUNT_CLEANUP_FAILED", "Account runtime cleanup failed; existing agent binding cannot be recovered");
     }
+    if (existing?.running === true && currentEpoch === delegateEpoch) return existing;
     throw this.#runtimeLost(account);
   }
 
