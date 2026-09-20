@@ -83,6 +83,8 @@ Codexless can optionally register multiple managed Codex accounts. The registry 
 
 These constraints isolate Codex login identity. They do not create separate local filesystem or Homelab permission universes; those remain governed by the effective Codex/local execution policy.
 
+Managed-account transport recovery is documented separately in [`docs/managed-account-runtime-lifecycle.md`](docs/managed-account-runtime-lifecycle.md). In particular, a client-side RPC timeout alone is not treated as App Server death; genuine delegate death may be recovered for new work on the same selected account, while stale `agentRef` values remain bound to their original delegate generation and fail closed.
+
 ### Active-turn supervision and steering
 
 `codex.agent_show` exposes only bounded supervisory progress from native Codex App Server state: the latest agent message, latest plan, and active item identity/status. It does not expose raw reasoning, command output, file diffs, or full prior message history. Agent commentary can still contain project-sensitive information, so it remains part of the connected ChatGPT trust boundary.
