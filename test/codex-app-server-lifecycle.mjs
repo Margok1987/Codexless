@@ -207,7 +207,7 @@ test("an isolated RPC timeout does not kill a healthy persistent App Server", { 
     const healthy = await client.request("healthy-after-timeout", {});
     assert.equal(healthy.pid, started.pid, "subsequent healthy requests must reuse the same App Server process");
     await assert.rejects(client.request("stall-request", {}), error => error?.name === "CodexRpcTimeoutError");
-    assert.equal(client.running, true, "a successful response must reset the consecutive-timeout circuit breaker");
+    assert.equal(client.running, true, "a later isolated timeout must still leave the persistent App Server alive");
   });
 });
 
