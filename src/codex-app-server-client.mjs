@@ -144,7 +144,13 @@ export class CodexAppServerClient {
   }
 
   get running() {
-    return Boolean(this.#child);
+    return Boolean(
+      this.#child
+      && this.#child.exitCode === null
+      && this.#child.signalCode === null
+      && !this.#closing
+      && !this.#closeError
+    );
   }
 
   async start() {
