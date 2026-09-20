@@ -132,6 +132,8 @@ The Windows and Apple Silicon macOS Technical Preview installers are intentional
 - Default uninstall removes only a directory that identifies itself as the `codexless` package. Codex, Node.js, project files, Browser configuration, Tunnel configuration, and Codex trust settings are out of scope.
 - State purge is explicit: Windows uses `-PurgeState`; macOS uses `--purge-state`. Each removes only Codexless-owned state.
 
+On Windows, checked native child processes are judged by their native exit code rather than by the mere presence of stderr text. Windows PowerShell can otherwise promote informational native stderr to a terminating PowerShell error under `ErrorActionPreference=Stop`, producing a false installer failure even when the child exits `0`. The bounded contract and regression coverage are documented in [`docs/windows-installer-lifecycle.md`](docs/windows-installer-lifecycle.md).
+
 ## Credentials and secrets
 
 Codexless should not require users to paste long-lived Codex or GitHub credentials into ChatGPT.
