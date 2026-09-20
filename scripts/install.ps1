@@ -52,19 +52,31 @@ function Invoke-Checked {
     [Parameter(ValueFromRemainingArguments=$true)][string[]]$Arguments
   )
 
-  if ($Json) {
-    $captured = (& $Command @Arguments 2>&1 | Out-String).Trim()
+  $previousErrorActionPreference = $ErrorActionPreference
+  try {
+    # Native programs can legitimately write informational text to stderr while
+    # returning exit code 0. Under Windows PowerShell, ErrorActionPreference=Stop
+    # can otherwise promote that stderr record to a terminating PowerShell error
+    # before we get a chance to evaluate the native process exit code.
+    $ErrorActionPreference = "Continue"
+
+    if ($Json) {
+      $captured = (& $Command @Arguments 2>&1 | Out-String).Trim()
+      $exitCode = $LASTEXITCODE
+      if ($exitCode -ne 0) {
+        $detail = if ($captured) { "`n$captured" } else { "" }
+        throw "Command failed ($exitCode): $Command $($Arguments -join ' ')$detail"
+      }
+      return
+    }
+
+    & $Command @Arguments
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
-      $detail = if ($captured) { "`n$captured" } else { "" }
-      throw "Command failed ($exitCode): $Command $($Arguments -join ' ')$detail"
+      throw "Command failed ($exitCode): $Command $($Arguments -join ' ')"
     }
-    return
-  }
-
-  & $Command @Arguments
-  if ($LASTEXITCODE -ne 0) {
-    throw "Command failed ($LASTEXITCODE): $Command $($Arguments -join ' ')"
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
   }
 }
 
