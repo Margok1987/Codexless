@@ -13,6 +13,8 @@ const timer = setInterval(() => {}, 1000);
 readline.createInterface({ input: process.stdin }).on('line', line => {
   const request = JSON.parse(line);
   if (request.method === 'exit-now') process.exit(0);
+  if (request.method === 'stall-request') return;
+  if (request.method === 'late-response') { setTimeout(() => { process.stdout.write(JSON.stringify({ id: request.id, result: { pid: process.pid, late: true } }) + '\\n'); }, 250); return; }
   if (process.argv[2] === 'peer-id' && request.method === 'initialize') { process.stdout.write(JSON.stringify({ id: request.id, method: 'peer/check', params: {} }) + '\\n'); return; }
   if (process.argv[2] === 'peer-id' && request.result) { process.stdout.write(JSON.stringify({ id: request.id, result: { pid: process.pid } }) + '\\n'); return; }
   if (request.method === 'emit-approval') { process.stdout.write(JSON.stringify({ id: 'approval', method: 'peer/approval', params: {} }) + '\\n'); return; }
@@ -195,6 +197,52 @@ test("initialization timeout closes its owned process without a recursive-close 
   });
 });
 
+test("an isolated RPC timeout does not kill a healthy persistent App Server", { timeout: 8_000 }, async () => {
+  await fixture(async ({ root, spec, setClient }) => {
+    const client = new CodexAppServerClient({ cwd: root, requestTimeoutMs: 100, stderrHandler: () => {}, launch: () => spec });
+    setClient(client);
+    const started = await client.start();
+    await assert.rejects(client.request("stall-request", {}), error => error?.name === "CodexRpcTimeoutError");
+    assert.equal(client.running, true, "one timed-out RPC must not tear down the persistent account runtime");
+    const healthy = await client.request("healthy-after-timeout", {});
+    assert.equal(healthy.pid, started.pid, "subsequent healthy requests must reuse the same App Server process");
+    await assert.rejects(client.request("stall-request", {}), error => error?.name === "CodexRpcTimeoutError");
+    assert.equal(client.running, true, "a later isolated timeout must still leave the persistent App Server alive");
+  });
+});
+
+test("a late response to a timed-out RPC is discarded without poisoning the protocol", { timeout: 8_000 }, async () => {
+  await fixture(async ({ root, spec, setClient }) => {
+    const client = new CodexAppServerClient({ cwd: root, requestTimeoutMs: 75, stderrHandler: () => {}, launch: () => spec });
+    setClient(client);
+    const started = await client.start();
+    await assert.rejects(client.request("late-response", {}), error => error?.name === "CodexRpcTimeoutError");
+    assert.equal(client.running, true);
+    await new Promise(resolve => setTimeout(resolve, 350));
+    const healthy = await client.request("healthy-after-late-response", {});
+    assert.equal(healthy.pid, started.pid);
+    assert.equal(client.running, true, "late response tombstones must prevent a false protocol failure");
+  });
+});
+
+test("repeated RPC timeouts do not silently kill a live persistent App Server", { timeout: 8_000 }, async () => {
+  await fixture(async ({ root, spec, setClient }) => {
+    const client = new CodexAppServerClient({
+      cwd: root,
+      requestTimeoutMs: 100,
+      stderrHandler: () => {},
+      launch: () => spec,
+    });
+    setClient(client);
+    const started = await client.start();
+    await assert.rejects(client.request("stall-request", {}), error => error?.name === "CodexRpcTimeoutError");
+    await assert.rejects(client.request("stall-request", {}), error => error?.name === "CodexRpcTimeoutError");
+    assert.equal(client.running, true, "client-side timeouts alone must not terminate a live App Server process");
+    const healthy = await client.request("healthy-after-repeated-timeouts", {});
+    assert.equal(healthy.pid, started.pid);
+  });
+});
+
 test("cleanup failure quarantines client and reports once to its owner", { timeout: 8_000 }, async () => {
   await fixture(async ({ root, spec, setClient }) => {
     const reported = [];
@@ -253,6 +301,7 @@ test("unexpected process exit drains owned cleanup and blocks relaunch until it 
     const observedCleanups = cleanups;
     try {
       assert.equal(observedCleanups, 1);
+      assert.equal(client.running, false, "an exited child must be exposed as dead before cleanup finishes");
       await entered.promise;
       await assert.rejects(client.start(), /closing|cleanup/i);
       assert.equal(launches, 1);

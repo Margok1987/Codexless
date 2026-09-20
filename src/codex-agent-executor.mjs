@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
-import { CodexAppServerClient, CodexRpcError } from "./codex-app-server-client.mjs";
+import { CodexAppServerClient, CodexRpcError, CodexRpcTimeoutError } from "./codex-app-server-client.mjs";
 import { buildAgentResourceReceipt } from "./agent-resource.mjs";
 import { buildQuietSessionConfig, computeCodexAuthorityPolicyHash, findTrustedAncestor } from "./codex-authority-executor.mjs";
 import { projectCodexModel } from "./codex-model-catalog.mjs";
@@ -704,6 +704,15 @@ export class CodexAgentExecutor {
       this.#appendEvent(state, { type: "thread/accepted", threadId, model: state.resolvedModel, at: Date.now() });
       this.#assertTurnAdmission();
     } catch (error) {
+      if (error instanceof CodexRpcTimeoutError && !state.threadId) {
+        state.latestError = `thread/start acceptance unknown; do not replay automatically: ${error.message}`;
+        state.status = "unknown";
+        state.updatedAt = Date.now();
+        this.#appendEvent(state, { type: "thread/acceptance-unknown", text: state.latestError, at: Date.now() });
+        const result = { ...this.#snapshot(state, 0), duplicate: false };
+        settleStartOperation("resolve", result);
+        return result;
+      }
       let failure = error;
       if (state.threadId && !this.#closed) {
         try { await this.#request("thread/delete", { threadId: state.threadId }); }
