@@ -225,23 +225,21 @@ test("a late response to a timed-out RPC is discarded without poisoning the prot
   });
 });
 
-test("repeated consecutive RPC timeouts trip a bounded transport circuit breaker", { timeout: 8_000 }, async () => {
+test("repeated RPC timeouts do not silently kill a live persistent App Server", { timeout: 8_000 }, async () => {
   await fixture(async ({ root, spec, setClient }) => {
-    let cleanups = 0;
     const client = new CodexAppServerClient({
       cwd: root,
       requestTimeoutMs: 100,
-      timeoutFailureThreshold: 2,
       stderrHandler: () => {},
-      launch: () => ({ ...spec, cleanup: () => { cleanups += 1; } }),
+      launch: () => spec,
     });
     setClient(client);
-    await client.start();
+    const started = await client.start();
     await assert.rejects(client.request("stall-request", {}), error => error?.name === "CodexRpcTimeoutError");
-    assert.equal(client.running, true);
     await assert.rejects(client.request("stall-request", {}), error => error?.name === "CodexRpcTimeoutError");
-    assert.equal(client.running, false, "repeated consecutive timeouts must recycle a persistently unhealthy transport");
-    assert.equal(cleanups, 1);
+    assert.equal(client.running, true, "client-side timeouts alone must not terminate a live App Server process");
+    const healthy = await client.request("healthy-after-repeated-timeouts", {});
+    assert.equal(healthy.pid, started.pid);
   });
 });
 
