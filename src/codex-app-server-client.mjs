@@ -37,7 +37,6 @@ export class CodexAppServerClient {
   #nextId = 1;
   #pending = new Map();
   #timedOutResponseIds = new Set();
-  #consecutiveRequestTimeouts = 0;
   #notificationMethods = new Set();
   #notificationHandlers = new Set();
   #serverRequestMethods = new Set();
@@ -45,7 +44,6 @@ export class CodexAppServerClient {
   #pendingServerRequests = new Map();
   #initializedResult = null;
   #defaultRequestTimeoutMs;
-  #timeoutFailureThreshold;
   #maxTimedOutResponseIds;
   #maxStdoutBufferBytes;
   #initializeCapabilities;
@@ -66,7 +64,6 @@ export class CodexAppServerClient {
     clientInfo = {},
     launch,
     requestTimeoutMs = 30_000,
-    timeoutFailureThreshold = 2,
     maxTimedOutResponseIds = 1_024,
     maxStdoutBufferBytes = 1_048_576,
     initializeCapabilities = null,
@@ -81,9 +78,6 @@ export class CodexAppServerClient {
       throw new Error("CodexAppServerClient launch must be a function returning a spawn spec");
     }
 
-    if (!Number.isInteger(timeoutFailureThreshold) || timeoutFailureThreshold < 1 || timeoutFailureThreshold > 100) {
-      throw new Error("timeoutFailureThreshold must be an integer from 1 to 100");
-    }
     if (!Number.isInteger(maxTimedOutResponseIds) || maxTimedOutResponseIds < 1 || maxTimedOutResponseIds > 100_000) {
       throw new Error("maxTimedOutResponseIds must be an integer from 1 to 100000");
     }
@@ -102,7 +96,6 @@ export class CodexAppServerClient {
 
     this.#cwd = cwd;
     this.#defaultRequestTimeoutMs = requestTimeoutMs;
-    this.#timeoutFailureThreshold = timeoutFailureThreshold;
     this.#maxTimedOutResponseIds = maxTimedOutResponseIds;
     this.#maxStdoutBufferBytes = maxStdoutBufferBytes;
     this.#initializeCapabilities = initializeCapabilities;
@@ -171,7 +164,6 @@ export class CodexAppServerClient {
     this.#initializedResult = null;
     this.#protocolError = null;
     this.#cleanupFailureReported = false;
-    this.#consecutiveRequestTimeouts = 0;
     this.#timedOutResponseIds.clear();
     const launching = Promise.resolve().then(async () => {
       const spec = await this.#launchFactory();
@@ -247,23 +239,7 @@ export class CodexAppServerClient {
             if (!waiter) return;
             this.#pending.delete(key);
             this.#rememberTimedOutResponse(key);
-            this.#consecutiveRequestTimeouts += 1;
-            const timeoutError = new CodexRpcTimeoutError(method, timeoutMs);
-            if (this.#consecutiveRequestTimeouts < this.#timeoutFailureThreshold) {
-              waiter.reject(timeoutError);
-              return;
-            }
-            void (async () => {
-              try {
-                await this.close();
-                waiter.reject(timeoutError);
-              } catch (cleanupError) {
-                waiter.reject(new AggregateError(
-                  [timeoutError, cleanupError],
-                  `${timeoutError.message}; cleanup also failed`
-                ));
-              }
-            })();
+            waiter.reject(new CodexRpcTimeoutError(method, timeoutMs));
           }, timeoutMs)
         : null;
       timer?.unref?.();
@@ -315,7 +291,6 @@ export class CodexAppServerClient {
       }
       // Release state only after the owned process is actually gone.
       if (this.#child === child) this.#child = null;
-      this.#consecutiveRequestTimeouts = 0;
       this.#timedOutResponseIds.clear();
       const cleanup = this.#cleanup;
       this.#cleanup = null;
@@ -413,7 +388,6 @@ export class CodexAppServerClient {
         const waiter = this.#pending.get(key);
         this.#pending.delete(key);
         if (waiter.timer) clearTimeout(waiter.timer);
-        this.#consecutiveRequestTimeouts = 0;
         if (hasError) waiter.reject(new CodexRpcError(waiter.method, message.error));
         else waiter.resolve(message.result);
         continue;
@@ -426,7 +400,6 @@ export class CodexAppServerClient {
           return;
         }
         this.#timedOutResponseIds.delete(key);
-        this.#consecutiveRequestTimeouts = 0;
         continue;
       }
 
