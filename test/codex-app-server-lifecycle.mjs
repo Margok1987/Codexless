@@ -303,6 +303,7 @@ test("unexpected process exit drains owned cleanup and blocks relaunch until it 
     const observedCleanups = cleanups;
     try {
       assert.equal(observedCleanups, 1);
+      assert.equal(client.running, false, "an exited child must be exposed as dead before cleanup finishes");
       await entered.promise;
       await assert.rejects(client.start(), /closing|cleanup/i);
       assert.equal(launches, 1);
