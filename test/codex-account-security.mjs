@@ -5,6 +5,7 @@ import path from "node:path";
 import { mkdtemp, mkdir, readFile, writeFile, rm, link, rename, stat } from "node:fs/promises";
 import { CodexAccountAgentExecutor } from "../src/codex-account-agent-executor.mjs";
 import { CodexAgentExecutor } from "../src/codex-agent-executor.mjs";
+import { CodexRpcTimeoutError } from "../src/codex-app-server-client.mjs";
 import { computeCodexAuthorityPolicyHash } from "../src/codex-authority-executor.mjs";
 import { loadCodexAccountRegistry, assertCodexAccountHome } from "../src/codex-account-registry.mjs";
 import { MeteredConsentGate } from "../src/metered-consent.mjs";
@@ -247,6 +248,36 @@ test("policy hash binds effective approvals reviewer and ignores thread identity
   const material = { effectiveConfig: {}, permissionRows: [], authorityProfile: { permissionProfile: ":read-only", permissionCeiling: ":read-only" }, started: { approvalsReviewer: "user", approvalPolicy: "on-request", thread: { id: "a" } } };
   assert.notEqual(computeCodexAuthorityPolicyHash(material), computeCodexAuthorityPolicyHash({ ...material, started: { ...material.started, approvalsReviewer: "auto_review" } }));
   assert.equal(computeCodexAuthorityPolicyHash(material), computeCodexAuthorityPolicyHash({ ...material, started: { ...material.started, thread: { id: "b" } } }));
+});
+
+test("thread/start timeout preserves a non-replayable unknown start binding", async () => {
+  class ThreadStartTimeoutClient extends PausedClient {
+    threadStarts = 0;
+    async request(method, params = {}) {
+      if (method === "thread/start") {
+        this.requests.push({ method, params });
+        this.threadStarts += 1;
+        throw new CodexRpcTimeoutError(method, 30_000);
+      }
+      return super.request(method, params);
+    }
+  }
+  const client = new ThreadStartTimeoutClient();
+  const executor = new CodexAgentExecutor({ defaultCwd: cwd, clientFactory: () => client });
+  await executor.open();
+  try {
+    const input = { task: "thread acceptance uncertain", clientRequestId: "thread-timeout-start" };
+    const first = await executor.start(input);
+    assert.equal(first.status, "unknown");
+    assert.match(first.latestError ?? "", /thread\/start acceptance unknown/i);
+    assert.equal(client.threadStarts, 1);
+
+    const duplicate = await executor.start(input);
+    assert.equal(duplicate.duplicate, true);
+    assert.equal(duplicate.agentRef, first.agentRef);
+    assert.equal(duplicate.status, "unknown");
+    assert.equal(client.threadStarts, 1, "same requestId must never replay an acceptance-unknown thread/start");
+  } finally { await executor.close(); }
 });
 
 test("closing during thread start prevents a later paid turn", async () => {
