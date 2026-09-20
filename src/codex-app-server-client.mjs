@@ -36,6 +36,8 @@ export class CodexAppServerClient {
   #buffer = "";
   #nextId = 1;
   #pending = new Map();
+  #timedOutResponseIds = new Set();
+  #consecutiveRequestTimeouts = 0;
   #notificationMethods = new Set();
   #notificationHandlers = new Set();
   #serverRequestMethods = new Set();
@@ -43,6 +45,8 @@ export class CodexAppServerClient {
   #pendingServerRequests = new Map();
   #initializedResult = null;
   #defaultRequestTimeoutMs;
+  #timeoutFailureThreshold;
+  #maxTimedOutResponseIds;
   #maxStdoutBufferBytes;
   #initializeCapabilities;
   #closing = false;
@@ -62,6 +66,8 @@ export class CodexAppServerClient {
     clientInfo = {},
     launch,
     requestTimeoutMs = 30_000,
+    timeoutFailureThreshold = 2,
+    maxTimedOutResponseIds = 1_024,
     maxStdoutBufferBytes = 1_048_576,
     initializeCapabilities = null,
     serverRequestHandler = null,
@@ -75,6 +81,12 @@ export class CodexAppServerClient {
       throw new Error("CodexAppServerClient launch must be a function returning a spawn spec");
     }
 
+    if (!Number.isInteger(timeoutFailureThreshold) || timeoutFailureThreshold < 1 || timeoutFailureThreshold > 100) {
+      throw new Error("timeoutFailureThreshold must be an integer from 1 to 100");
+    }
+    if (!Number.isInteger(maxTimedOutResponseIds) || maxTimedOutResponseIds < 1 || maxTimedOutResponseIds > 100_000) {
+      throw new Error("maxTimedOutResponseIds must be an integer from 1 to 100000");
+    }
     if (!Number.isInteger(maxStdoutBufferBytes) || maxStdoutBufferBytes < 1 || maxStdoutBufferBytes > 16 * 1024 * 1024) {
       throw new Error("maxStdoutBufferBytes must be an integer from 1 to 16777216");
     }
@@ -90,6 +102,8 @@ export class CodexAppServerClient {
 
     this.#cwd = cwd;
     this.#defaultRequestTimeoutMs = requestTimeoutMs;
+    this.#timeoutFailureThreshold = timeoutFailureThreshold;
+    this.#maxTimedOutResponseIds = maxTimedOutResponseIds;
     this.#maxStdoutBufferBytes = maxStdoutBufferBytes;
     this.#initializeCapabilities = initializeCapabilities;
     this.#serverRequestHandler = serverRequestHandler;
@@ -151,6 +165,8 @@ export class CodexAppServerClient {
     this.#initializedResult = null;
     this.#protocolError = null;
     this.#cleanupFailureReported = false;
+    this.#consecutiveRequestTimeouts = 0;
+    this.#timedOutResponseIds.clear();
     const launching = Promise.resolve().then(async () => {
       const spec = await this.#launchFactory();
       if (this.#closing || generation !== this.#generation) {
@@ -224,7 +240,13 @@ export class CodexAppServerClient {
             const waiter = this.#pending.get(key);
             if (!waiter) return;
             this.#pending.delete(key);
+            this.#rememberTimedOutResponse(key);
+            this.#consecutiveRequestTimeouts += 1;
             const timeoutError = new CodexRpcTimeoutError(method, timeoutMs);
+            if (this.#consecutiveRequestTimeouts < this.#timeoutFailureThreshold) {
+              waiter.reject(timeoutError);
+              return;
+            }
             void (async () => {
               try {
                 await this.close();
@@ -287,6 +309,8 @@ export class CodexAppServerClient {
       }
       // Release state only after the owned process is actually gone.
       if (this.#child === child) this.#child = null;
+      this.#consecutiveRequestTimeouts = 0;
+      this.#timedOutResponseIds.clear();
       const cleanup = this.#cleanup;
       this.#cleanup = null;
       if (cleanup) await cleanup();
@@ -383,8 +407,20 @@ export class CodexAppServerClient {
         const waiter = this.#pending.get(key);
         this.#pending.delete(key);
         if (waiter.timer) clearTimeout(waiter.timer);
+        this.#consecutiveRequestTimeouts = 0;
         if (hasError) waiter.reject(new CodexRpcError(waiter.method, message.error));
         else waiter.resolve(message.result);
+        continue;
+      }
+
+      if (!hasMethod && key !== null && this.#timedOutResponseIds.has(key)) {
+        if (hasResult === hasError || Object.hasOwn(message, "params")
+          || (hasError && (!isRecord(message.error) || !Number.isSafeInteger(message.error.code) || typeof message.error.message !== "string"))) {
+          this.#protocolFailure(new Error("Invalid Codex App Server response envelope; protocol contents are withheld"));
+          return;
+        }
+        this.#timedOutResponseIds.delete(key);
+        this.#consecutiveRequestTimeouts = 0;
         continue;
       }
 
@@ -458,6 +494,14 @@ export class CodexAppServerClient {
 
       this.#protocolFailure(new Error("Invalid Codex App Server response envelope; protocol contents are withheld"));
       return;
+    }
+  }
+
+  #rememberTimedOutResponse(key) {
+    this.#timedOutResponseIds.add(key);
+    while (this.#timedOutResponseIds.size > this.#maxTimedOutResponseIds) {
+      const oldest = this.#timedOutResponseIds.values().next().value;
+      this.#timedOutResponseIds.delete(oldest);
     }
   }
 
