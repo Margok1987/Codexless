@@ -4,6 +4,10 @@ import { registerBrowserPreviewTools } from "./browser-tools.mjs";
 import { registerConstructionTools } from "./construction-tools.mjs";
 import { registerPublicContextTools } from "./public-context-tools.mjs";
 import { installRecentCallToolInstrumentation } from "./recent-call-diagnostics.mjs";
+import {
+  createPublicCommandBusyResult,
+  createPublicCommandConcurrencyGate,
+} from "./public-command-concurrency.mjs";
 import { PUBLIC_SERVER_VERSION, PUBLIC_SURFACE_VERSION, PUBLIC_TOOL_NAMES } from "./surface-contracts.mjs";
 
 const require = createRequire(import.meta.url);
@@ -76,7 +80,7 @@ export function createPublicServerFactory({
   meteredQuotaProvider = null,
   agentPreviewState = null,
   recentCallDiagnostics,
-  maxConcurrent = 1,
+  maxConcurrent = 4,
 }) {
   if (!executor) throw new Error("Codexless public server requires an authority executor");
   if (!authorityExecutor) throw new Error("Codexless public server requires authorityExecutor");
@@ -99,7 +103,7 @@ export function createPublicServerFactory({
   }).strict();
 
   return function createServer() {
-    let inFlight = 0;
+    const commandConcurrency = createPublicCommandConcurrencyGate(maxConcurrent);
     const server = new McpServer(
       {
         name: "codexless",
@@ -125,8 +129,8 @@ export function createPublicServerFactory({
         annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       },
       async ({ command, cwd, access, timeoutMs }) => {
-        if (inFlight >= maxConcurrent) return toolError(`bridge concurrency limit reached (${maxConcurrent})`);
-        inFlight += 1;
+        const releaseConcurrency = commandConcurrency.tryAcquire();
+        if (!releaseConcurrency) return toolBusy(commandConcurrency.snapshot());
         try {
           const result = await executor.exec({ command, cwd, access, timeoutMs });
           const payload = {
@@ -156,7 +160,7 @@ export function createPublicServerFactory({
             error && typeof error === "object" ? { errorCode: error.code, nextActions: error.nextActions } : undefined
           );
         } finally {
-          inFlight -= 1;
+          releaseConcurrency();
         }
       }
     );
@@ -174,6 +178,10 @@ export function createPublicServerFactory({
     publicRegistration.assertComplete();
     return server;
   };
+}
+
+function toolBusy(snapshot) {
+  return createPublicCommandBusyResult({ ...snapshot, surfaceVersion: PUBLIC_SURFACE_VERSION });
 }
 
 function toolError(message, details = {}) {

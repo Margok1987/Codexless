@@ -194,7 +194,7 @@ export async function createPublicRuntime({ env = process.env } = {}) {
       meteredQuotaProvider: resourceSnapshotProvider,
       agentPreviewState,
       recentCallDiagnostics,
-      maxConcurrent: 1,
+      maxConcurrent: 4,
     });
 
     async function close() {
