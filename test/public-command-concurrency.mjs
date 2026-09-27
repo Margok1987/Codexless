@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createPublicCommandConcurrencyGate,
-  publicCommandBusyResult,
-} from "../src/public-server-factory.mjs";
+  createPublicCommandBusyResult,
+} from "../src/public-command-concurrency.mjs";
 
 test("public command concurrency gate admits the configured isolated calls", () => {
   const gate = createPublicCommandConcurrencyGate(4);
@@ -26,7 +26,7 @@ test("public command concurrency gate admits the configured isolated calls", () 
 });
 
 test("overflow is a non-error pre-dispatch retry signal", () => {
-  const result = publicCommandBusyResult({ inFlight: 4, maxConcurrent: 4 });
+  const result = createPublicCommandBusyResult({ inFlight: 4, maxConcurrent: 4, surfaceVersion: "test-surface" });
   assert.equal(result.isError, false);
   assert.equal(result.structuredContent.status, "busy");
   assert.equal(result.structuredContent.errorCode, "BRIDGE_BUSY_PRE_DISPATCH");
