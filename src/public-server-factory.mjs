@@ -4,6 +4,10 @@ import { registerBrowserPreviewTools } from "./browser-tools.mjs";
 import { registerConstructionTools } from "./construction-tools.mjs";
 import { registerPublicContextTools } from "./public-context-tools.mjs";
 import { installRecentCallToolInstrumentation } from "./recent-call-diagnostics.mjs";
+import {
+  createPublicCommandBusyResult,
+  createPublicCommandConcurrencyGate,
+} from "./public-command-concurrency.mjs";
 import { PUBLIC_SERVER_VERSION, PUBLIC_SURFACE_VERSION, PUBLIC_TOOL_NAMES } from "./surface-contracts.mjs";
 
 const require = createRequire(import.meta.url);
@@ -176,49 +180,8 @@ export function createPublicServerFactory({
   };
 }
 
-export function createPublicCommandConcurrencyGate(maxConcurrent) {
-  if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1 || maxConcurrent > 4) {
-    throw new Error("maxConcurrent must be an integer between 1 and 4");
-  }
-  let inFlight = 0;
-  return {
-    tryAcquire() {
-      if (inFlight >= maxConcurrent) return null;
-      inFlight += 1;
-      let released = false;
-      return () => {
-        if (released) return;
-        released = true;
-        inFlight -= 1;
-      };
-    },
-    snapshot() {
-      return { inFlight, maxConcurrent };
-    },
-  };
-}
-
-export function publicCommandBusyResult({ inFlight, maxConcurrent }) {
-  const structuredContent = {
-    status: "busy",
-    errorCode: "BRIDGE_BUSY_PRE_DISPATCH",
-    retryable: true,
-    retryAfterMs: 500,
-    dispatch: "not_started",
-    effect: "none",
-    inFlight,
-    maxConcurrent,
-    surfaceVersion: PUBLIC_SURFACE_VERSION,
-  };
-  return {
-    content: [{ type: "text", text: JSON.stringify(structuredContent) }],
-    structuredContent,
-    isError: false,
-  };
-}
-
 function toolBusy(snapshot) {
-  return publicCommandBusyResult(snapshot);
+  return createPublicCommandBusyResult({ ...snapshot, surfaceVersion: PUBLIC_SURFACE_VERSION });
 }
 
 function toolError(message, details = {}) {
