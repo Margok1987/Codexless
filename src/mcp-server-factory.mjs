@@ -6,6 +6,10 @@ import { registerExcelTools } from "./excel-tools.mjs";
 import { registerPublicTools } from "./public-tools.mjs";
 import { wrapToolHandlerWithRecentCallReceipt } from "./recent-call-receipts.mjs";
 import { registerWorkbenchPreviewTools } from "./workbench-tools.mjs";
+import {
+  createPublicCommandBusyResult,
+  createPublicCommandConcurrencyGate,
+} from "./public-command-concurrency.mjs";
 
 const require = createRequire(import.meta.url);
 const { McpServer } = require("@modelcontextprotocol/server");
@@ -69,7 +73,7 @@ export function createCodexToolboxServerFactory({
   }
   const allowedTools = normalizeToolAllowlist(toolAllowlist);
 
-  let inFlight = 0;
+  const commandConcurrency = createPublicCommandConcurrencyGate(maxConcurrent);
 
   const commandShape = {
     command: z.array(z.string().max(32_768)).min(1).max(128)
@@ -152,11 +156,14 @@ export function createCodexToolboxServerFactory({
             nextActions: directCodexGuard.nextActions,
           });
         }
-        if (inFlight >= maxConcurrent) {
-          return toolError(`bridge concurrency limit reached (${maxConcurrent})`);
+        const releaseConcurrency = commandConcurrency.tryAcquire();
+        if (!releaseConcurrency) {
+          return createPublicCommandBusyResult({
+            ...commandConcurrency.snapshot(),
+            surfaceVersion,
+          });
         }
 
-        inFlight += 1;
         try {
           const result = await executor.exec({ command, access, timeoutMs, cwd });
           const payload = {
@@ -202,7 +209,7 @@ export function createCodexToolboxServerFactory({
               : undefined
           );
         } finally {
-          inFlight -= 1;
+          releaseConcurrency();
         }
       }
     );
