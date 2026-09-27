@@ -76,7 +76,7 @@ export function createPublicServerFactory({
   meteredQuotaProvider = null,
   agentPreviewState = null,
   recentCallDiagnostics,
-  maxConcurrent = 1,
+  maxConcurrent = 4,
 }) {
   if (!executor) throw new Error("Codexless public server requires an authority executor");
   if (!authorityExecutor) throw new Error("Codexless public server requires authorityExecutor");
@@ -99,7 +99,7 @@ export function createPublicServerFactory({
   }).strict();
 
   return function createServer() {
-    let inFlight = 0;
+    const commandConcurrency = createPublicCommandConcurrencyGate(maxConcurrent);
     const server = new McpServer(
       {
         name: "codexless",
@@ -125,8 +125,8 @@ export function createPublicServerFactory({
         annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       },
       async ({ command, cwd, access, timeoutMs }) => {
-        if (inFlight >= maxConcurrent) return toolError(`bridge concurrency limit reached (${maxConcurrent})`);
-        inFlight += 1;
+        const releaseConcurrency = commandConcurrency.tryAcquire();
+        if (!releaseConcurrency) return toolBusy(commandConcurrency.snapshot());
         try {
           const result = await executor.exec({ command, cwd, access, timeoutMs });
           const payload = {
@@ -156,7 +156,7 @@ export function createPublicServerFactory({
             error && typeof error === "object" ? { errorCode: error.code, nextActions: error.nextActions } : undefined
           );
         } finally {
-          inFlight -= 1;
+          releaseConcurrency();
         }
       }
     );
@@ -174,6 +174,51 @@ export function createPublicServerFactory({
     publicRegistration.assertComplete();
     return server;
   };
+}
+
+export function createPublicCommandConcurrencyGate(maxConcurrent) {
+  if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1 || maxConcurrent > 4) {
+    throw new Error("maxConcurrent must be an integer between 1 and 4");
+  }
+  let inFlight = 0;
+  return {
+    tryAcquire() {
+      if (inFlight >= maxConcurrent) return null;
+      inFlight += 1;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        inFlight -= 1;
+      };
+    },
+    snapshot() {
+      return { inFlight, maxConcurrent };
+    },
+  };
+}
+
+export function publicCommandBusyResult({ inFlight, maxConcurrent }) {
+  const structuredContent = {
+    status: "busy",
+    errorCode: "BRIDGE_BUSY_PRE_DISPATCH",
+    retryable: true,
+    retryAfterMs: 500,
+    dispatch: "not_started",
+    effect: "none",
+    inFlight,
+    maxConcurrent,
+    surfaceVersion: PUBLIC_SURFACE_VERSION,
+  };
+  return {
+    content: [{ type: "text", text: JSON.stringify(structuredContent) }],
+    structuredContent,
+    isError: false,
+  };
+}
+
+function toolBusy(snapshot) {
+  return publicCommandBusyResult(snapshot);
 }
 
 function toolError(message, details = {}) {
