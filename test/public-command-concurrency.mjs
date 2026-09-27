@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import {
   createPublicCommandConcurrencyGate,
   createPublicCommandBusyResult,
@@ -43,4 +44,17 @@ test("public command concurrency gate rejects unsupported limits", () => {
   for (const value of [0, 5, 1.5, null]) {
     assert.throws(() => createPublicCommandConcurrencyGate(value), /between 1 and 4/);
   }
+});
+
+
+test("live public runtime is wired to the shared concurrency gate", () => {
+  const factorySource = readFileSync(new URL("../src/mcp-server-factory.mjs", import.meta.url), "utf8");
+  const runtimeSource = readFileSync(new URL("../src/codexless-runtime.mjs", import.meta.url), "utf8");
+  const httpSource = readFileSync(new URL("../src/mcp-http-public.mjs", import.meta.url), "utf8");
+
+  assert.match(httpSource, /createCodexlessRuntime\(\{ mode: "public" \}\)/);
+  assert.match(factorySource, /createPublicCommandConcurrencyGate\(maxConcurrent\)/);
+  assert.match(factorySource, /createPublicCommandBusyResult\(/);
+  assert.doesNotMatch(factorySource, /bridge concurrency limit reached/);
+  assert.match(runtimeSource, /const maxConcurrent = publicPreview \? 4 : 1;/);
 });
