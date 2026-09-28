@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import path from "node:path";
 import { CodexAccountAgentExecutor } from "../src/codex-account-agent-executor.mjs";
-import { computeCodexAuthorityPolicyHash } from "../src/codex-authority-executor.mjs";
+import { computeCodexAuthorityPolicyHash, findTrustedAncestor } from "../src/codex-authority-executor.mjs";
 import { createAccountBoundFormalAgentAuthorityExecutor } from "../src/codexless-runtime.mjs";
 import { createFormalAgentAccountContext } from "../src/formal-agent-account-context.mjs";
 import { CodexAgentExecutor } from "../src/codex-agent-executor.mjs";
@@ -169,6 +169,125 @@ test("formal authority hash ignores presentation and unrelated project trust but
   const relevantDrift = structuredClone(harmless);
   relevantDrift.effectiveConfig.projects[cwd].trust_level = "untrusted";
   assert.notEqual(computeCodexAuthorityPolicyHash(first), computeCodexAuthorityPolicyHash(relevantDrift));
+});
+
+const trustCwd = path.resolve(process.cwd(), "trust-fixture", "project", "work");
+const trustParent = path.dirname(trustCwd);
+const trustRoot = path.dirname(trustParent);
+const trustPolicy = {
+  permissionRows: [{ id: ":danger-full-access", allowed: true }],
+  authorityProfile: { permissionProfile: ":danger-full-access", permissionCeiling: ":danger-full-access" },
+  started: { cwd: trustCwd, activePermissionProfile: { id: ":danger-full-access" }, approvalPolicy: "never", sandbox: { type: "dangerFullAccess" } },
+};
+const trustedProjects = { [trustParent]: { trust_level: "trusted" } };
+const trustHash = (projects, overrides = {}) => computeCodexAuthorityPolicyHash({ ...trustPolicy, effectiveConfig: { projects }, ...overrides });
+
+test("formal authority hash collapses redundant broader and narrower trusted ancestors", () => {
+  const expected = trustHash(trustedProjects);
+  for (const projects of [
+    { [trustRoot]: { trust_level: "trusted" }, ...trustedProjects },
+    { ...trustedProjects, [trustCwd]: { trust_level: "trusted" } },
+    { [trustCwd]: { trust_level: "trusted" } },
+    { [trustCwd]: { trustLevel: "trusted" }, [trustRoot]: { trust_level: "trusted" }, ...trustedProjects },
+  ]) {
+    assert.equal(findTrustedAncestor({ projects }, trustCwd)?.trustLevel, "trusted");
+    assert.equal(trustHash(projects), expected);
+  }
+  assert.equal(findTrustedAncestor({ projects: { ...trustedProjects, [trustCwd]: { trust_level: "trusted" } } }, trustCwd).root, trustCwd);
+  assert.equal(findTrustedAncestor({ projects: trustedProjects }, trustCwd).root, trustParent);
+  assert.equal(trustHash(trustedProjects, { started: { ...trustPolicy.started, cwd: undefined, thread: { cwd: trustCwd } } }),
+    trustHash({ ...trustedProjects, [trustCwd]: { trust_level: "trusted" } }, { started: { ...trustPolicy.started, cwd: undefined, thread: { cwd: trustCwd } } }));
+});
+
+test("formal authority hash retains trust loss, non-trust project fields and conflicting values", () => {
+  const expected = trustHash(trustedProjects);
+  for (const projects of [
+    {},
+    { [trustParent]: { trust_level: "untrusted" } },
+    { [trustParent]: { trustLevel: "untrusted" } },
+    { ...trustedProjects, [trustCwd]: { trust_level: "untrusted" } },
+    { [trustRoot]: { trust_level: "untrusted" }, ...trustedProjects },
+    { [trustParent]: { trust_level: "trusted", trustLevel: "untrusted" } },
+    { [trustParent]: { trust_level: "untrusted", trustLevel: "trusted" } },
+    { [trustParent]: { trust_level: "trusted", future_security_field: { enabled: true } } },
+    { ...trustedProjects, [trustRoot]: { trust_level: "trusted", tools: { shell: false } } },
+    { ...trustedProjects, [trustCwd]: { trust_level: "trusted", approval_policy: "on-request" } },
+    { ...trustedProjects, [trustRoot]: null },
+    { ...trustedProjects, [trustRoot]: ["trusted"] },
+  ]) assert.notEqual(trustHash(projects), expected, JSON.stringify(projects));
+  assert.equal(findTrustedAncestor({ projects: {} }, trustCwd), null);
+  assert.equal(findTrustedAncestor({ projects: { [trustParent]: { trust_level: "untrusted", trustLevel: "trusted" } } }, trustCwd), null);
+  const configured = { ...trustedProjects, [trustRoot]: { trust_level: "trusted", future_security_field: { enabled: false } } };
+  assert.equal(trustHash(configured), trustHash({ ...configured, [trustCwd]: { trust_level: "trusted" } }));
+  assert.notEqual(trustHash(configured), trustHash({ ...trustedProjects, [trustRoot]: { trust_level: "trusted", future_security_field: { enabled: true } } }));
+});
+
+test("formal authority hash excludes sibling, descendant and path-prefix lookalike project records only with a concrete cwd", () => {
+  const projects = {
+    ...trustedProjects,
+    [path.join(trustParent, "sibling")]: { trust_level: "untrusted", tools: { shell: false } },
+    [path.join(trustCwd, "descendant")]: { trust_level: "trusted" },
+    [trustParent.slice(0, -1)]: { trust_level: "trusted" },
+  };
+  assert.equal(trustHash(projects), trustHash(trustedProjects));
+  assert.notEqual(trustHash(projects, { started: null }), trustHash(trustedProjects, { started: null }));
+});
+
+test("formal project normalization does not extend identity and model exceptions into project config", () => {
+  for (const key of ["model", "model_reasoning_effort", "model_reasoning_summary", "model_verbosity", "service_tier", "forced_chatgpt_workspace_id", "forced_login_method"]) {
+    const hashConfig = (value) => trustHash(trustedProjects, { effectiveConfig: { projects: trustedProjects, [key]: value } });
+    assert.equal(hashConfig("first"), hashConfig("second"), key);
+    assert.notEqual(trustHash({ [trustParent]: { trust_level: "trusted", [key]: "first" } }),
+      trustHash({ [trustParent]: { trust_level: "trusted", [key]: "second" } }), key);
+  }
+  for (const key of ["model_provider", "approval_policy", "sandbox_mode", "future_security_field"]) {
+    assert.notEqual(trustHash(trustedProjects, { effectiveConfig: { projects: trustedProjects, [key]: "first" } }),
+      trustHash(trustedProjects, { effectiveConfig: { projects: trustedProjects, [key]: "second" } }), key);
+  }
+});
+
+test("formal host/account compatibility accepts redundant trust but rejects effective authority drift", async () => {
+  let projects = { ...trustedProjects, [trustCwd]: { trust_level: "trusted" } };
+  const host = { effectiveCwd: trustCwd, ...trustPolicy.authorityProfile, policyHash: trustHash(trustedProjects) };
+  const authority = createAccountBoundFormalAgentAuthorityExecutor({
+    hostAuthorityExecutor: { async resolveAuthority() { return host; } },
+    agentExecutor: { async prepareAuthority(input) {
+      assert.equal(input.account, "dennis");
+      assert.equal(input.cwd, trustCwd);
+      return { ...host, securityPolicyHash: trustHash(projects), policyHash: "account-lease" };
+    } },
+  });
+  assert.equal((await authority.resolveAuthority({ account: "dennis", cwd: trustCwd })).authoritySource, "host+account-bound");
+  for (const changed of [
+    { [trustParent]: { trust_level: "untrusted" } },
+    { ...trustedProjects, [trustRoot]: { trust_level: "trusted", future_security_field: true } },
+  ]) {
+    projects = changed;
+    await assert.rejects(authority.resolveAuthority({ account: "dennis", cwd: trustCwd }), { code: "CODEX_AGENT_AUTHORITY_INCOMPATIBLE" });
+  }
+});
+
+test("account authority preparation rejects absent or untrusted cwd before probing a thread", async () => {
+  for (const projects of [{}, { [trustParent]: { trust_level: "untrusted" } }, { [path.join(trustCwd, "child")]: { trust_level: "trusted" } }]) {
+    const requests = [];
+    const client = {
+      running: false,
+      async start() { this.running = true; return {}; },
+      async close() { this.running = false; },
+      onNotification() { return () => {}; },
+      async request(method) {
+        requests.push(method);
+        assert.equal(method, "config/read");
+        return { config: { projects } };
+      },
+    };
+    const executor = new CodexAgentExecutor({ defaultCwd: trustCwd, clientFactory: () => client });
+    await executor.open();
+    try {
+      await assert.rejects(executor.prepareAuthority({ cwd: trustCwd, ...trustPolicy.authorityProfile }), { code: "CODEX_AGENT_AUTHORITY_INCOMPATIBLE" });
+      assert.deepEqual(requests, ["config/read"]);
+    } finally { await executor.close(); }
+  }
 });
 
 test("formal account context binds start and commit authority to the existing task account", async () => {

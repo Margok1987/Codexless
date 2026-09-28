@@ -16,8 +16,9 @@ const permittedMethods = new Set([
   "thread/resume", "thread/turns/list",
 ]);
 
-for (const changedPolicy of [false, true]) {
-  test(`official account authority ${changedPolicy ? "rejects drift" : "matches identical isolated policy"} without a paid turn`, { timeout: 20_000 }, async () => {
+for (const policyCase of ["identical", "drift", "redundant-trust"]) {
+  const changedPolicy = policyCase === "drift";
+  test(`official account authority ${policyCase} without a paid turn`, { timeout: 20_000 }, async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "codexless-official-accounts-"));
     let executor = null;
     try {
@@ -25,9 +26,13 @@ for (const changedPolicy of [false, true]) {
       const authorityHome = path.join(root, "authority-home");
       const accountHome = path.join(root, "account-home");
       for (const directory of [workspace, authorityHome, accountHome]) await mkdir(directory);
-      const baseConfig = `approval_policy = "on-request"\nsandbox_mode = "read-only"\ncli_auth_credentials_store = "file"\n[projects.${JSON.stringify(workspace)}]\ntrust_level = "trusted"\n`;
+      const trustedRoot = policyCase === "redundant-trust" ? root : workspace;
+      const baseConfig = `approval_policy = "on-request"\nsandbox_mode = "read-only"\ncli_auth_credentials_store = "file"\n[projects.${JSON.stringify(trustedRoot)}]\ntrust_level = "trusted"\n`;
+      const accountConfig = policyCase === "redundant-trust"
+        ? `${baseConfig}\n[projects.${JSON.stringify(workspace)}]\ntrust_level = "trusted"\n`
+        : changedPolicy ? baseConfig.replace('"on-request"', '"never"') : baseConfig;
       await writeFile(path.join(authorityHome, "config.toml"), baseConfig);
-      await writeFile(path.join(accountHome, "config.toml"), changedPolicy ? baseConfig.replace('"on-request"', '"never"') : baseConfig);
+      await writeFile(path.join(accountHome, "config.toml"), accountConfig);
       const resolved = await resolveCodexExecutable({ env: { ...process.env, CODEX_BIN: "" } });
       const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
       assert.equal(resolved.version, pkg.dependencies["@openai/codex"], "test must use the exact pinned official Codex");
@@ -79,6 +84,12 @@ for (const changedPolicy of [false, true]) {
         permissionCeiling: ":read-only",
       });
       assert.match(accountPrepared.policyHash, /^[a-f0-9]{64}$/);
+      if (changedPolicy) assert.notEqual(accountPrepared.policyHash, prepared.policyHash);
+      else assert.equal(accountPrepared.policyHash, prepared.policyHash);
+      if (policyCase === "redundant-trust") {
+        assert.equal(prepared.trustedAncestor, root);
+        assert.equal(accountPrepared.trustedAncestor, workspace);
+      }
       assert.equal(
         observedMethods.filter((method) => method === "thread/delete").length,
         0,

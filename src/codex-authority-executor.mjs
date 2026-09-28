@@ -111,15 +111,45 @@ function omitPolicyExceptions(value, exceptions) {
   return Object.fromEntries(Object.entries(value).filter(([key]) => !exceptions.has(key)));
 }
 
-export const CODEX_AUTHORITY_POLICY_SCHEMA_VERSION = 3;
+// v4 binds effective cwd trust, not accumulated trusted-ancestor records.
+// Previously prepared hashes must be re-prepared under these semantics.
+export const CODEX_AUTHORITY_POLICY_SCHEMA_VERSION = 4;
+
+function* relevantProjectEntries(projects, cwd) {
+  const target = normalizeConfigPath(cwd);
+  for (const [rawRoot, entry] of Object.entries(projects)) {
+    const normalizedRoot = normalizeConfigPath(rawRoot);
+    if (target === normalizedRoot || target.startsWith(`${normalizedRoot}\\`)) {
+      yield { rawRoot, entry, normalizedRoot };
+    }
+  }
+}
+
+function projectTrustLevel(entry) {
+  return entry?.trust_level ?? entry?.trustLevel ?? null;
+}
 
 function projectRelevantProjects(projects, effectiveCwd) {
   if (!projects || typeof projects !== "object" || Array.isArray(projects) || !effectiveCwd) return projects;
-  const target = normalizeConfigPath(effectiveCwd);
-  return Object.fromEntries(Object.entries(projects).filter(([rawRoot]) => {
-    const normalizedRoot = normalizeConfigPath(rawRoot);
-    return target === normalizedRoot || target.startsWith(`${normalizedRoot}\\`);
-  }));
+  const relevant = [...relevantProjectEntries(projects, effectiveCwd)];
+  if (!relevant.length) return {};
+  const entries = [];
+  for (const { rawRoot, entry } of relevant) {
+    if (projectTrustLevel(entry) !== "trusted") {
+      entries.push([rawRoot, entry]);
+      continue;
+    }
+    // Only affirmative trust markers are redundant once the cwd is trusted.
+    // Retain all other data at its original root, including unknown project
+    // fields and conflicting/null aliases from broader or narrower ancestors.
+    const remaining = Object.fromEntries(Object.entries(entry).filter(([key, value]) =>
+      !((key === "trust_level" || key === "trustLevel") && value === "trusted")));
+    if (Object.keys(remaining).length) entries.push([rawRoot, remaining]);
+  }
+  return {
+    trustLevel: findTrustedAncestor({ projects }, effectiveCwd)?.trustLevel ?? null,
+    entries: Object.fromEntries(entries),
+  };
 }
 
 function projectSecurityConfig(effectiveConfig, effectiveCwd) {
@@ -196,16 +226,12 @@ function authorityPolicyHash({ effectiveConfig, allowedProfiles, authorityProfil
 }
 
 export function findTrustedAncestor(config, cwd) {
-  const target = normalizeConfigPath(cwd);
   const projects = config?.projects ?? {};
   let best = null;
 
-  for (const [rawRoot, entry] of Object.entries(projects)) {
-    const trustLevel = entry?.trust_level ?? entry?.trustLevel ?? null;
+  for (const { rawRoot, entry, normalizedRoot } of relevantProjectEntries(projects, cwd)) {
+    const trustLevel = projectTrustLevel(entry);
     if (trustLevel !== "trusted") continue;
-    const normalizedRoot = normalizeConfigPath(rawRoot);
-    const withinRoot = target === normalizedRoot || target.startsWith(`${normalizedRoot}\\`);
-    if (!withinRoot) continue;
     if (!best || normalizedRoot.length > best.normalizedRoot.length) {
       best = { root: path.resolve(rawRoot), normalizedRoot, trustLevel };
     }
