@@ -83,6 +83,8 @@ Codexless can optionally register multiple managed Codex accounts. The registry 
 
 These constraints isolate Codex login identity. They do not create separate local filesystem or Homelab permission universes; those remain governed by the effective Codex/local execution policy.
 
+Formal host/account compatibility is compared against the **effective cwd-scoped execution authority**, not the historical count of redundant affirmative project-trust ancestors accumulated in each `CODEX_HOME`. Redundant `trusted` ancestors that do not change the effective trust decision are canonicalized before the authority hash is compared. Negative or conflicting trust, unknown/non-trust project fields, permission/sandbox/approval drift, and other security-relevant configuration remain fail-closed. The authority-hash schema is versioned; a schema change invalidates previously prepared authority hashes so they must be prepared again rather than silently reused.
+
 Managed-account transport recovery is documented separately in [`docs/managed-account-runtime-lifecycle.md`](docs/managed-account-runtime-lifecycle.md). In particular, a client-side RPC timeout alone is not treated as App Server death; genuine delegate death may be recovered for new work on the same selected account, while stale `agentRef` values remain bound to their original delegate generation and fail closed.
 
 ### Active-turn supervision and steering
