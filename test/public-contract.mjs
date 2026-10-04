@@ -109,6 +109,8 @@ try {
   const householdOnlyExcelToolNames = ["codex.excel_tool_schemas", "codex.excel_execute_tool"];
   assert.equal(commandTool?.annotations?.destructiveHint, true);
   assert.match(commandTool?.description ?? "", /must not launch Codex CLI|refuses nested Codex/i);
+  assert.match(commandTool?.inputSchema?.properties?.command?.description ?? "", /directly launched local process|process boundary/i);
+  assert.match(commandTool?.inputSchema?.properties?.command?.description ?? "", /OpenSSH.*remote-command.*not.*remote argv RPC/i);
   const nestedCodexCommand = await client.callTool({
     name: "codex.command_exec",
     arguments: { command: [codexBin, "--version"], access: "readOnly" },
