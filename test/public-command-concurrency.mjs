@@ -55,6 +55,8 @@ test("live public runtime is wired to the shared concurrency gate", () => {
   assert.match(httpSource, /createCodexlessRuntime\(\{ mode: "public" \}\)/);
   assert.match(factorySource, /createPublicCommandConcurrencyGate\(maxConcurrent\)/);
   assert.match(factorySource, /createPublicCommandBusyResult\(/);
+  assert.match(factorySource, /nestedSshRemoteArgvRisk\(command\)/);
+  assert.match(factorySource, /NESTED_REMOTE_ARGV_UNSAFE/);
   assert.doesNotMatch(factorySource, /bridge concurrency limit reached/);
   assert.match(runtimeSource, /const maxConcurrent = publicPreview \? 4 : 1;/);
 });
