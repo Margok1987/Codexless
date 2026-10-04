@@ -10,6 +10,7 @@ import {
   createPublicCommandBusyResult,
   createPublicCommandConcurrencyGate,
 } from "./public-command-concurrency.mjs";
+import { nestedSshRemoteArgvRisk } from "./public-command-policy.mjs";
 
 const require = createRequire(import.meta.url);
 const { McpServer } = require("@modelcontextprotocol/server");
@@ -147,6 +148,30 @@ export function createCodexToolboxServerFactory({
         },
       },
       async ({ command, access, timeoutMs, cwd }) => {
+        const nestedSshGuard = publicPreview ? nestedSshRemoteArgvRisk(command) : null;
+        if (nestedSshGuard) {
+          const message =
+            "Codexless command_exec cannot guarantee remote argv boundaries after local ssh/ssh.exe. " +
+            "This remote command contains an argument that would require shell quoting, so dispatch was refused before ssh started.";
+          const structuredContent = {
+            error: message,
+            errorCode: "NESTED_REMOTE_ARGV_UNSAFE",
+            reason: nestedSshGuard.reason,
+            dispatch: "not_started",
+            effect: "none",
+            retryable: false,
+            nextActions: [
+              "Use a maintained higher-level file/data or system operation for complex remote content.",
+              "Keep direct SSH remote commands to an executable plus simple scalar arguments.",
+              "Do not retry the same effect by wrapping it in sh -c, bash -c, PowerShell, Python inline code, or another shell string.",
+            ],
+          };
+          return {
+            content: [{ type: "text", text: message }],
+            structuredContent,
+            isError: true,
+          };
+        }
         const directCodexGuard = guardDirectFormalCodex
           ? (publicPreview ? classifyAnyCodexInvocation(command) : classifyFormalCodexInvocation(command))
           : null;

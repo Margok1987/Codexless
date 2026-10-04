@@ -118,6 +118,19 @@ try {
   assert.equal(nestedCodexCommand.isError, true, "public command_exec must refuse a nested Codex CLI launch before dispatch");
   assert.equal(nestedCodexCommand.structuredContent?.errorCode, "FORMAL_CODEX_AGENT_REQUIRED");
   assert.match(nestedCodexCommand.structuredContent?.error ?? nestedCodexCommand.content?.[0]?.text ?? "", /codex\.agent_start/i);
+  const unsafeNestedSsh = await client.callTool({
+    name: "codex.command_exec",
+    arguments: {
+      command: ["ssh.exe", "user@host", "/usr/bin/python3", "-c", "print('hello world')"],
+      access: "readOnly",
+    },
+  });
+  assert.equal(unsafeNestedSsh.isError, true, "unsafe nested SSH argv must fail before ssh dispatch");
+  assert.equal(unsafeNestedSsh.structuredContent?.errorCode, "NESTED_REMOTE_ARGV_UNSAFE");
+  assert.equal(unsafeNestedSsh.structuredContent?.dispatch, "not_started");
+  assert.equal(unsafeNestedSsh.structuredContent?.effect, "none");
+  assert.equal(unsafeNestedSsh.structuredContent?.retryable, false);
+  console.log("public command nested SSH handler guard PASS");
   assert.equal(preciseEditTool?.annotations?.destructiveHint, true);
   assert.deepEqual(Object.keys(skillListTool?.inputSchema?.properties ?? {}).sort(), ["cwd", "query"]);
   assert.equal(Object.hasOwn(skillListTool?.inputSchema?.properties ?? {}, "kind"), false);

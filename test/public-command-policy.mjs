@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { assertNoNestedCodexInvocation, nestedCodexInvocationReason } from "../src/public-command-policy.mjs";
+import { assertNoNestedCodexInvocation, nestedCodexInvocationReason, nestedSshRemoteArgvRisk } from "../src/public-command-policy.mjs";
 
 const configuredWindowsCodex = "C:\\Pinned\\codex.exe";
 
@@ -50,3 +50,48 @@ for (const command of allowed) {
 }
 
 console.log("public command nested-Codex guard PASS");
+
+
+const sshBlocked = [
+  [
+    [
+      "ssh.exe",
+      "-i", "C:\\keys\\id",
+      "-o", "StrictHostKeyChecking=yes",
+      "user@host",
+      "sudo", "-n", "timeout", "10s",
+      "pct", "exec", "183", "--keep-env", "0", "--",
+      "/usr/bin/python3", "-c", "print('hello world')",
+    ],
+    "remote-arg-requires-shell-quoting",
+  ],
+  [["ssh", "user@host", "/usr/bin/printf", "hello world"], "remote-arg-requires-shell-quoting"],
+  [["ssh", "user@host", "/usr/bin/bash", "-lc", "echo hello"], "remote-arg-requires-shell-quoting"],
+  [["ssh", "user@host", "/usr/bin/printf", "{\"a\":1}"], "remote-arg-requires-shell-quoting"],
+];
+
+for (const [command, reason] of sshBlocked) {
+  assert.equal(nestedSshRemoteArgvRisk(command)?.reason, reason, JSON.stringify(command));
+}
+
+const sshAllowed = [
+  [
+    "ssh.exe",
+    "-i", "C:\\keys\\id",
+    "-o", "UserKnownHostsFile=C:\\keys\\known_hosts",
+    "-o", "StrictHostKeyChecking=yes",
+    "user@host",
+    "sudo", "-n", "timeout", "--signal=TERM", "--kill-after=2s", "10s",
+    "pct", "exec", "183", "--keep-env", "0", "--",
+    "/usr/bin/grep", "-n", "^HINDSIGHT_API_LLM_TIMEOUT=", "/etc/kira/kira-hindsight.env",
+  ],
+  ["ssh", "user@host", "/usr/bin/systemctl", "is-active", "kira-hindsight.service"],
+  ["ssh", "-V"],
+  ["git", "status", "--short"],
+];
+
+for (const command of sshAllowed) {
+  assert.equal(nestedSshRemoteArgvRisk(command), null, JSON.stringify(command));
+}
+
+console.log("public command nested SSH argv guard PASS");

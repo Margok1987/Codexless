@@ -92,6 +92,74 @@ function wrapperCarriesNestedCodex(command, wrapper, codexBin) {
   return false;
 }
 
+
+const SSH_EXECUTABLE_STEMS = new Set(["ssh"]);
+const SSH_OPTIONS_WITH_VALUE = new Set([
+  "-b", "-B", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l",
+  "-m", "-O", "-o", "-p", "-Q", "-R", "-S", "-W", "-w",
+]);
+const SSH_OPTIONS_WITHOUT_VALUE = new Set([
+  "-4", "-6", "-A", "-a", "-C", "-f", "-G", "-g", "-K", "-k", "-M", "-N",
+  "-n", "-q", "-s", "-T", "-t", "-V", "-v", "-X", "-x", "-Y", "-y",
+]);
+const SIMPLE_REMOTE_ARG_RE = /^[A-Za-z0-9_./:@%+=,^,-]+$/;
+
+function sshRemoteCommandArgs(command) {
+  if (!Array.isArray(command) || command.length < 2) return null;
+  const executable = executableStem(command[0]);
+  if (!SSH_EXECUTABLE_STEMS.has(executable)) return null;
+
+  const args = command.slice(1).map((value) => String(value));
+  let index = 0;
+  while (index < args.length) {
+    const arg = args[index];
+    if (arg === "--") {
+      index += 1;
+      break;
+    }
+    if (!arg.startsWith("-") || arg === "-") break;
+
+    if (SSH_OPTIONS_WITH_VALUE.has(arg)) {
+      if (index + 1 >= args.length) return null;
+      index += 2;
+      continue;
+    }
+    if (SSH_OPTIONS_WITHOUT_VALUE.has(arg)) {
+      index += 1;
+      continue;
+    }
+
+    const optionName = arg.slice(0, 2);
+    if (SSH_OPTIONS_WITH_VALUE.has(optionName) && arg.length > 2) {
+      index += 1;
+      continue;
+    }
+
+    return null;
+  }
+
+  if (index >= args.length) return null;
+  const destination = args[index];
+  if (!destination || destination.startsWith("-")) return null;
+  return args.slice(index + 1);
+}
+
+export function nestedSshRemoteArgvRisk(command) {
+  const remoteArgs = sshRemoteCommandArgs(command);
+  if (!remoteArgs || remoteArgs.length === 0) return null;
+
+  for (let index = 0; index < remoteArgs.length; index += 1) {
+    const arg = remoteArgs[index];
+    if (!arg || !SIMPLE_REMOTE_ARG_RE.test(arg)) {
+      return {
+        reason: "remote-arg-requires-shell-quoting",
+        remoteArgIndex: index,
+      };
+    }
+  }
+  return null;
+}
+
 export function nestedCodexInvocationReason(command, { codexBin = null } = {}) {
   if (!Array.isArray(command) || command.length === 0) return null;
   if (isCodexExecutableToken(command[0], codexBin)) return "direct-codex-executable";
