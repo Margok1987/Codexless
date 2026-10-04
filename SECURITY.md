@@ -42,6 +42,24 @@ Internal availability is not a public safety claim. A capability must be explici
 - This command classifier is a product guard against direct or accidental nested-Codex routing, not a general-purpose adversarial process sandbox. Arbitrary code execution is inherently capable of hiding secondary process launches; Codexless does not claim that a malicious custom client can be made non-Turing-complete by argv inspection. The supported model-facing contract is that callers must not encode or disguise a Codex launch inside another command.
 - Commands can be destructive. The MCP tool is marked accordingly.
 
+### Nested SSH argv boundary
+
+`codex.command_exec` preserves the argv vector for the **local executable** it
+starts. That guarantee does not extend through `ssh` / `ssh.exe`: OpenSSH
+serializes the remote command and the remote SSH service normally evaluates it
+through a command-string/shell boundary.
+
+The public runtime therefore rejects a nested SSH remote command before dispatch
+when a remote argument would require shell quoting to preserve its argv value.
+The structured error is `NESTED_REMOTE_ARGV_UNSAFE` with
+`dispatch=not_started` and `effect=none`.
+
+Keep direct SSH remote commands to an executable plus simple scalar arguments.
+For multiline content, JSON/YAML, inline interpreter code, shell metacharacters,
+pipelines, redirects, heredocs, or other quoting-sensitive data, use a qualified
+file/data or system operation instead. Do not treat shell wrapping as a supported
+way around this boundary.
+
 ## Project reads and edits
 
 Public project file operations are intentionally narrower than a generic raw filesystem API.
