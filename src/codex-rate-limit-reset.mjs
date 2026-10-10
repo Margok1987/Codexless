@@ -1,4 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 const READ_METHOD = "account/rateLimits/read";
 const CONSUME_METHOD = "account/rateLimitResetCredit/consume";
 
@@ -50,17 +52,74 @@ function quotaMoved(before, after) {
   return false;
 }
 
-// Stateful across HTTP MCP requests, but never survives a runtime restart as an approval.
-// Once dispatch is uncertain, this instance refuses further prepares for that account.
-export function createCodexRateLimitResetCoordinator({ request, now = Date.now, newId = randomUUID, maxTasks = 1_000 } = {}) {
+function persistentCreditGuard(lockRoot) {
+  if (typeof lockRoot !== "string" || !path.isAbsolute(lockRoot)) {
+    throw new Error("A persistent owner-controlled Codexless state root is required for reset consumption");
+  }
+  const directory = path.join(lockRoot, "banked-reset-guards");
+
+  function filename(account) { return path.join(directory, `account-${account}.json`); }
+  function inspect(account) {
+    const name = filename(account);
+    let stat;
+    try { stat = fs.lstatSync(name); }
+    catch (error) {
+      if (error?.code === "ENOENT") return;
+      throw error;
+    }
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw failure("CODEX_RESET_GUARD_INVALID", "Persistent reset record is not a regular file");
+    }
+    throw failure("CODEX_RESET_RECONCILIATION_REQUIRED",
+      "A previous reset may have been dispatched. Reconcile its native result before new consumption");
+  }
+  function begin({ account, taskId, creditId, availableCount, createdAt }) {
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    inspect(account);
+    const record = {
+      schemaVersion: 1,
+      account,
+      taskId,
+      creditDigest: createHash("sha256").update(creditId).digest("hex"),
+      beforeAvailableCount: availableCount,
+      preparedAt: createdAt,
+      state: "dispatch_may_have_started",
+    };
+    let descriptor;
+    try { descriptor = fs.openSync(filename(account), "wx", 0o600); }
+    catch (error) {
+      if (error?.code === "EEXIST") {
+        throw failure("CODEX_RESET_RECONCILIATION_REQUIRED", "Unresolved reset marker blocks a new dispatch");
+      }
+      throw error;
+    }
+    try {
+      fs.writeFileSync(descriptor, JSON.stringify(record) + "\n", "utf8");
+      fs.fsyncSync(descriptor);
+    } finally {
+      fs.closeSync(descriptor);
+    }
+  }
+  function release(account) {
+    const name = filename(account);
+    if (!fs.lstatSync(name).isFile()) throw failure("CODEX_RESET_GUARD_INVALID", "Persistent reset record changed");
+    fs.unlinkSync(name);
+  }
+  return Object.freeze({ inspect, begin, release });
+}
+
+// Pending consent lives only in this runtime generation; uncertain dispatch survives restart.
+export function createCodexRateLimitResetCoordinator({ request, now = Date.now, newId = randomUUID, lockRoot, maxTasks = 1_000 } = {}) {
   if (typeof request !== "function") throw new Error("Reset coordinator requires a selected-account native App Server request function");
   if (typeof now !== "function" || typeof newId !== "function") throw new Error("Invalid reset clock or ID generator");
   const tasks = new Map();
+  const guard = persistentCreditGuard(lockRoot);
 
   async function prepare({ account } = {}) {
     if (typeof account !== "string" || !/^[a-zA-Z0-9_-]{1,32}$/.test(account)) {
       throw failure("CODEX_RESET_ACCOUNT_REQUIRED", "Select one exact managed Codex account");
     }
+    guard.inspect(account);
     if (tasks.size >= maxTasks) throw failure("CODEX_RESET_CAPACITY", "Reset task capacity reached");
     if ([...tasks.values()].some((task) => task.account === account && ["pending", "verifying", "dispatching", "unknown_outcome"].includes(task.state))) {
       throw failure("CODEX_RESET_PENDING", "A pending or uncertain reset exists for this account; reconcile it first");
@@ -125,6 +184,21 @@ export function createCodexRateLimitResetCoordinator({ request, now = Date.now, 
       return task.result;
     }
 
+    try {
+      guard.begin({
+        account: task.account,
+        taskId,
+        creditId: before.creditId,
+        availableCount: before.availableCount,
+        createdAt: task.createdAt,
+      });
+    } catch {
+      task.state = "blocked";
+      task.result = { status: "blocked", taskId, account: task.account, effect: "none",
+        reason: "persistent_dispatch_guard_unavailable_or_unresolved" };
+      return task.result;
+    }
+
     task.state = "dispatching";
     let nativeResult;
     try {
@@ -145,6 +219,13 @@ export function createCodexRateLimitResetCoordinator({ request, now = Date.now, 
       return task.result;
     }
     if (outcome === "nothingToReset" || outcome === "noCredit") {
+      try { guard.release(task.account); }
+      catch {
+        task.state = "unknown_outcome";
+        task.result = { status: "unknown_outcome", taskId, account: task.account, outcome,
+          effect: "none", reason: "native_no_effect_but_persistent_guard_not_cleared" };
+        return task.result;
+      }
       task.state = "not_applied";
       task.result = { status: "not_applied", taskId, account: task.account, outcome, effect: "none" };
       return task.result;
@@ -158,9 +239,16 @@ export function createCodexRateLimitResetCoordinator({ request, now = Date.now, 
         && Array.isArray(credits.credits)
         && !credits.credits.some((c) => c?.id === before.creditId && c?.status === "available");
       const quotaVerified = quotaMoved(before.rateLimits, after?.rateLimits);
-      task.state = countVerified && quotaVerified ? "verified" : "unknown_outcome";
-      task.result = { status: task.state, taskId, account: task.account, outcome, effect: "possibly_applied",
-        verification: { creditCount: countVerified, quotaWindows: quotaVerified },
+      const providerVerified = countVerified && quotaVerified;
+      let guardCleared = false;
+      if (providerVerified) {
+        try { guard.release(task.account); guardCleared = true; }
+        catch { /* Keep the persistent guard and fail closed until reconciled. */ }
+      }
+      task.state = providerVerified && guardCleared ? "verified" : "unknown_outcome";
+      task.result = { status: task.state, taskId, account: task.account, outcome,
+        effect: providerVerified ? "applied" : "possibly_applied",
+        verification: { creditCount: countVerified, quotaWindows: quotaVerified, persistentGuardCleared: guardCleared },
         availableCount: Number.isSafeInteger(credits?.availableCount) ? credits.availableCount : null };
     } catch {
       task.state = "unknown_outcome";
