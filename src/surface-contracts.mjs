@@ -16,8 +16,6 @@ export const PUBLIC_TOOL_ALLOWLIST = Object.freeze([
   "codex.account_preflight",
   "codex.reset_credit_prepare",
   "codex.reset_credit_decide",
-  "codex.reset_credit_prepare",
-  "codex.reset_credit_decide",
   "codex.skill_list",
   "codex.skill_read",
   "codex.read_many",
