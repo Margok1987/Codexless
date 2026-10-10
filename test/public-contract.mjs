@@ -49,7 +49,7 @@ function createIsolatedPublicTestEnv(extra = {}) {
 }
 
 assert.equal(PUBLIC_SURFACE_VERSION, "codexless-public-preview-v1");
-assert.equal(PUBLIC_TOOL_NAMES.length, 45);
+assert.equal(PUBLIC_TOOL_NAMES.length, 47);
 for (const relative of [
   "src/browser-tools.mjs",
   "src/codex-browser-executor.mjs",
@@ -89,7 +89,7 @@ try {
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name);
   assert.deepEqual([...names].sort(), [...PUBLIC_TOOL_NAMES].sort());
-  assert.equal(names.length, 45);
+  assert.equal(names.length, 47);
 
   for (const name of forbiddenNames) {
     assert.equal(names.includes(name), false, `${name} must not be exposed by the public preview`);
@@ -371,7 +371,7 @@ try {
     await httpClient.connect(httpTransport);
     const httpTools = await httpClient.listTools();
     const httpNames = httpTools.tools.map((tool) => tool.name);
-    assert.equal(httpNames.length, 45);
+    assert.equal(httpNames.length, 47);
     assert.deepEqual([...httpNames].sort(), [...PUBLIC_TOOL_NAMES].sort());
     for (const name of forbiddenNames) {
       assert.equal(httpNames.includes(name), false, `${name} must not be exposed by the public HTTP preview`);
