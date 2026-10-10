@@ -16,7 +16,7 @@ A user who has deliberately granted broad local Codex authority should expect Co
 
 ## Public surface boundary
 
-The current public **service contract** exposes exactly 45 tools, enforced by `src/surface-contracts.mjs` and `test/public-contract.mjs`. Runtime registration is fail-closed too: registrations outside `PUBLIC_TOOL_NAMES` are skipped rather than exposed, while startup fails if any of the 45 required tools is missing or registered twice; CI also exercises a strict unknown-tool mode. Twenty-one of those tools are the accepted Browser slice. Fixed-text Codex approval uses the neutral, model-callable `codex.agent_commit(taskId)` / `codex.agent_decline(taskId)` tools; retired Rich/Portable Card tools and resources are not part of the normal public surface.
+The current public **service contract** exposes exactly 47 tools, enforced by `src/surface-contracts.mjs` and `test/public-contract.mjs`. Runtime registration is fail-closed too: registrations outside `PUBLIC_TOOL_NAMES` are skipped rather than exposed, while startup fails if any of the 47 required tools is missing or registered twice; CI also exercises a strict unknown-tool mode. Twenty-one of those tools are the accepted Browser slice. Fixed-text Codex approval uses the neutral, model-callable `codex.agent_commit(taskId)` / `codex.agent_decline(taskId)` tools; retired Rich/Portable Card tools and resources are not part of the normal public surface.
 
 The public package intentionally excludes private/internal capabilities such as:
 
@@ -28,6 +28,14 @@ The public package intentionally excludes private/internal capabilities such as:
 - household/private integrations.
 
 Internal availability is not a public safety claim. A capability must be explicitly accepted before it can enter the public contract.
+
+## Owner-gated Codex reset credits
+
+The optional `codex.reset_credit_prepare` and `codex.reset_credit_decide` operations use **only official Codex App Server methods** and an existing isolated managed `CODEX_HOME`, never raw upstream auth tokens or SSH/bypass routing. Preparation obtains detailed native credit data, requires an exhausted rate-limit window, and binds one unique expiring Task ID, selected credit and server-generated idempotency key. The consuming operation is irreversible and is permitted only after explicit owner confirmation on that exact Task ID; natural-language assertions inside request parameters are not authority.
+
+Immediately before dispatch, the server verifies the bound native credit again. It creates an exclusive, flushed per-account marker under the persistent Codexless state root before sending the native request; uncertain effects leave that marker in place across process restarts. No silent replay, fallback to another account, automatic credit selection by the upstream provider, or automatic clearing of an uncertain marker is allowed. The public tool surface never returns native credential material.
+
+This owner-visible approval does not prove human presence cryptographically to an arbitrary untrusted MCP client. The connected caller is part of the trust boundary; do not expose these tools to unauthorized clients. Platform safety and upstream permission checks remain independent and stronger than the tool's application-level approval.
 
 ## Command execution
 
