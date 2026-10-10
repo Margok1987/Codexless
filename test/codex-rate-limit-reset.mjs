@@ -1,9 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { createCodexRateLimitResetCoordinator, registerCodexRateLimitResetTools } from "../src/codex-rate-limit-reset.mjs";
 
 const START = Date.parse("2026-10-10T10:00:00Z");
 const UUID = "123e4567-e89b-42d3-a456-426614174000";
+const roots = [];
+function newRoot() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-reset-test-"));
+  roots.push(root);
+  return root;
+}
+test.after(() => { for (const root of roots) fs.rmSync(root, { recursive: true, force: true }); });
 
 function fakeNative({ before = null, whenConsume = null } = {}) {
   const calls = [];
@@ -54,6 +64,7 @@ function coordinator(native, config = {}) {
     request: native.request,
     now: () => START,
     newId: () => UUID,
+    lockRoot: newRoot(),
     ...config,
   });
 }
@@ -147,6 +158,7 @@ test("native state changes before confirmation block before consume", async () =
     },
     now: () => START,
     newId: () => UUID,
+    lockRoot: newRoot(),
   });
   const p = await c.prepare({ account: "pia" });
   const outcome = await c.decide({ taskId: p.taskId, decision: "commit" });
@@ -181,4 +193,26 @@ test("public tools expose only prepare and exact Task-ID decision", () => {
     },
   }, coordinator(fakeNative()), schemaStub);
   assert.deepEqual(names, ["codex.reset_credit_prepare", "codex.reset_credit_decide"]);
+});
+
+test("an unresolved persistent dispatch lock survives coordinator restart", async () => {
+  const lockRoot = newRoot();
+  const timeout = fakeNative({ whenConsume: () => { throw new Error("simulated uncertain result"); } });
+  const original = coordinator(timeout, { lockRoot });
+  const prepared = await original.prepare({ account: "pia" });
+  assert.equal((await original.decide({ taskId: prepared.taskId, decision: "commit" })).status, "unknown_outcome");
+  const recovered = coordinator(fakeNative(), { lockRoot });
+  await assert.rejects(recovered.prepare({ account: "pia" }), /reconcile/i);
+});
+
+test("a provider-verified successful reset clears its durable guard", async () => {
+  const lockRoot = newRoot();
+  const native = fakeNative();
+  const c = coordinator(native, { lockRoot });
+  const p = await c.prepare({ account: "pia" });
+  const done = await c.decide({ taskId: p.taskId, decision: "commit" });
+  assert.equal(done.status, "verified");
+  assert.equal(done.verification.persistentGuardCleared, true);
+  const nextRuntime = coordinator(fakeNative(), { lockRoot });
+  assert.equal((await nextRuntime.prepare({ account: "pia" })).status, "consent_required");
 });
