@@ -4,7 +4,7 @@
   "version": "0.1.2-preview.0",
   "buildIdAlgorithm": "sha256-release-identity-v1",
   "fileHashAlgorithm": "sha256-raw-file-v1",
-  "sourceRevision": "db89bac60129d90451c0dec077867c0c148113a0",
+  "sourceRevision": "fade30f27fe5eb2a08e16e3bc37009e1c96f56f4",
   "hostContractVersion": "codexless-public-preview-v1",
   "stateCompatibility": {
     "migration": "none",
@@ -17,7 +17,7 @@
       }
     }
   },
-  "buildId": "2d089a162253e527544dafdf2dace42cfcff0084d38515b198dd76b9faa531a7",
+  "buildId": "d11bc67f7efccbd6847c3990e27ad73ebcedf0c16175234a860775374b0eda1a",
   "files": [
     { "path": "EXPORT_SYNC.md", "sha256": "2016ca37f280451a76cdb95f7223e0aa60f4a4743a41df0e11d6b4157231a839" },
     { "path": "LICENSE", "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4" },
@@ -46,7 +46,7 @@
     { "path": "scripts/bootstrap.mjs", "sha256": "0cb1a5152f3ed9e7c18ad37e77300560fd0bd57e22dc5c5f20d0a8baafe817e2" },
     { "path": "scripts/check-release.mjs", "sha256": "2aa874631c81910a03ea2485da7412f9591828449a87d5daa162bb324a767b19" },
     { "path": "scripts/compatibility-report.mjs", "sha256": "fa01baf8f4080c3b516765f78120e199ab24b3dc652c9ed5f6ea1694dd818d17" },
-    { "path": "scripts/doctor.mjs", "sha256": "1c96cf42b243983ffe166319b3306e82c1c3b6f2fade5b4c1c1a8ce367a52e2f" },
+    { "path": "scripts/doctor.mjs", "sha256": "8879be86844552ca5f7008f8961353b49aeb7d2fd823f08983d47980e54001b6" },
     { "path": "scripts/generate-release-manifest.mjs", "sha256": "77b380ff6c29ff0900f452ad26536869ab4a81fe22bc198d78a0d36abd715aaa" },
     { "path": "scripts/install.ps1", "sha256": "0f036798a871871c90028be132fa902f82089a0ae3d742ce2dfc8016e8772b22" },
     { "path": "scripts/install.sh", "sha256": "fdabc240866ff28d09e92cb25a39c3952dbc2feddeb0393ee7a486975daa0b45" },
