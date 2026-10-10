@@ -74,7 +74,7 @@ test("prepare binds one account and native credit, without consuming anything", 
   const c = coordinator(n);
   const p = await c.prepare({ account: "pia" });
   assert.equal(p.status, "consent_required");
-  assert.equal(p.credit.id, "credit-a");
+  assert.equal(p.credit.id, undefined, "private provider credit ID must not leave the coordinator");
   assert.equal(p.availableCount, 2);
   assert.match(p.chatPresentation.text, /Task ID: \*\*R-/);
   assert.deepEqual(n.calls.map((v) => v.method), ["account/rateLimits/read"]);
@@ -133,6 +133,14 @@ test("incomplete, expired, tied and invalid native credit details fail closed", 
     const bad = coordinator(fakeNative({ before: variant }));
     await assert.rejects(bad.prepare({ account: "pia" }), /credit/i);
   }
+});
+
+test("a banked reset is not prepared while every quota window still has capacity", async () => {
+  const n = fakeNative();
+  const snapshot = await n.request({ account: "pia", method: "account/rateLimits/read", params: null });
+  snapshot.rateLimits.primary.usedPercent = 27;
+  snapshot.rateLimits.secondary.usedPercent = 49;
+  await assert.rejects(coordinator(fakeNative({ before: snapshot })).prepare({ account: "pia" }), /exhausted.*quota/i);
 });
 
 test("provider failure after consume dispatch yields unknown_outcome and no automatic retry", async () => {
