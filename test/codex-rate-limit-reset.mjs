@@ -98,8 +98,10 @@ test("decline and expired approvals never consume a credit", async () => {
   assert.equal((await c.decide({ taskId: p.taskId, decision: "decline" })).status, "declined");
   assert.equal(n.calls.length, 1);
   assert.equal((await c.decide({ taskId: p.taskId, decision: "commit" })).status, "declined");
-  const d = coordinator(fakeNative(), { now: (() => { let count = 0; return () => START + (count++ === 0 ? 0 : 660000); })() });
+  let clock = START;
+  const d = coordinator(fakeNative(), { now: () => clock });
   const prepared = await d.prepare({ account: "pia" });
+  clock += 660000;
   assert.equal((await d.decide({ taskId: prepared.taskId, decision: "commit" })).status, "expired");
 });
 
