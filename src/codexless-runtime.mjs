@@ -28,7 +28,7 @@ import { CodexComputerUseExecutor } from "./codex-computer-use-executor.mjs";
 import { CodexWorkbenchExecutor } from "./codex-workbench-executor.mjs";
 import { readCodexQuotaSnapshot } from "./codex-quota-snapshot.mjs";
 import { createPreviewTelemetryClient, readPreviewAccountPreflight } from "./codex-preview-account-preflight.mjs";
-import { assertResetChatgptAccount, createCodexRateLimitResetCoordinator } from "./codex-rate-limit-reset.mjs";
+import { verifyResetChatgptAccount, createCodexRateLimitResetCoordinator } from "./codex-rate-limit-reset.mjs";
 import { createCodexToolboxServerFactory } from "./mcp-server-factory.mjs";
 import { createRecentCallReceiptStore } from "./recent-call-receipts.mjs";
 
@@ -731,7 +731,7 @@ export async function createCodexlessRuntime({
               await client.start();
               // Runtime account-home isolation alone is not proof of ChatGPT auth.
               // Fail closed on API-key, missing or unexpected login before credit reads or effects.
-              assertResetChatgptAccount(await client.request("account/read", null));
+              await verifyResetChatgptAccount(client);
               return await client.request(method, params);
             } finally {
               await client.close();
