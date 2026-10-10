@@ -9,6 +9,11 @@ function failure(code, message) {
 }
 
 function selectCredit(snapshot, nowMs) {
+  const limits = snapshot?.rateLimitsByLimitId?.codex ?? snapshot?.rateLimits ?? null;
+  if (![limits?.primary, limits?.secondary].some((window) =>
+    Number.isInteger(window?.usedPercent) && window.usedPercent >= 100)) {
+    throw failure("CODEX_RESET_NOT_NEEDED", "No exhausted Codex quota window is eligible for a banked reset");
+  }
   const summary = snapshot?.rateLimitResetCredits;
   if (!summary || !Number.isSafeInteger(summary.availableCount) || summary.availableCount < 0) {
     throw failure("CODEX_RESET_CREDIT_DETAILS_UNAVAILABLE", "A complete native credit snapshot is required");
@@ -35,7 +40,7 @@ function selectCredit(snapshot, nowMs) {
     expiresAt: credit.expiresAt,
     availableCount: summary.availableCount,
     providerAccountId: typeof snapshot.accountId === "string" ? snapshot.accountId : null,
-    rateLimits: snapshot.rateLimits ?? null,
+    rateLimits: limits,
   };
 }
 
@@ -141,7 +146,7 @@ export function createCodexRateLimitResetCoordinator({ request, now = Date.now, 
       `Task ID: **${taskId}**`,
       "Bitte mit **Yes** oder **No** antworten.",
     ].join("\n");
-    return { status: "consent_required", taskId, account, credit: { id: selected.creditId, expiresAt: selected.expiresAt },
+    return { status: "consent_required", taskId, account, credit: { expiresAt: selected.expiresAt },
       availableCount: selected.availableCount, expiresAt: task.createdAt + 10 * 60_000,
       chatPresentation: { text, approveTool: "codex.reset_credit_decide", declineTool: "codex.reset_credit_decide" } };
   }
