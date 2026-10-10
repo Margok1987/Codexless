@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createCodexRateLimitResetCoordinator, registerCodexRateLimitResetTools } from "../src/codex-rate-limit-reset.mjs";
+import { assertResetChatgptAccount, createCodexRateLimitResetCoordinator, registerCodexRateLimitResetTools } from "../src/codex-rate-limit-reset.mjs";
 
 const START = Date.parse("2026-10-10T10:00:00Z");
 const UUID = "123e4567-e89b-42d3-a456-426614174000";
@@ -68,6 +68,13 @@ function coordinator(native, config = {}) {
     ...config,
   });
 }
+
+test("auth-bound banked reset requires ChatGPT login, not an API key or missing identity", () => {
+  assert.doesNotThrow(() => assertResetChatgptAccount({ account: { type: "chatgpt", planType: "team" } }));
+  for (const state of [null, {}, { account: null }, { account: { type: "apiKey" } }]) {
+    assert.throws(() => assertResetChatgptAccount(state), (error) => error.code === "CODEX_RESET_CHATGPT_AUTH_REQUIRED");
+  }
+});
 
 test("prepare binds one account and native credit, without consuming anything", async () => {
   const n = fakeNative();
