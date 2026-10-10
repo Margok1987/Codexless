@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import { registerAgentPreviewTools } from "./agent-tools.mjs";
+import { registerCodexRateLimitResetTools } from "./codex-rate-limit-reset.mjs";
 import { registerBrowserPreviewTools } from "./browser-tools.mjs";
 import { registerConstructionTools } from "./construction-tools.mjs";
 import { registerExcelTools } from "./excel-tools.mjs";
@@ -40,6 +41,7 @@ export function createCodexToolboxServerFactory({
   computerUse = null,
   workbench = null,
   accountPreflightProvider = null,
+  resetCreditCoordinator = null,
   browserPreview = null,
   browserElicitationBridge = null,
   agentExecutor = null,
@@ -254,6 +256,7 @@ export function createCodexToolboxServerFactory({
     if (browserPreview) registerBrowserPreviewTools(registrationServer, browserPreview, {
       elicitationBridge: browserElicitationBridge,
     });
+    if (resetCreditCoordinator) registerCodexRateLimitResetTools(registrationServer, resetCreditCoordinator);
     if (agentExecutor) registerAgentPreviewTools(registrationServer, {
       agentExecutor,
       modelCatalogProvider,
