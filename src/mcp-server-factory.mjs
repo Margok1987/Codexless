@@ -256,7 +256,7 @@ export function createCodexToolboxServerFactory({
     if (browserPreview) registerBrowserPreviewTools(registrationServer, browserPreview, {
       elicitationBridge: browserElicitationBridge,
     });
-    if (resetCreditCoordinator) registerCodexRateLimitResetTools(registrationServer, resetCreditCoordinator);
+    if (resetCreditCoordinator) registerCodexRateLimitResetTools(registrationServer, resetCreditCoordinator, z);
     if (agentExecutor) registerAgentPreviewTools(registrationServer, {
       agentExecutor,
       modelCatalogProvider,
