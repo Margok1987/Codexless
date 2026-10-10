@@ -8,6 +8,12 @@ function failure(code, message) {
   return Object.assign(new Error(message), { code });
 }
 
+export function assertResetChatgptAccount(response) {
+  if (response?.account?.type !== "chatgpt") {
+    throw failure("CODEX_RESET_CHATGPT_AUTH_REQUIRED", "Banked resets require the selected managed account to be logged in with ChatGPT");
+  }
+}
+
 function selectCredit(snapshot, nowMs) {
   const limits = snapshot?.rateLimitsByLimitId?.codex ?? snapshot?.rateLimits ?? null;
   if (![limits?.primary, limits?.secondary].some((window) =>
