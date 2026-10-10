@@ -91,6 +91,23 @@ try {
   assert.deepEqual([...names].sort(), [...PUBLIC_TOOL_NAMES].sort());
   assert.equal(names.length, 47);
 
+  for (const name of ["codex.reset_credit_prepare", "codex.reset_credit_decide"]) {
+    assert.equal(names.includes(name), true, `${name} must be published by the public registration gate`);
+  }
+  const resetPrepare = tools.tools.find((tool) => tool.name === "codex.reset_credit_prepare");
+  const resetDecide = tools.tools.find((tool) => tool.name === "codex.reset_credit_decide");
+  assert.equal(resetPrepare?.annotations?.destructiveHint, false);
+  assert.equal(resetDecide?.annotations?.destructiveHint, true);
+  assert.deepEqual(resetPrepare?.inputSchema?.required, ["account"]);
+  assert.deepEqual(resetDecide?.inputSchema?.required, ["taskId", "decision"]);
+  const deniedWithoutManagedAccount = await client.callTool({
+    name: "codex.reset_credit_prepare",
+    arguments: { account: "pia" },
+  });
+  assert.equal(deniedWithoutManagedAccount.isError, true);
+  assert.equal(deniedWithoutManagedAccount.structuredContent?.status, "blocked");
+  assert.equal(deniedWithoutManagedAccount.structuredContent?.effect, "none");
+
   for (const name of forbiddenNames) {
     assert.equal(names.includes(name), false, `${name} must not be exposed by the public preview`);
   }
