@@ -167,11 +167,10 @@ test("two concurrent commit messages cannot redeem the same credit twice", async
 
 test("public tools expose only prepare and exact Task-ID decision", () => {
   const names = [];
-  registerCodexRateLimitResetTools({
-    registerTool(name, opts) {
+  const schemaStub = {\n    string: () => ({ min() { return this; }, max() { return this; } }),\n    enum: () => ({}),\n    object: () => ({ strict() { return this; }, safeParse() { return { success: false }; } }),\n  };\n  registerCodexRateLimitResetTools({\n    registerTool(name, opts) {
       names.push(name);
       assert.equal(opts.inputSchema.safeParse({ token: "forbidden" }).success, false);
     },
-  }, coordinator(fakeNative()));
+  }, coordinator(fakeNative()), schemaStub);
   assert.deepEqual(names, ["codex.reset_credit_prepare", "codex.reset_credit_decide"]);
 });
