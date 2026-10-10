@@ -4,7 +4,7 @@
   "version": "0.1.2-preview.0",
   "buildIdAlgorithm": "sha256-release-identity-v1",
   "fileHashAlgorithm": "sha256-raw-file-v1",
-  "sourceRevision": "fade30f27fe5eb2a08e16e3bc37009e1c96f56f4",
+  "sourceRevision": "9ea4462a8897c007657d7241049dabd5c2d90577",
   "hostContractVersion": "codexless-public-preview-v1",
   "stateCompatibility": {
     "migration": "none",
@@ -17,7 +17,7 @@
       }
     }
   },
-  "buildId": "d11bc67f7efccbd6847c3990e27ad73ebcedf0c16175234a860775374b0eda1a",
+  "buildId": "c2fcccc35a5ec018ee1d700b87453e3cb974e7167520c3745643da85581d492a",
   "files": [
     { "path": "EXPORT_SYNC.md", "sha256": "2016ca37f280451a76cdb95f7223e0aa60f4a4743a41df0e11d6b4157231a839" },
     { "path": "LICENSE", "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4" },
@@ -85,11 +85,11 @@
     { "path": "src/codex-permission-executor.mjs", "sha256": "d8815ec27b3f8146efeb079c0a0ba5977324429f529921fb7b74d4c123ce2520" },
     { "path": "src/codex-preview-account-preflight.mjs", "sha256": "9bcac1b0a506582a529cf265a7af980953806fd922095295c87e8e2ab1cea6af" },
     { "path": "src/codex-quota-snapshot.mjs", "sha256": "c061d6ad37f86f1a16d6409b5fa38b37c9f00d6ab52fa3834ecf5c3298905585" },
-    { "path": "src/codex-rate-limit-reset.mjs", "sha256": "69f970553ddc357023528096115c81f85a330f782626e63e831d6e18d2dd69ac" },
+    { "path": "src/codex-rate-limit-reset.mjs", "sha256": "34f83b2d693cc73d937996dc201f17b1d510f91e847dacc229123ccc6cb6ec59" },
     { "path": "src/codex-runtime-provider.mjs", "sha256": "b34c0c61fdcae569a34e0a6ff643022b256cf94bd309361167276e518268777d" },
     { "path": "src/codex-skill-sync.mjs", "sha256": "7b0859baaca0271fec30d6c3adb69d0b40f727dfadd70abda31b032e2e2b394a" },
     { "path": "src/codex-workbench-executor.mjs", "sha256": "1ee037bc407024361e95704c35a8d422cb57e9d3db146893661ddff385e9bd30" },
-    { "path": "src/codexless-runtime.mjs", "sha256": "949385e2a013bce1ff487106c9575e2823daa19dee5ccca810ac9d0deba42c58" },
+    { "path": "src/codexless-runtime.mjs", "sha256": "4da4501f105c430133536a553b423b0f6711dfba9f83ddf29a1af8bdb49e5c59" },
     { "path": "src/construction-tools.mjs", "sha256": "40b78c253ff543ae9bc2f7ac0319fd363a57efcf637da6bf498bdee85d0f7cfe" },
     { "path": "src/deferred-browser-adapter.mjs", "sha256": "4d5b70d9fa2fbb4e2c8132455c3acda17969ac800476d88a78e16588f8b59a11" },
     { "path": "src/doctor-health.mjs", "sha256": "08b0ae3dde0bd48eba4b846db174bd7fc44b15b23395db87e6fc5d658e4d4a26" },
