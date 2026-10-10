@@ -714,6 +714,7 @@ export async function createCodexlessRuntime({
     // This uses only official Codex App Server RPC, never SSH or backend tokens.
     const resetCreditCoordinator = publicPreview
       ? createCodexRateLimitResetCoordinator({
+          lockRoot: persistentStateRoot,
           request: async ({ account, method, params }) => {
             if (!formalAgentUsesExisting || accountRegistry.source !== "registry") {
               throw Object.assign(new Error("Native managed Codex accounts unavailable"), { code: "CODEX_RESET_MANAGED_ACCOUNT_REQUIRED" });
