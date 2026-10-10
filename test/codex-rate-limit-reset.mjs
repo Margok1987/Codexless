@@ -142,7 +142,7 @@ test("provider failure after consume dispatch yields unknown_outcome and no auto
   assert.equal((await c.decide({ taskId: p.taskId, decision: "commit" })).status, "unknown_outcome");
   assert.equal((await c.decide({ taskId: p.taskId, decision: "commit" })).duplicate, true);
   assert.equal(n.calls.filter((x) => x.method.includes("consume")).length, 1);
-  await assert.rejects(c.prepare({ account: "pia" }), /pending.*reset/i);
+  await assert.rejects(c.prepare({ account: "pia" }), /reconcile/i);
 });
 
 test("native state changes before confirmation block before consume", async () => {
