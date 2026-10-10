@@ -14,6 +14,12 @@ export function assertResetChatgptAccount(response) {
   }
 }
 
+export async function verifyResetChatgptAccount(client) {
+  if (!client || typeof client.request !== "function") throw new Error("Reset identity check requires a native App Server client");
+  const response = await client.request("account/read", { refreshToken: false });
+  assertResetChatgptAccount(response);
+}
+
 function selectCredit(snapshot, nowMs) {
   const limits = snapshot?.rateLimitsByLimitId?.codex ?? snapshot?.rateLimits ?? null;
   if (![limits?.primary, limits?.secondary].some((window) =>
