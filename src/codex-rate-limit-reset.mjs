@@ -1,8 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { createRequire } from "node:module";
-
-const require = createRequire(import.meta.url);
-const z = require("zod/v4");
 const READ_METHOD = "account/rateLimits/read";
 const CONSUME_METHOD = "account/rateLimitResetCredit/consume";
 
@@ -185,8 +181,9 @@ function response(value, isError = false) {
   };
 }
 
-export function registerCodexRateLimitResetTools(server, coordinator) {
+export function registerCodexRateLimitResetTools(server, coordinator, z) {
   if (!coordinator) return;
+  if (!z || typeof z.object !== "function") throw new Error("Reset MCP schema dependency is required");
   server.registerTool("codex.reset_credit_prepare", {
     title: "Prepare one banked Codex reset",
     description: "READ/PREPARE only. Select one exact managed account, read native Codex reset-credit details and prepare one irrevocable reset bound to a server-generated Task ID. NO credit is consumed. Present the returned chatPresentation.text verbatim to the Owner, then call codex.reset_credit_decide only after their literal Yes/No reply. Do not retry a platform safety block.",
