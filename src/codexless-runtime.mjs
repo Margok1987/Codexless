@@ -15,7 +15,7 @@ import {
 } from "./surface-contracts.mjs";
 import { CodexAgentExecutor } from "./codex-agent-executor.mjs";
 import { CodexAccountAgentExecutor } from "./codex-account-agent-executor.mjs";
-import { assertCodexAccountHome, loadCodexAccountRegistry } from "./codex-account-registry.mjs";
+import { assertCodexAccountHome, loadCodexAccountRegistry, resolveCodexAccount } from "./codex-account-registry.mjs";
 import { CodexAuthorityExecutor } from "./codex-authority-executor.mjs";
 import { resolveBrowserRuntimeCompatibility } from "./browser-runtime-compat.mjs";
 import { createCodexRuntimeProvider, managedLaunchEnv } from "./codex-runtime-provider.mjs";
@@ -28,6 +28,7 @@ import { CodexComputerUseExecutor } from "./codex-computer-use-executor.mjs";
 import { CodexWorkbenchExecutor } from "./codex-workbench-executor.mjs";
 import { readCodexQuotaSnapshot } from "./codex-quota-snapshot.mjs";
 import { createPreviewTelemetryClient, readPreviewAccountPreflight } from "./codex-preview-account-preflight.mjs";
+import { assertResetChatgptAccount, createCodexRateLimitResetCoordinator } from "./codex-rate-limit-reset.mjs";
 import { createCodexToolboxServerFactory } from "./mcp-server-factory.mjs";
 import { createRecentCallReceiptStore } from "./recent-call-receipts.mjs";
 
@@ -708,6 +709,37 @@ export async function createCodexlessRuntime({
       ? (input = {}) => agentExecutor.accountPreflight(input)
       : null;
 
+    // The public MCP server is constructed per HTTP request. A reset confirmation
+    // must instead bind to one runtime-lived coordinator and one isolated CODEX_HOME.
+    // This uses only official Codex App Server RPC, never SSH or backend tokens.
+    const resetCreditCoordinator = publicPreview
+      ? createCodexRateLimitResetCoordinator({
+          lockRoot: persistentStateRoot,
+          request: async ({ account, method, params }) => {
+            if (!formalAgentUsesExisting || accountRegistry.source !== "registry") {
+              throw Object.assign(new Error("Native managed Codex accounts unavailable"), { code: "CODEX_RESET_MANAGED_ACCOUNT_REQUIRED" });
+            }
+            const selected = resolveCodexAccount(accountRegistry, account);
+            const managedRuntime = await runtimeForAccount(selected);
+            const client = createPreviewTelemetryClient({
+              codexBin: managedRuntime.bin,
+              defaultCwd,
+              configOverrides,
+              launchEnv: managedRuntime.launchEnv ?? null,
+            });
+            try {
+              await client.start();
+              // Runtime account-home isolation alone is not proof of ChatGPT auth.
+              // Fail closed on API-key, missing or unexpected login before credit reads or effects.
+              assertResetChatgptAccount(await client.request("account/read", null));
+              return await client.request(method, params);
+            } finally {
+              await client.close();
+            }
+          },
+        })
+      : null;
+
     // HTTP MCP serving in SDK 2.x constructs a fresh McpServer per request.
     // Agent consent/card bookkeeping must therefore live at the Codexless runtime
     // lifetime rather than inside one server-registration closure.
@@ -762,6 +794,7 @@ export async function createCodexlessRuntime({
       executor,
       workbench: toolWorkbench,
       accountPreflightProvider,
+      resetCreditCoordinator,
       browserPreview,
       browserElicitationBridge,
       computerUse,

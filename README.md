@@ -125,6 +125,12 @@ Managed-account state lives outside the replaceable install tree, so reinstall/u
 
 For the managed-account App Server lifecycle — including RPC timeout handling, late-response tombstones, delegate-generation recovery, stale-agent fail-closed behavior, and replay safety — see [`docs/managed-account-runtime-lifecycle.md`](docs/managed-account-runtime-lifecycle.md).
 
+### Explicit banked reset credit redemption (new candidate capability)
+
+When the official Codex App Server exposes detailed banked reset credits, `codex.reset_credit_prepare` can read and select one eligible credit for a **specific registered account**. A credit is never redeemed during preparation. The returned exact Task ID must be shown to the owner for an explicit Yes/No reply. Only then may `codex.reset_credit_decide` commit that exact pending reset or decline it.
+
+The operation requires a currently exhausted Codex limit, verifies the selected credit again immediately before consumption, and uses the official `account/rateLimitResetCredit/consume` API with a fixed idempotency key. A persistent per-account dispatch guard blocks a second reset after an uncertain outcome, including across restarts, until separate reconciliation. No raw token, SSH bridge or hidden fallback is used. This feature does not circumvent upstream restrictions or platform safety checks, and a successful test does not imply production availability until released and installed.
+
 ## Before you install
 
 - **Platforms:** Windows and **Apple Silicon macOS (`arm64`)** Technical Preview. Intel Mac is not supported yet.
@@ -214,7 +220,7 @@ For Windows installer process semantics — including why native stderr with exi
 
 Supported model-free local tool actions do not call the Codex model, so they do not create Codex model usage. When Codexless actually calls the Codex model, normal Codex usage rules apply.
 
-Codexless does **not** increase, reset, transfer, merge, or bypass Codex usage limits or plan rules.
+Codexless does **not** mint, transfer, merge, or bypass Codex usage limits. Its optional explicit banked-credit tool can consume one **already earned** Codex rate-limit reset credit after a fresh provider read and a separate exact Task-ID approval. It cannot grant extra credits or silently reset quota.
 
 ### What if Codex quota reaches 0%?
 
@@ -226,7 +232,7 @@ The permission ceiling follows effective local Codex authorization. Codexless ma
 
 ### Does ChatGPT get everything Codex can do?
 
-No. The **0.1.2 public contract is 45 tools**, selected and tested as a public surface. Internal or household-only capabilities are not automatically promoted.
+No. The **current public contract contains 47 tools**, selected and tested as a public surface. Internal or household-only capabilities are not automatically promoted.
 
 ### Do I need to change my existing ChatGPT → Codex workflow?
 
@@ -245,7 +251,7 @@ Do not put Tunnel or endpoint credentials in the repository or public screenshot
 ## For people who want the internals
 
 - The exact public service contract is fixed in `src/surface-contracts.mjs` and covered by public contract tests.
-- The 0.1.2 public surface contains **45 tools**. Call Codex uses fixed-text Approval / Result in normal Chat; neutral `agent_commit(taskId)` / `agent_decline(taskId)` remain part of the authoritative task path.
+- The updated public surface contains **47 tools**. Call Codex uses fixed-text Approval / Result in normal Chat; neutral `agent_commit(taskId)` / `agent_decline(taskId)` remain part of the authoritative task path.
 - Public Excel contains the six typed tools listed above. The schema-reader and dynamic Excel gateway remain household-only in this release.
 - Browser exposes reviewed user-intent actions rather than raw browser internals.
 - Codex remains the local permission/trust authority; Codexless can downscope but not silently widen it.
