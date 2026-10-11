@@ -11,7 +11,7 @@ import {
   createPublicCommandBusyResult,
   createPublicCommandConcurrencyGate,
 } from "./public-command-concurrency.mjs";
-import { nestedSshRemoteArgvRisk } from "./public-command-policy.mjs";
+import { nestedCodexInvocationReason, nestedSshRemoteArgvRisk } from "./public-command-policy.mjs";
 
 const require = createRequire(import.meta.url);
 const { McpServer } = require("@modelcontextprotocol/server");
@@ -284,11 +284,6 @@ export function createCodexToolboxServerFactory({
   };
 }
 
-const WRAPPED_CODEX_COMMAND_TOKEN_RE = /(?:^|[\s\"'`;&|(),])(?:[^\s\"'`;&|(),]*[\\/])?codex(?:\.(?:exe|com|cmd|bat|ps1))?(?=$|[\s\"'`;&|(),])/i;
-const SHELL_CODEX_COMMAND_HEAD_RE = /(?:^|(?:&&|\|\||[;|])\s*|(?:^|\s)&\s*)[\"']?(?:[^\s\"'`;&|(),]*[\\/])?codex(?:\.(?:exe|com|cmd|bat|ps1))?[\"']?(?=$|[\s\"'`;&|(),])/i;
-const COMMAND_STRING_CODEX_WRAPPERS = new Set(["cmd", "powershell", "pwsh", "sh", "bash", "zsh", "fish"]);
-const INLINE_CODEX_WRAPPERS = new Set(["node", "nodejs", "python", "python3", "py", "ruby", "perl", "deno", "bun"]);
-const EXECUTABLE_CODEX_WRAPPERS = new Set(["env", "sudo", "wsl", "nohup", "timeout", "nice", "stdbuf", "xargs", "npx", "npm", "pnpm", "yarn"]);
 
 function classifyAnyCodexInvocation(command) {
   if (!Array.isArray(command) || command.length < 1) return null;
@@ -310,41 +305,8 @@ function classifyFormalCodexInvocation(command) {
   return directFormalCodexRejection(`wrapped-${executable}`);
 }
 
-function wrapperCarriesCodexInvocation(command, wrapper) {
-  const args = command.slice(1).map((value) => String(value));
-  if (COMMAND_STRING_CODEX_WRAPPERS.has(wrapper)) {
-    const commandText = shellWrapperCommandText(args, wrapper);
-    return commandText ? SHELL_CODEX_COMMAND_HEAD_RE.test(commandText) : false;
-  }
-  if (INLINE_CODEX_WRAPPERS.has(wrapper)) {
-    for (let index = 0; index < args.length; index += 1) {
-      const arg = args[index];
-      const prior = args[index - 1];
-      const inlineCode = ["-e", "--eval", "-c", "-Command", "--command", "-p", "--print"].includes(prior)
-        || /^-(?:e|c|p)=/.test(arg)
-        || /^--(?:eval|command|print)=/.test(arg)
-        || (wrapper === "deno" && prior === "eval");
-      if (inlineCode && WRAPPED_CODEX_COMMAND_TOKEN_RE.test(arg)) return true;
-    }
-    return false;
-  }
-  if (EXECUTABLE_CODEX_WRAPPERS.has(wrapper)) {
-    return args.some((arg) => commandExecutableStem(arg) === "codex" || WRAPPED_CODEX_COMMAND_TOKEN_RE.test(arg));
-  }
-  return false;
-}
-
-function shellWrapperCommandText(args, wrapper) {
-  if (wrapper === "cmd") {
-    const commandIndex = args.findIndex((arg) => ["/c", "/k"].includes(arg.toLowerCase()));
-    return commandIndex >= 0 ? args.slice(commandIndex + 1).join(" ").trim() : null;
-  }
-  if (["powershell", "pwsh"].includes(wrapper)) {
-    const commandIndex = args.findIndex((arg) => ["-command", "-c"].includes(arg.toLowerCase()));
-    return commandIndex >= 0 ? args.slice(commandIndex + 1).join(" ").trim() : null;
-  }
-  const commandIndex = args.findIndex((arg) => ["-c", "-lc"].includes(arg.toLowerCase()));
-  return commandIndex >= 0 ? String(args[commandIndex + 1] ?? "").trim() : null;
+function wrapperCarriesCodexInvocation(command) {
+  return Boolean(nestedCodexInvocationReason(command, { shellCommandHeadsOnly: true }));
 }
 
 function commandExecutableBasename(value) {
