@@ -15,7 +15,7 @@ function newRoot() {
 }
 test.after(() => { for (const root of roots) fs.rmSync(root, { recursive: true, force: true }); });
 
-function fakeNative({ before = null, whenConsume = null } = {}) {
+function fakeNative({ before = null, after = null, whenConsume = null } = {}) {
   const calls = [];
   let redeemed = false;
   const initial = before ?? {
@@ -37,6 +37,7 @@ function fakeNative({ before = null, whenConsume = null } = {}) {
     assert.equal(input.account, "pia", "never switch the bound account");
     if (input.method === "account/rateLimits/read") {
       if (!redeemed) return structuredClone(initial);
+      if (after) return structuredClone(after);
       return {
         ...structuredClone(initial),
         rateLimits: {
@@ -243,4 +244,132 @@ test("a provider-verified successful reset clears its durable guard", async () =
   assert.equal(done.verification.persistentGuardCleared, true);
   const nextRuntime = coordinator(fakeNative(), { lockRoot });
   assert.equal((await nextRuntime.prepare({ account: "pia" })).status, "consent_required");
+});
+
+test("reset verifies legacy, by-limit-only, mixed and cross-format native snapshots", async () => {
+  const before = await fakeNative().request({ account: "pia", method: "account/rateLimits/read", params: null });
+  const reset = {
+    primary: { usedPercent: 0, resetsAt: 1791634555 },
+    secondary: { usedPercent: 0, resetsAt: 1791948925 },
+  };
+  const after = {
+    ...structuredClone(before),
+    rateLimits: reset,
+    rateLimitResetCredits: { availableCount: 1, credits: [before.rateLimitResetCredits.credits[1]] },
+  };
+  function shape(snapshot, format) {
+    const result = structuredClone(snapshot);
+    if (format === "legacy") return result;
+    if (format === "fractional") {
+      for (const window of Object.values(result.rateLimits)) window.usedPercent = 0.5;
+      return result;
+    }
+    result.rateLimitsByLimitId = { codex: result.rateLimits };
+    if (format === "map") delete result.rateLimits;
+    if (format === "mixed") result.rateLimits = { primary: { usedPercent: 100, resetsAt: 1 } };
+    if (format === "null-map") result.rateLimitsByLimitId.codex = null;
+    return result;
+  }
+  for (const [pre, post] of [
+    ["legacy", "legacy"], ["map", "map"], ["legacy", "map"], ["map", "legacy"],
+    ["mixed", "mixed"], ["null-map", "null-map"], ["legacy", "fractional"],
+  ]) {
+    const native = fakeNative({ before: shape(before, pre), after: shape(after, post) });
+    const c = coordinator(native);
+    const prepared = await c.prepare({ account: "pia" });
+    const result = await c.decide({ taskId: prepared.taskId, decision: "commit" });
+    assert.equal(result.status, "verified", pre + " -> " + post);
+    assert.deepEqual(result.verification, {
+      creditCount: true, quotaWindows: true, providerAccount: true, persistentGuardCleared: true,
+    });
+    assert.equal((await c.decide({ taskId: prepared.taskId, decision: "commit" })).duplicate, true);
+    assert.equal((await c.decide({ taskId: prepared.taskId, decision: "decline" })).status, "verified");
+    assert.equal(native.calls.filter((call) => call.method.includes("consume")).length, 1);
+  }
+});
+
+test("incomplete, conflicting and malformed reset readbacks keep the durable no-replay lock", async () => {
+  const before = await fakeNative().request({ account: "pia", method: "account/rateLimits/read", params: null });
+  const good = {
+    ...structuredClone(before),
+    rateLimits: {
+      primary: { usedPercent: 0, resetsAt: 1791634555 },
+      secondary: { usedPercent: 0, resetsAt: 1791948925 },
+    },
+    rateLimitResetCredits: { availableCount: 1, credits: [before.rateLimitResetCredits.credits[1]] },
+  };
+  const mutations = [
+    (v) => { delete v.rateLimits; },
+    (v) => { v.rateLimitsByLimitId = { codex: {} }; },
+    (v) => { v.rateLimitsByLimitId = { codex: before.rateLimits }; },
+    (v) => { for (const w of Object.values(v.rateLimits)) delete w.usedPercent; },
+    (v) => { for (const w of Object.values(v.rateLimits)) w.usedPercent = "0"; },
+    (v) => { for (const w of Object.values(v.rateLimits)) w.usedPercent = -1; },
+    (v) => { for (const w of Object.values(v.rateLimits)) w.usedPercent = Infinity; },
+    (v) => { for (const w of Object.values(v.rateLimits)) delete w.resetsAt; },
+    (v) => { for (const w of Object.values(v.rateLimits)) w.resetsAt += 0.5; },
+    (v) => { v.rateLimits = before.rateLimits; },
+    (v) => { delete v.rateLimitResetCredits; },
+    (v) => { v.rateLimitResetCredits.credits = []; },
+    (v) => { v.rateLimitResetCredits.credits = before.rateLimitResetCredits.credits; },
+    (v) => { v.rateLimitResetCredits.availableCount = 2; },
+    (v) => { v.accountId = "other-upstream-account"; },
+    (v) => { delete v.accountId; },
+  ];
+  for (const mutate of mutations) {
+    const after = structuredClone(good);
+    mutate(after);
+    const lockRoot = newRoot();
+    const native = fakeNative({ before, after });
+    const c = coordinator(native, { lockRoot });
+    const prepared = await c.prepare({ account: "pia" });
+    const result = await c.decide({ taskId: prepared.taskId, decision: "commit" });
+    assert.equal(result.status, "unknown_outcome", mutate.toString());
+    assert.equal(result.verification.persistentGuardCleared, false);
+    assert.equal((await c.decide({ taskId: prepared.taskId, decision: "commit" })).duplicate, true);
+    assert.equal(native.calls.filter((call) => call.method.includes("consume")).length, 1);
+    assert.equal(fs.readdirSync(path.join(lockRoot, "banked-reset-guards")).length, 1);
+    await assert.rejects(coordinator(fakeNative(), { lockRoot }).prepare({ account: "pia" }), /reconcile/i);
+  }
+});
+
+test("missing provider identity on both snapshots cannot be reported as verified", async () => {
+  const before = await fakeNative().request({ account: "pia", method: "account/rateLimits/read", params: null });
+  delete before.accountId;
+  const after = {
+    ...structuredClone(before),
+    rateLimits: { primary: { usedPercent: 0, resetsAt: 1791634555 }, secondary: { usedPercent: 0, resetsAt: 1791948925 } },
+    rateLimitResetCredits: { availableCount: 1, credits: [before.rateLimitResetCredits.credits[1]] },
+  };
+  const native = fakeNative({ before, after });
+  const c = coordinator(native);
+  const prepared = await c.prepare({ account: "pia" });
+  const result = await c.decide({ taskId: prepared.taskId, decision: "commit" });
+  assert.equal(result.status, "unknown_outcome");
+  assert.equal(result.verification.providerAccount, false);
+  assert.equal(result.verification.persistentGuardCleared, false);
+  assert.equal((await c.decide({ taskId: prepared.taskId, decision: "commit" })).duplicate, true);
+  assert.equal(native.calls.filter((call) => call.method.includes("consume")).length, 1);
+});
+
+test("task IDs, preflight expiry and concurrent decline cannot change the bound reset action", async () => {
+  let clock = START;
+  const native = fakeNative();
+  let reads = 0;
+  const c = coordinator({ request: async (input) => {
+    const value = await native.request(input);
+    if (input.method === "account/rateLimits/read" && ++reads === 2) clock += 660000;
+    return value;
+  } }, { now: () => clock });
+  const prepared = await c.prepare({ account: "pia" });
+  await assert.rejects(c.decide({ taskId: "R-" + "0".repeat(32), decision: "commit" }), /unknown|missing/i);
+  await assert.rejects(c.decide({ taskId: prepared.taskId, decision: "yes" }), /commit or decline/i);
+  const [commit, decline] = await Promise.all([
+    c.decide({ taskId: prepared.taskId, decision: "commit" }),
+    c.decide({ taskId: prepared.taskId, decision: "decline" }),
+  ]);
+  assert.equal(commit.status, "expired");
+  assert.equal(commit.effect, "none");
+  assert.equal(decline.duplicate, true);
+  assert.equal(native.calls.filter((call) => call.method.includes("consume")).length, 0);
 });
