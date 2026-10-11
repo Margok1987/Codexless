@@ -1,5 +1,8 @@
+import { parse } from "acorn";
+
 const CODEX_EXECUTABLE_RE = /^codex(?:\.(?:exe|com|cmd|bat|ps1))?$/i;
 const CODEX_COMMAND_TOKEN_RE = /(?:^|[\s"'`;&|(),])(?:[^\s"'`;&|(),]*[\\/])?codex(?:\.(?:exe|com|cmd|bat|ps1))?(?=$|[\s"'`;&|(),])/i;
+const SHELL_CODEX_COMMAND_HEAD_RE = /(?:^|(?:&&|\|\||[;|])\s*|(?:^|\s)&\s*)["']?(?:[^\s"'`;&|(),]*[\\/])?codex(?:\.(?:exe|com|cmd|bat|ps1))?["']?(?=$|[\s"'`;&|(),])/i;
 
 const COMMAND_STRING_WRAPPERS = new Set([
   "cmd",
@@ -66,9 +69,135 @@ function containsCodexCommandToken(value, codexBin = null) {
   return normalizedPortablePath(text).includes(normalizedPortablePath(codexBin));
 }
 
-function wrapperCarriesNestedCodex(command, wrapper, codexBin) {
+function javascriptCarriesNestedCodex(source, codexBin) {
+  const comments = [];
+  let ast;
+  try {
+    ast = parse(source, { ecmaVersion: "latest", sourceType: "module", allowAwaitOutsideFunction: true, onComment: comments });
+  } catch {
+    // Unsupported/invalid syntax never earns a data-only exemption.
+    return containsCodexCommandToken(source, codexBin);
+  }
+  const nodes = [];
+  const parents = new Map();
+  const bindings = new Map();
+  const ignored = comments.map(({ start, end }) => [start, end]);
+  let hasCodexData = false;
+  function walk(node, parent = null) {
+    if (!node || typeof node !== "object") return;
+    if (typeof node.type === "string") { nodes.push(node); parents.set(node, parent); }
+    if (node.type === "Literal" && typeof node.value === "string") {
+      ignored.push([node.start, node.end]);
+      hasCodexData ||= containsCodexCommandToken(node.value, codexBin);
+    }
+    if (node.type === "TemplateLiteral" && node.expressions.length === 0) {
+      ignored.push([node.start, node.end]);
+      hasCodexData ||= containsCodexCommandToken(node.quasis[0].value.cooked, codexBin);
+    }
+    if (node.type === "VariableDeclaration") for (const declaration of node.declarations) {
+      if (declaration.id.type === "Identifier") {
+        const name = declaration.id.name;
+        bindings.set(name, bindings.has(name) || node.kind !== "const" ? null : declaration.init);
+      } else if (declaration.id.type === "ObjectPattern") for (const property of declaration.id.properties) {
+        if (property.type === "Property" && property.value.type === "Identifier") {
+          const name = property.value.name;
+          bindings.set(name, bindings.has(name) || node.kind !== "const" ? null : { type: "MemberExpression", computed: property.computed, object: declaration.init, property: property.key });
+        }
+      }
+    }
+    if (node.type === "ImportDeclaration") for (const specifier of node.specifiers) {
+      if (specifier.type === "ImportSpecifier") bindings.set(specifier.local.name, { type: "ImportedBinding", name: specifier.imported.name });
+    }
+    for (const value of Object.values(node)) {
+      if (Array.isArray(value)) value.forEach((child) => walk(child, node));
+      else if (value && typeof value === "object" && typeof value.type === "string") walk(value, node);
+    }
+  }
+  walk(ast);
+  let executableText = source;
+  for (const [start, end] of ignored.sort((a, b) => b[0] - a[0])) executableText = executableText.slice(0, start) + " ".repeat(end - start) + executableText.slice(end);
+  if (containsCodexCommandToken(executableText, codexBin)) return true;
+
+  function constant(node, seen = new Set()) {
+    if (!node) return undefined;
+    if (node.type === "Literal") return node.value;
+    if (node.type === "TemplateLiteral" && node.expressions.length === 0) return node.quasis[0].value.cooked;
+    if (node.type === "Identifier" && !seen.has(node.name)) return constant(bindings.get(node.name), new Set([...seen, node.name]));
+    if (node.type === "ArrayExpression") {
+      const values = node.elements.map((item) => constant(item, seen));
+      return values.every((value) => value !== undefined) ? values : undefined;
+    }
+    if (node.type === "BinaryExpression" && node.operator === "+") {
+      const left = constant(node.left, seen), right = constant(node.right, seen);
+      return typeof left === "string" && typeof right === "string" ? left + right : undefined;
+    }
+    return undefined;
+  }
+  function invocationName(node, seen = new Set()) {
+    if (node?.type === "ImportedBinding") return node.name;
+    if (node?.type === "Identifier") {
+      if (seen.has(node.name)) return null;
+      return bindings.has(node.name) ? invocationName(bindings.get(node.name), new Set([...seen, node.name])) : node.name;
+    }
+    if (node?.type === "MemberExpression") return node.computed ? constant(node.property) : node.property.name;
+    return null;
+  }
+  for (const node of nodes) {
+    const parent = parents.get(node);
+    const capability = invocationName(node);
+    if (hasCodexData && ["Identifier", "MemberExpression"].includes(node.type)
+      && ["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork", "Command", "eval", "Function", "Worker", "runInContext", "runInNewContext", "runInThisContext", "compileFunction"].includes(capability)
+      && ((["CallExpression", "NewExpression"].includes(parent?.type) && parent.callee !== node)
+        || (parent?.type === "MemberExpression" && parent.object === node)
+        || ["ArrayExpression", "ReturnStatement", "AssignmentExpression", "SequenceExpression"].includes(parent?.type))) return true;
+    if (["ImportDeclaration", "ExportNamedDeclaration", "ExportAllDeclaration", "ImportExpression"].includes(node.type)) {
+      const specifier = constant(node.source);
+      if (node.source && (typeof specifier === "string" ? containsCodexCommandToken(specifier, codexBin) : hasCodexData)) return true;
+    }
+    if (hasCodexData && node.type === "MemberExpression" && ["constructor", "mainModule", "binding", "_linkedBinding", "dlopen", "getBuiltinModule"].includes(invocationName(node))) return true;
+    if (!["CallExpression", "NewExpression"].includes(node.type)) continue;
+    const name = invocationName(node.callee);
+    if (hasCodexData && node.callee.type === "Identifier" && bindings.has(node.callee.name) && name === null) {
+      const definition = bindings.get(node.callee.name);
+      // Local function bodies are walked above; calling them is not an opaque capability alias.
+      if (!["ArrowFunctionExpression", "FunctionExpression"].includes(definition?.type)) return true;
+    }
+    if (hasCodexData && node.callee.type === "MemberExpression" && typeof name !== "string") return true;
+    if (hasCodexData && ["eval", "Function", "Worker", "runInContext", "runInNewContext", "runInThisContext", "compileFunction"].includes(name)) return true;
+    if (name === "require") {
+      const specifier = constant(node.arguments[0]);
+      if (typeof specifier === "string" ? containsCodexCommandToken(specifier, codexBin) : hasCodexData) return true;
+    }
+    if (["spawn", "spawnSync", "execFile", "execFileSync", "fork", "Command"].includes(name)) {
+      const executable = constant(node.arguments[0]);
+      const argv = node.arguments.length > 1 ? constant(node.arguments[1]) : [];
+      // Unknown argv/options are not proof that the subprocess is model-free.
+      if (typeof executable === "string" && isCodexExecutableToken(executable, codexBin)) return true;
+      if (typeof executable === "string" && Array.isArray(argv) && nestedCodexInvocationReason([executable, ...argv], { codexBin })) return true;
+      if (hasCodexData && (typeof executable !== "string" || !Array.isArray(argv))) return true;
+    }
+    if (["exec", "execSync"].includes(name)) {
+      const commandText = constant(node.arguments[0]);
+      if (typeof commandText === "string" ? containsCodexCommandToken(commandText, codexBin) : hasCodexData) return true;
+    }
+  }
+  return false;
+}
+
+function shellWrapperCommandText(args, wrapper) {
+  const flags = wrapper === "cmd" ? ["/c", "/k"] : ["powershell", "pwsh"].includes(wrapper) ? ["-command", "-c"] : ["-c", "-lc"];
+  const index = args.findIndex((arg) => flags.includes(String(arg).toLowerCase()));
+  if (index < 0) return null;
+  return wrapper === "cmd" || ["powershell", "pwsh"].includes(wrapper) ? args.slice(index + 1).join(" ").trim() : String(args[index + 1] ?? "").trim();
+}
+
+function wrapperCarriesNestedCodex(command, wrapper, codexBin, shellCommandHeadsOnly) {
   const args = command.slice(1);
   if (COMMAND_STRING_WRAPPERS.has(wrapper)) {
+    if (shellCommandHeadsOnly) {
+      const text = shellWrapperCommandText(args, wrapper);
+      return text ? SHELL_CODEX_COMMAND_HEAD_RE.test(text) : false;
+    }
     return args.some((arg) => containsCodexCommandToken(arg, codexBin));
   }
 
@@ -80,7 +209,9 @@ function wrapperCarriesNestedCodex(command, wrapper, codexBin) {
         || /^-(?:e|c|p)=/.test(arg)
         || /^--(?:eval|command|print)=/.test(arg)
         || (wrapper === "deno" && prior === "eval");
-      if (inlineCode && containsCodexCommandToken(arg, codexBin)) return true;
+      if (!inlineCode) continue;
+      const source = /^(?:-(?:e|c|p)|--(?:eval|command|print))=/.test(arg) ? arg.slice(arg.indexOf("=") + 1) : arg;
+      if (["node", "nodejs", "bun"].includes(wrapper) ? javascriptCarriesNestedCodex(source, codexBin) : containsCodexCommandToken(source, codexBin)) return true;
     }
     return false;
   }
@@ -160,11 +291,11 @@ export function nestedSshRemoteArgvRisk(command) {
   return null;
 }
 
-export function nestedCodexInvocationReason(command, { codexBin = null } = {}) {
+export function nestedCodexInvocationReason(command, { codexBin = null, shellCommandHeadsOnly = false } = {}) {
   if (!Array.isArray(command) || command.length === 0) return null;
   if (isCodexExecutableToken(command[0], codexBin)) return "direct-codex-executable";
   const wrapper = executableStem(command[0]);
-  if (wrapperCarriesNestedCodex(command, wrapper, codexBin)) return `codex-via-${wrapper}`;
+  if (wrapperCarriesNestedCodex(command, wrapper, codexBin, shellCommandHeadsOnly)) return `codex-via-${wrapper}`;
   return null;
 }
 
