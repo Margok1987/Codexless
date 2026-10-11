@@ -12,6 +12,7 @@ Codexless depends on third-party open-source packages. This file is a release-or
 | `@hono/node-server` | `1.19.17` | MIT | Hono Node.js adapter |
 | `hono` | `4.13.2` | MIT | Hono |
 | `zod` | `4.4.3` | MIT | Zod |
+| `acorn` | `8.15.0` | MIT; installed package retains its upstream LICENSE | Acorn JavaScript parser |
 
 ## Development-only dependency
 
