@@ -20,8 +20,12 @@ export async function verifyResetChatgptAccount(client) {
   assertResetChatgptAccount(response);
 }
 
+function codexRateLimits(snapshot) {
+  return snapshot?.rateLimitsByLimitId?.codex ?? snapshot?.rateLimits ?? null;
+}
+
 function selectCredit(snapshot, nowMs) {
-  const limits = snapshot?.rateLimitsByLimitId?.codex ?? snapshot?.rateLimits ?? null;
+  const limits = codexRateLimits(snapshot);
   if (![limits?.primary, limits?.secondary].some((window) =>
     Number.isInteger(window?.usedPercent) && window.usedPercent >= 100)) {
     throw failure("CODEX_RESET_NOT_NEEDED", "No exhausted Codex quota window is eligible for a banked reset");
@@ -61,8 +65,9 @@ function quotaMoved(before, after) {
     const a = before?.[part];
     const b = after?.[part];
     if (Number.isFinite(a?.usedPercent) && a.usedPercent > 0
-      && Number.isFinite(b?.usedPercent) && b.usedPercent < a.usedPercent
-      && Number.isFinite(a?.resetsAt) && Number.isFinite(b?.resetsAt) && b.resetsAt > a.resetsAt) {
+      && Number.isFinite(b?.usedPercent) && b.usedPercent >= 0 && b.usedPercent < a.usedPercent
+      && Number.isSafeInteger(a?.resetsAt) && a.resetsAt > 0
+      && Number.isSafeInteger(b?.resetsAt) && b.resetsAt > a.resetsAt) {
       return true;
     }
   }
@@ -193,6 +198,11 @@ export function createCodexRateLimitResetCoordinator({ request, now = Date.now, 
       task.result = { status: "blocked", taskId, account: task.account, effect: "none", reason: "fresh_native_preflight_failed" };
       return task.result;
     }
+    if (now() > task.createdAt + 10 * 60_000) {
+      task.state = "expired";
+      task.result = { status: "expired", taskId, account: task.account, effect: "none" };
+      return task.result;
+    }
     const before = task.selected;
     if (current.creditId !== before.creditId || current.availableCount !== before.availableCount
       || current.expiresAt !== before.expiresAt || current.providerAccountId !== before.providerAccountId) {
@@ -254,9 +264,12 @@ export function createCodexRateLimitResetCoordinator({ request, now = Date.now, 
       const countVerified = Number.isSafeInteger(credits?.availableCount)
         && credits.availableCount === before.availableCount - 1
         && Array.isArray(credits.credits)
+        && credits.credits.filter((c) => c?.status === "available").length === credits.availableCount
         && !credits.credits.some((c) => c?.id === before.creditId && c?.status === "available");
-      const quotaVerified = quotaMoved(before.rateLimits, after?.rateLimits);
-      const providerVerified = countVerified && quotaVerified;
+      const quotaVerified = quotaMoved(before.rateLimits, codexRateLimits(after));
+      const accountVerified = typeof before.providerAccountId === "string" && before.providerAccountId.length > 0
+        && after?.accountId === before.providerAccountId;
+      const providerVerified = countVerified && quotaVerified && accountVerified;
       let guardCleared = false;
       if (providerVerified) {
         try { guard.release(task.account); guardCleared = true; }
@@ -265,7 +278,7 @@ export function createCodexRateLimitResetCoordinator({ request, now = Date.now, 
       task.state = providerVerified && guardCleared ? "verified" : "unknown_outcome";
       task.result = { status: task.state, taskId, account: task.account, outcome,
         effect: providerVerified ? "applied" : "possibly_applied",
-        verification: { creditCount: countVerified, quotaWindows: quotaVerified, persistentGuardCleared: guardCleared },
+        verification: { creditCount: countVerified, quotaWindows: quotaVerified, providerAccount: accountVerified, persistentGuardCleared: guardCleared },
         availableCount: Number.isSafeInteger(credits?.availableCount) ? credits.availableCount : null };
     } catch {
       task.state = "unknown_outcome";
