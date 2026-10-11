@@ -199,7 +199,7 @@ export class ExcelDocumentAdapter {
       arguments: { items: advertised.map((tool) => ({ surface: "excel", tool_name: tool.name, version: tool.version })) },
       cwd: input.cwd,
     });
-    if (response?.isError) throw new Error(`EXCEL_SCHEMA_LOOKUP_FAILED: ${response.text ?? "upstream error"}`);
+    assertExcelResponse(response, "EXCEL_SCHEMA_LOOKUP_FAILED");
     const schemas = payload(response)?.tool_schemas ?? [];
     await this.#assertSessionStillAdvertises(session, advertised, input.cwd);
     const exact = advertised.map((tool) => {
@@ -255,7 +255,7 @@ export class ExcelDocumentAdapter {
       sessionRef: this.#refFor(session),
       toolName: input.toolName,
       toolVersion: advertised.version,
-      dispatchStatus: dispatch?.isError === true ? "confirmed_error" : "confirmed",
+      dispatchStatus: excelResponseError(dispatch) ? "confirmed_error" : "confirmed",
       verificationStatus: "not_performed_by_generic_gateway",
       replayAllowed: false,
       ...sanitized,
@@ -268,7 +268,8 @@ export class ExcelDocumentAdapter {
     const dispatchArgs = adaptReadArgs(toolName, args);
     assertSchemaCompatible(schema.input_schema, dispatchArgs, toolName);
     const result = await this.#execute(session, toolName, dispatchArgs, `excel-read-${randomUUID()}`, input.cwd);
-    return { workbook: session.document_title, sessionRef: this.#refFor(session), tool: toolName, status: "succeeded", result: payload(result) };
+    assertExcelResponse(result, "EXCEL_READ_FAILED");
+    return { workbook: session.document_title, sessionRef: this.#refFor(session), tool: toolName, status: excelReadStatus(result), result: payload(result) };
   }
 
   async executeMutation(toolName, input, args, readbackArgs) {
@@ -282,7 +283,9 @@ export class ExcelDocumentAdapter {
     let dispatchError = null;
     try {
       dispatch = await this.#execute(session, toolName, args, input.idempotencyKey, input.cwd);
-      if (dispatch?.isError === true || payload(dispatch)?.ok === false) dispatchError = new Error("Excel mutation returned an error result");
+      assertExcelResponse(dispatch, "EXCEL_MUTATION_RESULT_UNCERTAIN");
+      const receipt = payload(dispatch);
+      if (!receipt || typeof receipt !== "object" || Array.isArray(receipt) || !Object.keys(receipt).length) throw new Error("EXCEL_MUTATION_RESULT_UNCERTAIN: mutation receipt is missing or opaque");
     } catch (error) {
       dispatchError = error instanceof Error ? error : new Error(String(error));
     }
@@ -290,7 +293,10 @@ export class ExcelDocumentAdapter {
     let readbackError = null;
     try {
       readback = await this.#execute(session, "read_ranges", verificationArgs, `excel-readback-${randomUUID()}`, input.cwd);
+      assertExcelResponse(readback, "EXCEL_READBACK_FAILED");
+      if (excelReadStatus(readback) !== "succeeded") throw new Error("EXCEL_READBACK_INCOMPLETE: complete range data is required to verify the mutation");
     } catch (error) {
+      readback = null;
       readbackError = error instanceof Error ? error.message : String(error);
     }
     const observed = readback ? payload(readback) : null;
@@ -327,7 +333,7 @@ export class ExcelDocumentAdapter {
 
   async #discover(cwd) {
     const response = await this.#workbench.mcpCall({ server: DOCUMENT_SERVER, tool: LIST_SESSIONS, arguments: { surface: "excel" }, cwd });
-    if (response?.isError) throw new Error(`Excel session discovery failed: ${response.text ?? "unknown error"}`);
+    assertExcelResponse(response, "EXCEL_SESSION_DISCOVERY_FAILED");
     return (payload(response)?.executors ?? []).filter((session) => session?.status === "connected" && session?.surface === "excel");
   }
 
@@ -368,9 +374,10 @@ export class ExcelDocumentAdapter {
       arguments: { items: [{ surface: "excel", tool_name: advertised.name, version: advertised.version }] },
       cwd,
     });
+    assertExcelResponse(response, "EXCEL_SCHEMA_LOOKUP_FAILED");
     const schemas = payload(response)?.tool_schemas ?? [];
     const exact = schemas.find((schema) => schema?.tool_name === advertised.name && String(schema?.version) === String(advertised.version));
-    if (response?.isError || !exact) throw new Error(`EXCEL_SCHEMA_DRIFT: current ${advertised.name}@${advertised.version} schema was not returned exactly`);
+    if (!exact) throw new Error(`EXCEL_SCHEMA_DRIFT: current ${advertised.name}@${advertised.version} schema was not returned exactly`);
     return exact;
   }
 
@@ -491,7 +498,34 @@ function sanitizeDynamicValue(value, state, depth) {
   return out;
 }
 
-function payload(response) { return response?.data?.structuredContent ?? response?.data ?? null; }
+function payload(response) { return response?.data?.structuredContent ?? response?.data ?? response?.structuredContent ?? null; }
+
+function excelResponseError(response) {
+  // Only inspect response/envelope layers, never arbitrary workbook cell contents.
+  const data = payload(response);
+  for (const layer of [response, response?.data, data, data?.result]) {
+    if (!layer || typeof layer !== "object" || Array.isArray(layer)) continue;
+    if (layer.isError === true || layer.ok === false || layer.error || layer.errorCode || ["error", "failed"].includes(layer.status)) {
+      return typeof layer.error === "string" && layer.error ? layer.error : typeof layer.text === "string" && layer.text ? layer.text : "upstream error result";
+    }
+  }
+  return null;
+}
+
+function assertExcelResponse(response, code) {
+  const error = excelResponseError(response);
+  if (error) throw new Error(`${code}: ${error}`);
+}
+
+function excelReadStatus(response) {
+  const data = payload(response);
+  if ([response, response?.data, data, data?.result].some((layer) => layer?.partial === true || layer?.truncated === true || layer?.status === "partial")) return "partial";
+  // The document command envelope owns `result`. Opaque or absent data is not success.
+  if (!data || typeof data !== "object" || Array.isArray(data) || !Object.hasOwn(data, "result")) return "unverified";
+  const result = data.result;
+  if (result === null || result === undefined || (typeof result === "string" && !result.trim())) return "unverified";
+  return typeof result === "string" || Array.isArray(result) || (typeof result === "object" && Object.keys(result).length > 0) ? "succeeded" : "unverified";
+}
 
 function assertSchemaCompatible(schema, value, toolName) {
   if (!schema || typeof schema !== "object") throw new Error(`EXCEL_SCHEMA_DRIFT: ${toolName} returned no usable input_schema`);
@@ -589,13 +623,14 @@ function classifyWriteReadback(requested, observed) {
   const wanted = extractRequestedCells(requested);
   const seen = extractObservedCells(observed);
   if (!wanted.length || !seen.size) return "uncertain";
+  if (new Set(wanted.map((item) => item.cell.toUpperCase())).size !== wanted.length) return "uncertain";
   let compared = 0;
   let mismatch = 0;
   for (const item of wanted) {
     const actual = seen.get(item.cell.toUpperCase());
     if (!actual) continue;
     compared += 1;
-    if (item.formula !== undefined ? actual.formula !== item.formula : !excelScalarEqual(actual.value, item.value)) mismatch += 1;
+    if (item.formula !== undefined ? actual.formula !== item.formula : !excelScalarEqual(actual.value, item.value) || (actual.formula !== undefined && actual.formula !== null && actual.formula !== "")) mismatch += 1;
   }
   if (compared !== wanted.length) return "uncertain";
   return mismatch === 0 ? "applied" : "uncertain";
@@ -606,6 +641,7 @@ function hasUnverifiedWriteEffects(requested) {
   for (const write of requested?.writes ?? []) {
     if (!write || typeof write !== "object" || Array.isArray(write)) return true;
     if (Object.keys(write).some((key) => !verifiableFields.has(key))) return true;
+    if ("value" in write && "formula" in write) return true;
   }
   return false;
 }
@@ -684,7 +720,7 @@ function parseExcelRangesXml(xml) {
       const value = xmlTagValue(cellBody, "v");
       const formula = xmlTagValue(cellBody, "f");
       cells.set(cellMatch[1].toUpperCase(), {
-        value,
+        value: value === null ? undefined : value,
         formula: formula ?? undefined,
       });
     }
