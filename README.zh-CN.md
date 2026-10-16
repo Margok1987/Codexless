@@ -75,6 +75,8 @@ ChatGPT 可以看项目、读写文件、运行受控命令、使用 Git 和本�
 
 Browser 使用你选择的本地浏览器 profile 和其中已有的网站登录状态。上传本地文件还需要在 ChatGPT 浏览器扩展中打开 **“允许访问文件网址”**。
 
+网站访问遵循 ChatGPT 的 **Agent permissions**。如果默认 Browsing 设置为 **Requires approval**，首次访问新网站可能需要批准；**Always allow** 会取消这类逐站请求，但仍保留网站特定例外。Codexless 不会绕过或擅自扩大这些权限。
+
 公开面不提供任意 JavaScript、raw selector、任意坐标、任意键盘、generic CDP，也不会自动用 Computer Use 兜底。
 
 ### Live Excel / Document Control
@@ -114,6 +116,13 @@ Browser 使用你选择的本地浏览器 profile 和其中已有的网站登录
 - **ChatGPT 侧可用性（以本版本发布时为准）：** OpenAI 当前文档将具备写入 / 修改能力的完整自定义 MCP 支持列在 ChatGPT 网页版的 Business、Enterprise 和 Edu；Pro 的 developer mode 自定义 MCP 目前仅支持 read/fetch，MCP apps 当前也不支持移动端。Codexless 目前不是 Plugin Directory 中的公开条目。安装前请再确认 OpenAI 当时的套餐与界面支持，因为这一层会独立于 Codexless 变化。
 - **本地怎么连：** ChatGPT 不直接访问 `localhost`。典型链路是 **本机 Codexless → 已认证 Tunnel / remote MCP endpoint → ChatGPT custom app / developer-mode MCP 接入**。
 - **身份：** Codexless 是独立项目，不是 OpenAI 产品，也不代表 OpenAI 背书。
+
+---
+
+## 外部启动器契约
+
+关于现有启动入口、运行配置、健康检查、关闭路径以及 0.1.2 Preview 的外部集成限制，请参见
+[外部启动器契约](docs/EXTERNAL_LAUNCHER_CONTRACT.md)。
 
 ---
 
