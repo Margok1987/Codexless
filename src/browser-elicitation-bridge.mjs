@@ -2,9 +2,17 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { createRequestStateCodec, inputRequired } = require("@modelcontextprotocol/server");
+const { CLIENT_CAPABILITIES_META_KEY, createRequestStateCodec, inputRequired } = require("@modelcontextprotocol/server");
 
 export const BROWSER_ELICITATION_INPUT_KEY = "browser_elicitation";
+export const BROWSER_FALLBACK_CONTINUATION_FIELD = "_browserContinuation";
+export const BROWSER_FALLBACK_CALLER_CONTRACT =
+  "The caller must read and apply the current codex.browser_confirmation_policy together with the user-authored task context " +
+  "before choosing accept, decline, or cancel, and may resume only when that policy/context permits the response. " +
+  "requestState is continuation state only, not approval evidence; a valid requestState does not authorize accept. " +
+  "Resume the same tool with the exact original business arguments and _browserContinuation: { requestState, response: { action } }. " +
+  "accept is supported only for a recognized Browser origin permission; origin and persistence come from the trusted pending request. " +
+  "decline adds no persistence metadata; cancel is non-decision cleanup and does not persist a denial.";
 const CODEX_MCP_ELICITATION_METHOD = "mcpServer/elicitation/request";
 const BROWSER_MCP_SERVER = "node_repl";
 const DEFAULT_CONTINUATION_TTL_MS = 55_000;
@@ -157,6 +165,115 @@ function projectElicitationResponse(value) {
     response._meta = structuredClone(value._meta);
   }
   return response;
+}
+
+function projectedBrowserOriginPermission(inputRequest) {
+  const params = isPlainObject(inputRequest?.params) ? inputRequest.params : null;
+  const meta = isPlainObject(params?._meta) ? params._meta : null;
+  const permission = isPlainObject(meta?.codexless_browser_origin_permission)
+    ? meta.codexless_browser_origin_permission
+    : null;
+  if (
+    permission?.kind !== "browser_origin_permission" ||
+    typeof permission.origin !== "string" ||
+    permission.decision !== "dynamic_policy_required"
+  ) return null;
+  return permission;
+}
+
+function clientSupportsInputRequest(mcpReq, inputRequest) {
+  const envelope = isPlainObject(mcpReq?.envelope) ? mcpReq.envelope : null;
+  const declared = isPlainObject(envelope?.[CLIENT_CAPABILITIES_META_KEY])
+    ? envelope[CLIENT_CAPABILITIES_META_KEY]
+    : null;
+  if (!declared || inputRequest?.method !== "elicitation/create") return false;
+
+  const elicitation = isPlainObject(declared.elicitation) ? declared.elicitation : null;
+  if (!elicitation) return false;
+
+  const mode = inputRequest?.params?.mode;
+  if (mode === "url") return isPlainObject(elicitation.url);
+  if (mode === "form" || mode === undefined) {
+    const hasForm = Object.hasOwn(elicitation, "form");
+    const hasUrl = Object.hasOwn(elicitation, "url");
+    if (!hasForm && !hasUrl) return true;
+    return isPlainObject(elicitation.form);
+  }
+  return false;
+}
+
+function projectFallbackElicitationResponse(value, inputRequest) {
+  if (!isPlainObject(value)) {
+    throw new BrowserElicitationBridgeError(
+      "BROWSER_ELICITATION_RESPONSE_INVALID",
+      "Browser fallback continuation requires one bounded response."
+    );
+  }
+  const keys = Object.keys(value).sort();
+  if (keys.length !== 1 || keys[0] !== "action") {
+    throw new BrowserElicitationBridgeError(
+      "BROWSER_ELICITATION_RESPONSE_INVALID",
+      "Browser fallback continuation accepts only an action; arbitrary content or metadata is not allowed."
+    );
+  }
+  if (!["accept", "decline", "cancel"].includes(value.action)) {
+    throw new BrowserElicitationBridgeError(
+      "BROWSER_ELICITATION_RESPONSE_INVALID",
+      "Browser fallback continuation action must be accept, decline, or cancel."
+    );
+  }
+  if (value.action === "accept") {
+    if (!projectedBrowserOriginPermission(inputRequest)) {
+      throw new BrowserElicitationBridgeError(
+        "BROWSER_ELICITATION_ACCEPT_UNSUPPORTED",
+        "This Browser permission cannot be accepted through the non-elicitation compatibility fallback.",
+        ["Use a client that can render the native Browser permission request, or decline/cancel this request."]
+      );
+    }
+    // The caller applies Browser confirmation policy + user-authored task context first.
+    // Verified continuation state binds the pending operation; it does not prove approval.
+    // Persistence is derived only from the trusted pending Browser request.
+    return { action: "accept", content: { persist: "always" } };
+  }
+  return { action: value.action };
+}
+
+function fallbackPermissionResult({ pending, requestState }) {
+  const inputRequest = pending.inputRequest;
+  const params = isPlainObject(inputRequest?.params) ? inputRequest.params : {};
+  const browserOriginPermission = projectedBrowserOriginPermission(inputRequest);
+  const permission = browserOriginPermission
+    ? {
+        kind: "browser_origin_permission",
+        origin: browserOriginPermission.origin,
+        persistence: "always",
+        decision: browserOriginPermission.decision,
+        message: typeof params.message === "string" ? params.message : null,
+        acceptSupported: true,
+      }
+    : {
+        kind: "browser_elicitation",
+        mode: typeof params.mode === "string" ? params.mode : null,
+        message: typeof params.message === "string" ? params.message : null,
+        ...(params.mode === "url" && typeof params.url === "string" ? { url: params.url } : {}),
+        acceptSupported: false,
+      };
+
+  const payload = {
+    status: "permission_required",
+    operationCompleted: false,
+    permission,
+    callerObligation: BROWSER_FALLBACK_CALLER_CONTRACT,
+    continuation: {
+      requestState,
+      expiresAt: new Date(pending.expiresAt).toISOString(),
+    },
+  };
+  return {
+    content: [{ type: "text", text: JSON.stringify(payload) }],
+    structuredContent: payload,
+    isError: false,
+  };
 }
 
 function assertDecodedRequestState(value) {
@@ -313,7 +430,7 @@ export class BrowserElicitationBridge {
     operation.event.resolve("user_input");
   }
 
-  async run({ toolName, input, mcpReq = null, task }) {
+  async run({ toolName, input, mcpReq = null, task, fallbackContinuation = null }) {
     if (typeof toolName !== "string" || !toolName || typeof task !== "function") {
       throw new Error("BrowserElicitationBridge.run requires toolName and task");
     }
@@ -333,6 +450,49 @@ export class BrowserElicitationBridge {
       );
     }
     let requestState = stateAccessor?.();
+    const nativeInputResponses = isPlainObject(mcpReq?.inputResponses) ? mcpReq.inputResponses : null;
+    const hasNativeInputResponses = nativeInputResponses && Object.keys(nativeInputResponses).length > 0;
+
+    if (fallbackContinuation !== null) {
+      if (requestState !== undefined || hasNativeInputResponses) {
+        throw new BrowserElicitationBridgeError(
+          "BROWSER_ELICITATION_REQUEST_STATE_INVALID",
+          "Browser fallback continuation cannot be mixed with native MCP continuation fields."
+        );
+      }
+      if (
+        !isPlainObject(fallbackContinuation) ||
+        typeof fallbackContinuation.requestState !== "string" ||
+        !fallbackContinuation.requestState ||
+        !isPlainObject(fallbackContinuation.response)
+      ) {
+        throw new BrowserElicitationBridgeError(
+          "BROWSER_ELICITATION_REQUEST_STATE_INVALID",
+          "Browser fallback continuation is malformed."
+        );
+      }
+
+      let verifiedRequestState;
+      try {
+        verifiedRequestState = await this.verifyRequestState(fallbackContinuation.requestState, { mcpReq });
+      } catch {
+        throw new BrowserElicitationBridgeError(
+          "BROWSER_ELICITATION_REQUEST_STATE_INVALID",
+          "Browser fallback continuation requestState is invalid or expired."
+        );
+      }
+      return this.#resume({
+        requestState: verifiedRequestState,
+        toolName,
+        inputHash,
+        inputResponses: {
+          [BROWSER_ELICITATION_INPUT_KEY]: fallbackContinuation.response,
+        },
+        mcpReq,
+        fallback: true,
+      });
+    }
+
     if (typeof requestState === "string") {
       try {
         requestState = await this.verifyRequestState(requestState, { mcpReq });
@@ -358,10 +518,12 @@ export class BrowserElicitationBridge {
         requestState,
         toolName,
         inputHash,
-        inputResponses: mcpReq?.inputResponses,
+        inputResponses: nativeInputResponses,
+        mcpReq,
+        fallback: false,
       });
     }
-    if (mcpReq?.inputResponses && Object.keys(mcpReq.inputResponses).length > 0) {
+    if (hasNativeInputResponses) {
       throw new BrowserElicitationBridgeError(
         "BROWSER_ELICITATION_REQUEST_STATE_INVALID",
         "Browser continuation inputResponses require a verified requestState."
@@ -415,7 +577,7 @@ export class BrowserElicitationBridge {
         if (operation.expired) this.#release(operation);
       }
     );
-    return this.#waitOperation(operation);
+    return this.#waitOperation(operation, { mcpReq });
   }
 
   close() {
@@ -439,7 +601,7 @@ export class BrowserElicitationBridge {
     if (operation.outcome) this.#release(operation);
   }
 
-  async #resume({ requestState, toolName, inputHash, inputResponses }) {
+  async #resume({ requestState, toolName, inputHash, inputResponses, mcpReq = null, fallback = false }) {
     if (requestState.runtimeId !== this.#runtimeId) {
       throw new BrowserElicitationBridgeError(
         "BROWSER_ELICITATION_EXPIRED",
@@ -492,9 +654,12 @@ export class BrowserElicitationBridge {
     operation.consumedRounds.add(pending.round);
     let response;
     try {
-      response = projectElicitationResponse(
-        isPlainObject(inputResponses) ? inputResponses[BROWSER_ELICITATION_INPUT_KEY] : undefined
-      );
+      const projectedResponse = isPlainObject(inputResponses)
+        ? inputResponses[BROWSER_ELICITATION_INPUT_KEY]
+        : undefined;
+      response = fallback
+        ? projectFallbackElicitationResponse(projectedResponse, pending.inputRequest)
+        : projectElicitationResponse(projectedResponse);
     } catch (error) {
       this.#expirePending(operation, pending);
       throw error;
@@ -504,10 +669,10 @@ export class BrowserElicitationBridge {
     operation.pending = null;
     operation.event = deferred();
     if (!pending.handle.settled) pending.handle.resolve(response);
-    return this.#waitOperation(operation);
+    return this.#waitOperation(operation, { mcpReq });
   }
 
-  async #waitOperation(operation) {
+  async #waitOperation(operation, { mcpReq = null } = {}) {
     while (true) {
       if (operation.outcome) return this.#consumeOutcome(operation);
       if (operation.expired) {
@@ -527,15 +692,25 @@ export class BrowserElicitationBridge {
           round: pending.round,
         };
         const requestState = await this.#codec.mint(payload);
+        if (this.#closed || operation.expired || operation.pending !== pending) {
+          throw new BrowserElicitationBridgeError(
+            "BROWSER_ELICITATION_EXPIRED",
+            "Browser permission request changed or expired while its continuation was being prepared."
+          );
+        }
         pending.stateIssued = true;
         pending.expiresAt = Date.now() + this.#continuationTtlMs;
         this.#armPendingTimer(operation, pending);
-        return inputRequired({
-          inputRequests: {
-            [BROWSER_ELICITATION_INPUT_KEY]: structuredClone(pending.inputRequest),
-          },
-          requestState,
-        });
+
+        if (clientSupportsInputRequest(mcpReq, pending.inputRequest)) {
+          return inputRequired({
+            inputRequests: {
+              [BROWSER_ELICITATION_INPUT_KEY]: structuredClone(pending.inputRequest),
+            },
+            requestState,
+          });
+        }
+        return fallbackPermissionResult({ pending, requestState });
       }
       const event = operation.event;
       await event.promise;
