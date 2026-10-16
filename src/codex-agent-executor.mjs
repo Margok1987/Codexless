@@ -12,36 +12,74 @@ const MAX_EVENT_TEXT_CHARS = 2_048;
 const MAX_PROGRESS_MESSAGE_CHARS = 8_192;
 const MAX_PROGRESS_PLAN_STEPS = 64;
 const MAX_PROGRESS_STEP_CHARS = 2_048;
+const MAX_PROGRESS_ID_CHARS = 512;
+const MAX_PROGRESS_LABEL_CHARS = 128;
 
-function boundedProgressText(value, maxChars = MAX_PROGRESS_MESSAGE_CHARS) {
-  if (typeof value !== "string") return { text: "", truncated: false };
-  if (value.length <= maxChars) return { text: value, truncated: false };
-  return { text: value.slice(-maxChars), truncated: true };
+function boundedProgressString(value, maxChars, { tail = false } = {}) {
+  if (typeof value !== "string") return { value: null, truncated: false };
+  if (value.length <= maxChars) return { value, truncated: false };
+  return {
+    value: tail ? value.slice(-maxChars) : value.slice(0, maxChars),
+    truncated: true,
+  };
+}
+
+function boundedProgressText(value) {
+  const bounded = boundedProgressString(value, MAX_PROGRESS_MESSAGE_CHARS, { tail: true });
+  return { text: bounded.value ?? "", truncated: bounded.truncated };
 }
 
 function boundedPlan(params) {
   if (!params || typeof params !== "object") return null;
   const rawPlan = Array.isArray(params.plan) ? params.plan : [];
-  const plan = rawPlan.slice(0, MAX_PROGRESS_PLAN_STEPS).map((entry) => ({
-    step: typeof entry?.step === "string" ? entry.step.slice(0, MAX_PROGRESS_STEP_CHARS) : "",
-    status: typeof entry?.status === "string" ? entry.status : null,
-  }));
+  const rawExplanation = boundedProgressString(params.explanation, MAX_PROGRESS_MESSAGE_CHARS);
+  let truncated = rawPlan.length > MAX_PROGRESS_PLAN_STEPS || rawExplanation.truncated;
+  const plan = rawPlan.slice(0, MAX_PROGRESS_PLAN_STEPS).map((entry) => {
+    const step = boundedProgressString(entry?.step, MAX_PROGRESS_STEP_CHARS);
+    const status = boundedProgressString(entry?.status, MAX_PROGRESS_LABEL_CHARS);
+    truncated ||= step.truncated || status.truncated;
+    return {
+      step: step.value ?? "",
+      status: status.value,
+    };
+  });
   return {
-    explanation: typeof params.explanation === "string"
-      ? params.explanation.slice(0, MAX_PROGRESS_MESSAGE_CHARS)
-      : null,
+    explanation: rawExplanation.value,
     plan,
-    truncated: rawPlan.length > plan.length,
+    truncated,
     updatedAt: Date.now(),
   };
 }
 
 function compactActiveItem(item) {
   if (!item || typeof item !== "object") return null;
+  const id = boundedProgressString(item.id, MAX_PROGRESS_ID_CHARS);
+  const type = boundedProgressString(item.type, MAX_PROGRESS_LABEL_CHARS);
+  const status = boundedProgressString(item.status, MAX_PROGRESS_LABEL_CHARS);
   return {
-    id: typeof item.id === "string" ? item.id : null,
-    type: typeof item.type === "string" ? item.type : "unknown",
-    status: typeof item.status === "string" ? item.status : "inProgress",
+    id: id.value,
+    type: type.value ?? "unknown",
+    status: status.value ?? "inProgress",
+    truncated: id.truncated || type.truncated || status.truncated,
+    updatedAt: Date.now(),
+  };
+}
+
+function compactAgentMessage(item, fallback = null, statusOverride = null) {
+  if (!item || typeof item !== "object") return fallback;
+  const priorText = typeof fallback?.text === "string" ? fallback.text : "";
+  const sourceText = typeof item.text === "string" ? item.text : priorText;
+  const bounded = boundedProgressText(sourceText);
+  const itemId = boundedProgressString(item.id ?? fallback?.itemId, MAX_PROGRESS_ID_CHARS);
+  const phase = boundedProgressString(item.phase ?? fallback?.phase, MAX_PROGRESS_LABEL_CHARS);
+  const status = boundedProgressString(statusOverride ?? item.status ?? fallback?.status, MAX_PROGRESS_LABEL_CHARS);
+  return {
+    itemId: itemId.value,
+    phase: phase.value,
+    text: bounded.text,
+    truncated: bounded.truncated || (typeof item.text !== "string" && fallback?.truncated === true)
+      || itemId.truncated || phase.truncated || status.truncated,
+    status: status.value,
     updatedAt: Date.now(),
   };
 }
@@ -742,6 +780,11 @@ export class CodexAgentExecutor {
       });
       const turn = turnStarted?.turn;
       if (typeof turn?.id !== "string" || !turn.id) throw new Error("turn/start returned no turn id");
+      if (state.currentTurnId && state.currentTurnId !== turn.id) {
+        state.progressPlan = null;
+        state.progressAgentMessage = null;
+        state.progressActiveItem = null;
+      }
       state.currentTurnId = turn.id;
       state.latestTurnStatus = turn.status ?? "inProgress";
       state.status = state.pendingApproval ? "awaitingApproval" : normalizeAgentStatus(state.latestTurnStatus);
@@ -1213,6 +1256,11 @@ export class CodexAgentExecutor {
       });
       const turn = turnStarted?.turn;
       if (typeof turn?.id !== "string" || !turn.id) throw new Error("turn/start returned no turn id");
+      if (state.currentTurnId && state.currentTurnId !== turn.id) {
+        state.progressPlan = null;
+        state.progressAgentMessage = null;
+        state.progressActiveItem = null;
+      }
       state.currentTurnId = turn.id;
       state.latestTurnStatus = turn.status ?? "inProgress";
       state.status = state.pendingApproval ? "awaitingApproval" : normalizeAgentStatus(state.latestTurnStatus);
@@ -1443,6 +1491,7 @@ export class CodexAgentExecutor {
         state.turnDurationMs = state.turnStartedAt === null ? null : Math.max(0, state.turnEndedAt - state.turnStartedAt);
       }
       if (TERMINAL_TURN_STATUSES.has(turn.status)) {
+        state.progressActiveItem = null;
         const resumed = await this.#request("thread/resume", { threadId: state.threadId });
         if (typeof resumed?.model === "string") state.resolvedModel = resumed.model;
         if (typeof resumed?.modelProvider === "string") state.modelProvider = resumed.modelProvider;
@@ -1464,10 +1513,11 @@ export class CodexAgentExecutor {
     const threadId = notificationThreadId(message);
     const turnId = notificationTurnId(message);
     const requestId = notificationRequestId(message);
-    const state = [...this.#agents.values()].find((candidate) =>
-      (threadId && candidate.threadId === threadId) ||
-      (turnId && candidate.currentTurnId === turnId) ||
-      (requestId !== null && candidate.pendingApproval && String(candidate.pendingApproval.requestId) === String(requestId))
+    const state = [...this.#agents.values()].find((candidate) => threadId !== null
+      ? candidate.threadId === threadId
+      : turnId !== null
+        ? candidate.currentTurnId === turnId
+        : requestId !== null && candidate.pendingApproval && String(candidate.pendingApproval.requestId) === String(requestId)
     );
     if (!state) return;
 
@@ -1526,15 +1576,7 @@ export class CodexAgentExecutor {
       if (progressBoundToCurrentTurn) {
         state.progressActiveItem = compactActiveItem(item);
         if (item.type === "agentMessage") {
-          const bounded = boundedProgressText(item.text ?? "");
-          state.progressAgentMessage = {
-            itemId: item.id,
-            phase: typeof item.phase === "string" ? item.phase : null,
-            text: bounded.text,
-            truncated: bounded.truncated,
-            status: "inProgress",
-            updatedAt: Date.now(),
-          };
+          state.progressAgentMessage = compactAgentMessage(item, null, "inProgress");
         }
       }
     }
@@ -1544,14 +1586,16 @@ export class CodexAgentExecutor {
         const itemId = typeof message?.params?.itemId === "string"
           ? message.params.itemId
           : state.progressAgentMessage?.itemId ?? null;
-        const sameItem = state.progressAgentMessage?.itemId === itemId;
+        const boundedItemId = boundedProgressString(itemId, MAX_PROGRESS_ID_CHARS);
+        const sameItem = state.progressAgentMessage?.itemId === boundedItemId.value;
         const priorText = sameItem ? state.progressAgentMessage?.text ?? "" : "";
         const bounded = boundedProgressText(priorText + delta);
         state.progressAgentMessage = {
-          itemId,
+          itemId: boundedItemId.value,
           phase: sameItem ? state.progressAgentMessage?.phase ?? null : null,
           text: bounded.text,
-          truncated: (sameItem && state.progressAgentMessage?.truncated === true) || bounded.truncated,
+          truncated: (sameItem && state.progressAgentMessage?.truncated === true)
+            || bounded.truncated || boundedItemId.truncated,
           status: "inProgress",
           updatedAt: Date.now(),
         };
@@ -1561,17 +1605,10 @@ export class CodexAgentExecutor {
       const item = message.params.item;
       state.approvalItems.delete(item.id);
       if (progressBoundToCurrentTurn) {
-        if (state.progressActiveItem?.id === item.id) state.progressActiveItem = null;
+        const completedItemId = boundedProgressString(item.id, MAX_PROGRESS_ID_CHARS).value;
+        if (state.progressActiveItem?.id === completedItemId) state.progressActiveItem = null;
         if (item.type === "agentMessage") {
-          const bounded = boundedProgressText(item.text ?? state.progressAgentMessage?.text ?? "");
-          state.progressAgentMessage = {
-            itemId: item.id,
-            phase: typeof item.phase === "string" ? item.phase : state.progressAgentMessage?.phase ?? null,
-            text: bounded.text,
-            truncated: bounded.truncated,
-            status: "completed",
-            updatedAt: Date.now(),
-          };
+          state.progressAgentMessage = compactAgentMessage(item, state.progressAgentMessage, "completed");
         }
       }
     }
