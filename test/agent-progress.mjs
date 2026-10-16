@@ -140,6 +140,26 @@ fake.emit("item/agentMessage/delta", {
   delta: "STALE_MESSAGE_MUST_NOT_REPLACE_CURRENT",
 });
 
+// An event without a turn ID must not overwrite any visible running-turn progress.
+fake.emit("turn/plan/updated", {
+  threadId: fake.threadId,
+  explanation: "UNBOUND_PLAN_MUST_NOT_REPLACE_CURRENT",
+  plan: [{ step: "unbound", status: "inProgress" }],
+});
+fake.emit("item/agentMessage/delta", {
+  threadId: fake.threadId,
+  itemId: "message-unbound",
+  delta: "UNBOUND_MESSAGE_MUST_NOT_REPLACE_CURRENT",
+});
+fake.emit("item/started", {
+  threadId: fake.threadId,
+  item: { id: "item-unbound", type: "agentMessage", text: "UNBOUND_STARTED_MUST_NOT_REPLACE_CURRENT" },
+});
+fake.emit("item/completed", {
+  threadId: fake.threadId,
+  item: { id: "command-current", type: "commandExecution" },
+});
+
 let progressSnapshot = await executor.show({ agentRef: started.agentRef });
 assert.equal(progressSnapshot.progress.plan.plan.length, 64);
 assert.equal(progressSnapshot.progress.plan.truncated, true);
@@ -157,7 +177,11 @@ assert.deepEqual(
   { id: "command-current", type: "commandExecution", status: "inProgress" },
 );
 assert.doesNotMatch(JSON.stringify(progressSnapshot.progress), /SECRET_COMMAND|SECRET_OUTPUT|super-secret/);
-assert.doesNotMatch(JSON.stringify(progressSnapshot.progress), /STALE_PLAN|STALE_MESSAGE/);
+assert.doesNotMatch(JSON.stringify(progressSnapshot.progress), /STALE_PLAN|STALE_MESSAGE|UNBOUND_/);
+assert.equal(
+  progressSnapshot.events.filter((event) => event.type === "unbound-progress-notification-ignored").length,
+  4,
+);
 assert.equal(
   progressSnapshot.events.some((event) => event.type === "stale-turn-notification-ignored"),
   true,
