@@ -84,6 +84,10 @@ function compactAgentMessage(item, fallback = null, statusOverride = null) {
   };
 }
 
+function progressItemKey(value) {
+  return typeof value === "string" ? createHash("sha256").update(value, "utf8").digest("hex") : null;
+}
+
 function hashRequest(
   cwd,
   task,
@@ -668,6 +672,8 @@ export class CodexAgentExecutor {
       progressPlan: null,
       progressAgentMessage: null,
       progressActiveItem: null,
+      progressAgentMessageKey: null,
+      progressActiveItemKey: null,
       resourceReceipt: null,
       resourceReceiptTurnId: null,
       resourceReceiptPromise: null,
@@ -784,6 +790,8 @@ export class CodexAgentExecutor {
         state.progressPlan = null;
         state.progressAgentMessage = null;
         state.progressActiveItem = null;
+        state.progressAgentMessageKey = null;
+        state.progressActiveItemKey = null;
       }
       state.currentTurnId = turn.id;
       state.latestTurnStatus = turn.status ?? "inProgress";
@@ -1233,6 +1241,8 @@ export class CodexAgentExecutor {
     state.progressPlan = null;
     state.progressAgentMessage = null;
     state.progressActiveItem = null;
+    state.progressAgentMessageKey = null;
+    state.progressActiveItemKey = null;
     state.resourceReceipt = null;
     state.resourceReceiptTurnId = null;
     state.resourceReceiptPromise = null;
@@ -1260,6 +1270,8 @@ export class CodexAgentExecutor {
         state.progressPlan = null;
         state.progressAgentMessage = null;
         state.progressActiveItem = null;
+        state.progressAgentMessageKey = null;
+        state.progressActiveItemKey = null;
       }
       state.currentTurnId = turn.id;
       state.latestTurnStatus = turn.status ?? "inProgress";
@@ -1492,6 +1504,7 @@ export class CodexAgentExecutor {
       }
       if (TERMINAL_TURN_STATUSES.has(turn.status)) {
         state.progressActiveItem = null;
+        state.progressActiveItemKey = null;
         const resumed = await this.#request("thread/resume", { threadId: state.threadId });
         if (typeof resumed?.model === "string") state.resolvedModel = resumed.model;
         if (typeof resumed?.modelProvider === "string") state.modelProvider = resumed.modelProvider;
@@ -1575,8 +1588,10 @@ export class CodexAgentExecutor {
       }
       if (progressBoundToCurrentTurn) {
         state.progressActiveItem = compactActiveItem(item);
+        state.progressActiveItemKey = progressItemKey(item.id);
         if (item.type === "agentMessage") {
           state.progressAgentMessage = compactAgentMessage(item, null, "inProgress");
+          state.progressAgentMessageKey = progressItemKey(item.id);
         }
       }
     }
@@ -1587,7 +1602,10 @@ export class CodexAgentExecutor {
           ? message.params.itemId
           : state.progressAgentMessage?.itemId ?? null;
         const boundedItemId = boundedProgressString(itemId, MAX_PROGRESS_ID_CHARS);
-        const sameItem = state.progressAgentMessage?.itemId === boundedItemId.value;
+        const itemKey = typeof message?.params?.itemId === "string"
+          ? progressItemKey(message.params.itemId)
+          : state.progressAgentMessageKey;
+        const sameItem = state.progressAgentMessageKey === itemKey;
         const priorText = sameItem ? state.progressAgentMessage?.text ?? "" : "";
         const bounded = boundedProgressText(priorText + delta);
         state.progressAgentMessage = {
@@ -1599,16 +1617,22 @@ export class CodexAgentExecutor {
           status: "inProgress",
           updatedAt: Date.now(),
         };
+        state.progressAgentMessageKey = itemKey;
       }
     }
     if (message.method === "item/completed" && message?.params?.item?.id) {
       const item = message.params.item;
       state.approvalItems.delete(item.id);
       if (progressBoundToCurrentTurn) {
-        const completedItemId = boundedProgressString(item.id, MAX_PROGRESS_ID_CHARS).value;
-        if (state.progressActiveItem?.id === completedItemId) state.progressActiveItem = null;
+        const completedItemKey = progressItemKey(item.id);
+        if (state.progressActiveItemKey === completedItemKey) {
+          state.progressActiveItem = null;
+          state.progressActiveItemKey = null;
+        }
         if (item.type === "agentMessage") {
-          state.progressAgentMessage = compactAgentMessage(item, state.progressAgentMessage, "completed");
+          const fallback = state.progressAgentMessageKey === completedItemKey ? state.progressAgentMessage : null;
+          state.progressAgentMessage = compactAgentMessage(item, fallback, "completed");
+          state.progressAgentMessageKey = completedItemKey;
         }
       }
     }
@@ -1631,6 +1655,7 @@ export class CodexAgentExecutor {
       state.latestTurnStatus = status;
       state.status = normalizeAgentStatus(status);
       state.progressActiveItem = null;
+      state.progressActiveItemKey = null;
       if (status === "completed") {
         state.lastCompletedTurnId = turn?.id ?? state.currentTurnId;
         state.finalResult = lastAgentMessage(turn) ?? state.finalResult;
