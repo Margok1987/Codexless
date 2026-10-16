@@ -107,9 +107,9 @@ export async function readManyAuthorized({ authorityExecutor, paths, cwd, maxCha
   for (const requestedPath of paths) {
     const target = await canonicalExistingFile({ requestedPath, cwd: authority.effectiveCwd, root });
     const buffer = await readFile(target);
-    const text = buffer.toString("utf8");
+    const text = decodeUtf8WithoutLoss(buffer);
     const allowed = Math.max(0, Math.min(maxCharsPerFile, remaining));
-    const returnedText = text.slice(0, allowed);
+    const returnedText = sliceAtWholeCodePoint(text, allowed);
     files.push({
       requestedPath,
       path: target,
@@ -266,7 +266,7 @@ export async function preciseEditAuthorized({ authorityExecutor, path: requested
   const root = await canonicalRoot(authority);
   const target = await canonicalExistingFile({ requestedPath, cwd: authority.effectiveCwd, root });
   const initialBuffer = await readFile(target);
-  const initialText = initialBuffer.toString("utf8");
+  const initialText = decodeUtf8WithoutLoss(initialBuffer);
   const beforeSha256 = sha256(initialBuffer);
 
   if (expectedSha256 && beforeSha256.toLowerCase() !== expectedSha256.toLowerCase()) {
@@ -280,6 +280,9 @@ export async function preciseEditAuthorized({ authorityExecutor, path: requested
 
   const nextText = replaceExactOccurrences(initialText, expectedText, replacementText, expectedOccurrences);
   const afterBuffer = Buffer.from(nextText, "utf8");
+  if (afterBuffer.toString("utf8") !== nextText) {
+    throw new Error("precise edit refused non-roundtrippable UTF-8 replacement text");
+  }
   const afterSha256 = sha256(afterBuffer);
   const preview = buildPreview(initialText, nextText, expectedText);
 
@@ -330,6 +333,33 @@ async function canonicalExistingFile({ requestedPath, cwd, root }) {
   const info = await stat(target);
   if (!info.isFile()) throw new Error(`target is not a regular file: ${target}`);
   return target;
+}
+
+export function decodeUtf8WithoutLoss(buffer) {
+  if (!Buffer.isBuffer(buffer) && !(buffer instanceof Uint8Array)) {
+    throw new TypeError("expected a Buffer or Uint8Array");
+  }
+  const input = Buffer.from(buffer);
+  const text = input.toString("utf8");
+  if (!Buffer.from(text, "utf8").equals(input)) {
+    throw new Error("refused non-roundtrippable UTF-8 input");
+  }
+  return text;
+}
+
+export function sliceAtWholeCodePoint(text, maxUtf16Units) {
+  if (typeof text !== "string" || !Number.isSafeInteger(maxUtf16Units) || maxUtf16Units < 0) {
+    throw new TypeError("expected text and a nonnegative safe integer UTF-16 bound");
+  }
+  let end = Math.min(text.length, maxUtf16Units);
+  if (end > 0 && end < text.length) {
+    const prior = text.charCodeAt(end - 1);
+    const next = text.charCodeAt(end);
+    if (prior >= 0xD800 && prior <= 0xDBFF && next >= 0xDC00 && next <= 0xDFFF) {
+      end -= 1;
+    }
+  }
+  return text.slice(0, end);
 }
 
 function sha256(value) {
