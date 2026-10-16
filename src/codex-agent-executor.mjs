@@ -1480,10 +1480,21 @@ export class CodexAgentExecutor {
       return;
     }
     if (turnId && !state.currentTurnId) state.currentTurnId = turnId;
+    const progressBoundToCurrentTurn = turnScopedProgressEvent
+      && typeof turnId === "string" && turnId.length > 0 && state.currentTurnId === turnId;
+    if (turnScopedProgressEvent && !progressBoundToCurrentTurn) {
+      this.#appendEvent(state, {
+        type: "unbound-progress-notification-ignored",
+        method: message.method,
+        turnId: turnId ?? null,
+        currentTurnId: state.currentTurnId,
+        at: Date.now(),
+      });
+    }
     if (message.method === "thread/tokenUsage/updated" && message?.params?.tokenUsage) {
       state.latestTokenUsage = structuredClone(message.params.tokenUsage);
     }
-    if (message.method === "turn/plan/updated") {
+    if (message.method === "turn/plan/updated" && progressBoundToCurrentTurn) {
       state.progressPlan = boundedPlan(message.params);
     }
     if (message.method === "item/started" && message?.params?.item?.id) {
@@ -1512,20 +1523,22 @@ export class CodexAgentExecutor {
           });
         }
       }
-      state.progressActiveItem = compactActiveItem(item);
-      if (item.type === "agentMessage") {
-        const bounded = boundedProgressText(item.text ?? "");
-        state.progressAgentMessage = {
-          itemId: item.id,
-          phase: typeof item.phase === "string" ? item.phase : null,
-          text: bounded.text,
-          truncated: bounded.truncated,
-          status: "inProgress",
-          updatedAt: Date.now(),
-        };
+      if (progressBoundToCurrentTurn) {
+        state.progressActiveItem = compactActiveItem(item);
+        if (item.type === "agentMessage") {
+          const bounded = boundedProgressText(item.text ?? "");
+          state.progressAgentMessage = {
+            itemId: item.id,
+            phase: typeof item.phase === "string" ? item.phase : null,
+            text: bounded.text,
+            truncated: bounded.truncated,
+            status: "inProgress",
+            updatedAt: Date.now(),
+          };
+        }
       }
     }
-    if (message.method === "item/agentMessage/delta") {
+    if (message.method === "item/agentMessage/delta" && progressBoundToCurrentTurn) {
       const delta = message?.params?.delta;
       if (typeof delta === "string") {
         const itemId = typeof message?.params?.itemId === "string"
@@ -1547,17 +1560,19 @@ export class CodexAgentExecutor {
     if (message.method === "item/completed" && message?.params?.item?.id) {
       const item = message.params.item;
       state.approvalItems.delete(item.id);
-      if (state.progressActiveItem?.id === item.id) state.progressActiveItem = null;
-      if (item.type === "agentMessage") {
-        const bounded = boundedProgressText(item.text ?? state.progressAgentMessage?.text ?? "");
-        state.progressAgentMessage = {
-          itemId: item.id,
-          phase: typeof item.phase === "string" ? item.phase : state.progressAgentMessage?.phase ?? null,
-          text: bounded.text,
-          truncated: bounded.truncated,
-          status: "completed",
-          updatedAt: Date.now(),
-        };
+      if (progressBoundToCurrentTurn) {
+        if (state.progressActiveItem?.id === item.id) state.progressActiveItem = null;
+        if (item.type === "agentMessage") {
+          const bounded = boundedProgressText(item.text ?? state.progressAgentMessage?.text ?? "");
+          state.progressAgentMessage = {
+            itemId: item.id,
+            phase: typeof item.phase === "string" ? item.phase : state.progressAgentMessage?.phase ?? null,
+            text: bounded.text,
+            truncated: bounded.truncated,
+            status: "completed",
+            updatedAt: Date.now(),
+          };
+        }
       }
     }
     if (message.method === "serverRequest/resolved") {
@@ -1578,6 +1593,7 @@ export class CodexAgentExecutor {
       const status = turn?.status ?? "completed";
       state.latestTurnStatus = status;
       state.status = normalizeAgentStatus(status);
+      state.progressActiveItem = null;
       if (status === "completed") {
         state.lastCompletedTurnId = turn?.id ?? state.currentTurnId;
         state.finalResult = lastAgentMessage(turn) ?? state.finalResult;
