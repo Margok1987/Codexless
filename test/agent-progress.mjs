@@ -53,6 +53,7 @@ class FakeClient {
       this.turnCounter += 1;
       this.currentTurnId = `turn-progress-${this.turnCounter}`;
       this.turnStatus = "inProgress";
+      this.beforeTurnResponse?.(this.currentTurnId);
       return { turn: { id: this.currentTurnId, status: this.turnStatus, items: [] } };
     }
     if (method === "thread/turns/list") {
@@ -160,6 +161,17 @@ fake.emit("item/completed", {
   item: { id: "command-current", type: "commandExecution" },
 });
 
+
+// An explicit foreign thread must never fall back to this agent's matching turn ID.
+for (const [method, params] of [
+  ["turn/plan/updated", { explanation: "FOREIGN_PLAN", plan: [{ step: "foreign", status: "pending" }] }],
+  ["item/agentMessage/delta", { itemId: "message-current", delta: "FOREIGN_DELTA" }],
+  ["item/started", { item: { id: "foreign-item", type: "agentMessage", text: "FOREIGN_ITEM" } }],
+  ["item/completed", { item: { id: "command-current", type: "commandExecution" } }],
+]) {
+  fake.emit(method, { ...params, threadId: "thread-foreign", turnId: currentTurnId });
+}
+
 let progressSnapshot = await executor.show({ agentRef: started.agentRef });
 assert.equal(progressSnapshot.progress.plan.plan.length, 64);
 assert.equal(progressSnapshot.progress.plan.truncated, true);
@@ -177,7 +189,7 @@ assert.deepEqual(
   { id: "command-current", type: "commandExecution", status: "inProgress" },
 );
 assert.doesNotMatch(JSON.stringify(progressSnapshot.progress), /SECRET_COMMAND|SECRET_OUTPUT|super-secret/);
-assert.doesNotMatch(JSON.stringify(progressSnapshot.progress), /STALE_PLAN|STALE_MESSAGE|UNBOUND_/);
+assert.doesNotMatch(JSON.stringify(progressSnapshot.progress), /STALE_PLAN|STALE_MESSAGE|UNBOUND_|FOREIGN_/);
 assert.equal(
   progressSnapshot.events.filter((event) => event.type === "unbound-progress-notification-ignored").length,
   4,
@@ -207,6 +219,86 @@ const second = await executor.send({
 assert.equal(second.status, "running");
 assert.notEqual(second.turnId, currentTurnId);
 assert.deepEqual(second.progress, { latestAgentMessage: null, plan: null, activeItem: null });
+
+
+// Bounds must cover labels and IDs, with truncation reported even below the step-count limit.
+fake.emit("turn/plan/updated", {
+  threadId: fake.threadId, turnId: second.turnId,
+  explanation: "e".repeat(9_000),
+  plan: [{ step: "s".repeat(3_000), status: "p".repeat(200) }],
+});
+fake.emit("item/started", {
+  threadId: fake.threadId, turnId: second.turnId,
+  item: { id: "c".repeat(700), type: "t".repeat(200), status: "s".repeat(200) },
+});
+progressSnapshot = await executor.show({ agentRef: started.agentRef });
+assert.equal(progressSnapshot.progress.plan.explanation.length, 8_192);
+assert.equal(progressSnapshot.progress.plan.plan[0].step.length, 2_048);
+assert.equal(progressSnapshot.progress.plan.plan[0].status.length, 128);
+assert.equal(progressSnapshot.progress.plan.truncated, true);
+assert.equal(progressSnapshot.progress.activeItem.id.length, 512);
+assert.equal(progressSnapshot.progress.activeItem.type.length, 128);
+assert.equal(progressSnapshot.progress.activeItem.status.length, 128);
+assert.equal(progressSnapshot.progress.activeItem.truncated, true);
+fake.emit("item/completed", {
+  threadId: fake.threadId, turnId: second.turnId,
+  item: { id: "c".repeat(700), type: "t".repeat(200) },
+});
+assert.equal((await executor.show({ agentRef: started.agentRef })).progress.activeItem, null);
+fake.emit("item/started", {
+  threadId: fake.threadId, turnId: second.turnId,
+  item: { id: "m".repeat(700), type: "agentMessage", phase: "p".repeat(200), text: hugeMessage },
+});
+fake.emit("item/agentMessage/delta", {
+  threadId: fake.threadId, turnId: second.turnId,
+  itemId: "m".repeat(700), delta: "-DELTA_TAIL",
+});
+fake.emit("item/completed", {
+  threadId: fake.threadId, turnId: second.turnId,
+  item: { id: "m".repeat(700), type: "agentMessage" },
+});
+progressSnapshot = await executor.show({ agentRef: started.agentRef });
+assert.equal(progressSnapshot.progress.latestAgentMessage.itemId.length, 512);
+assert.equal(progressSnapshot.progress.latestAgentMessage.phase.length, 128);
+assert.equal(progressSnapshot.progress.latestAgentMessage.text.endsWith("-DELTA_TAIL"), true);
+assert.equal(progressSnapshot.progress.latestAgentMessage.truncated, true);
+assert.equal(progressSnapshot.progress.latestAgentMessage.status, "completed");
+assert.equal(progressSnapshot.progress.activeItem, null);
+
+// Recover terminal state without a completion notification; stale active items must disappear.
+fake.emit("item/started", {
+  threadId: fake.threadId, turnId: second.turnId,
+  item: { id: "terminal-refresh-item", type: "commandExecution" },
+});
+fake.turnStatus = "completed";
+progressSnapshot = await executor.show({ agentRef: started.agentRef });
+assert.equal(progressSnapshot.status, "idle");
+assert.equal(progressSnapshot.progress.activeItem, null);
+
+// Pre-response progress survives only when the returned official turn ID agrees.
+fake.beforeTurnResponse = () => {
+  fake.emit("turn/plan/updated", {
+    threadId: fake.threadId, turnId: "unrelated-early-turn",
+    plan: [{ step: "WRONG_EARLY_TURN", status: "pending" }],
+  });
+  fake.emit("item/started", {
+    threadId: fake.threadId, turnId: "unrelated-early-turn",
+    item: { id: "early-message", type: "agentMessage", text: "WRONG_EARLY_MESSAGE" },
+  });
+};
+const third = await executor.send({
+  agentRef: started.agentRef, message: "Reconcile the third turn", clientRequestId: "progress-send-3",
+});
+assert.deepEqual(third.progress, { latestAgentMessage: null, plan: null, activeItem: null });
+fake.turnStatus = "completed";
+await executor.show({ agentRef: started.agentRef });
+fake.beforeTurnResponse = (turnId) => fake.emit("turn/plan/updated", {
+  threadId: fake.threadId, turnId, plan: [{ step: "MATCHING_EARLY_TURN", status: "pending" }],
+});
+const fourth = await executor.send({
+  agentRef: started.agentRef, message: "Keep matching early progress", clientRequestId: "progress-send-4",
+});
+assert.equal(fourth.progress.plan.plan[0].step, "MATCHING_EARLY_TURN");
 
 function captureServer() {
   const tools = new Map();
