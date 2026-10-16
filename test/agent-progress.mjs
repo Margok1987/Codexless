@@ -265,6 +265,43 @@ assert.equal(progressSnapshot.progress.latestAgentMessage.truncated, true);
 assert.equal(progressSnapshot.progress.latestAgentMessage.status, "completed");
 assert.equal(progressSnapshot.progress.activeItem, null);
 
+// Bounded display IDs may collide; internal message/item identity must stay exact.
+const collisionPrefix = "i".repeat(512);
+const firstCollisionId = collisionPrefix + "-first";
+const secondCollisionId = collisionPrefix + "-second";
+fake.emit("item/started", {
+  threadId: fake.threadId, turnId: second.turnId,
+  item: { id: firstCollisionId, type: "agentMessage", text: "FIRST_MESSAGE_ONLY" },
+});
+fake.emit("item/agentMessage/delta", {
+  threadId: fake.threadId, turnId: second.turnId,
+  itemId: secondCollisionId, delta: "SECOND_MESSAGE_ONLY",
+});
+progressSnapshot = await executor.show({ agentRef: started.agentRef });
+assert.equal(progressSnapshot.progress.latestAgentMessage.text, "SECOND_MESSAGE_ONLY");
+fake.emit("item/completed", {
+  threadId: fake.threadId, turnId: second.turnId,
+  item: { id: firstCollisionId, type: "agentMessage" },
+});
+progressSnapshot = await executor.show({ agentRef: started.agentRef });
+assert.equal(progressSnapshot.progress.latestAgentMessage.text, "");
+fake.emit("item/started", {
+  threadId: fake.threadId, turnId: second.turnId,
+  item: { id: firstCollisionId, type: "commandExecution" },
+});
+fake.emit("item/completed", {
+  threadId: fake.threadId, turnId: second.turnId,
+  item: { id: secondCollisionId, type: "commandExecution" },
+});
+progressSnapshot = await executor.show({ agentRef: started.agentRef });
+assert.notEqual(progressSnapshot.progress.activeItem, null);
+assert.equal(progressSnapshot.progress.activeItem.id, collisionPrefix);
+fake.emit("item/completed", {
+  threadId: fake.threadId, turnId: second.turnId,
+  item: { id: firstCollisionId, type: "commandExecution" },
+});
+assert.equal((await executor.show({ agentRef: started.agentRef })).progress.activeItem, null);
+
 // Recover terminal state without a completion notification; stale active items must disappear.
 fake.emit("item/started", {
   threadId: fake.threadId, turnId: second.turnId,
