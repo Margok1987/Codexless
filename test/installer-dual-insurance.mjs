@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -18,10 +19,6 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 async function readJson(relative) {
   return JSON.parse(await readFile(path.join(root, ...relative.split("/")), "utf8"));
-}
-
-function patchText(patch) {
-  return patch.operations.map((operation) => operation.to).join("\n");
 }
 
 function readyStateRuntime() {
@@ -68,15 +65,10 @@ test("installer product policy is Recommended dual insurance with readiness-gate
   assert.ok(policy.dualReadyMethodRoutes.existing.includes("codex.agent_*"));
 });
 
-test("Windows and Mac installer patches preserve entrypoints, expose only Advanced Existing-only/Recommended, provision Managed only for effective Recommended, and keep Browser Repair Existing-specific", async () => {
-  const windowsPatch = await readJson("release/public-overlay/patches/scripts-install.ps1.json");
-  const macPatch = await readJson("release/public-overlay/patches/scripts-install.sh.json");
-  for (const [name, patch] of [["windows", windowsPatch], ["mac", macPatch]]) {
-    assert.equal(patch.schemaVersion, 1, name);
-    assert.match(patch.baseSha256, /^[0-9a-f]{64}$/, name);
-    assert.match(patch.outputSha256, /^[0-9a-f]{64}$/, name);
-    assert.notEqual(patch.baseSha256, patch.outputSha256, name);
-    const text = patchText(patch);
+test("Windows and Mac release installers preserve entrypoints, expose only Advanced Existing-only/Recommended, provision Managed only for effective Recommended, and keep Browser Repair Existing-specific", async () => {
+  const windowsText = await readFile(path.join(root, "scripts/install.ps1"), "utf8");
+  const macText = await readFile(path.join(root, "scripts/install.sh"), "utf8");
+  for (const [name, text] of [["windows", windowsText], ["mac", macText]]) {
     assert.match(text, /recommended/i, name);
     assert.match(text, /existing/i, name);
     assert.doesNotMatch(text, /\[switch\]\$ManagedOnly|--managed-only/i, name);
@@ -93,15 +85,14 @@ test("Windows and Mac installer patches preserve entrypoints, expose only Advanc
     assert.match(text, /rollback/i, name);
     assert.match(text, /finalize/i, name);
   }
-  assert.match(patchText(windowsPatch), /\[switch\]\$ExistingOnly/);
-  assert.match(patchText(windowsPatch), /\[switch\]\$Recommended/);
-  assert.match(patchText(macPatch), /--existing-only/);
-  assert.match(patchText(macPatch), /--recommended/);
+  assert.match(windowsText, /\[switch\]\$ExistingOnly/);
+  assert.match(windowsText, /\[switch\]\$Recommended/);
+  assert.match(macText, /--existing-only/);
+  assert.match(macText, /--recommended/);
 });
 
 test("Recommended pending doctor reports onboarding required with the exact official helper command; dual-ready remains ready/degraded rather than pending", async () => {
-  const doctorPatch = await readJson("release/public-overlay/patches/scripts-doctor.mjs.json");
-  const text = patchText(doctorPatch);
+  const text = await readFile(path.join(root, "scripts/doctor.mjs"), "utf8");
   assert.match(text, /existing_only_pending_managed/);
   assert.match(text, /status: \"pending\"/);
   assert.match(text, /official_chatgpt_login_required/);
@@ -125,16 +116,19 @@ test("projected doctor compatibility keeps the public home-path redaction export
 
 test("Managed package/native identities are exact for Windows x64 and Apple Silicon macOS", async () => {
   const pkg = await readJson("package.json");
-  const lock = await readJson("package-lock.json");
-  assert.equal(pkg.dependencies["@openai/codex"], "0.147.0");
+  const lock = await readJson("npm-shrinkwrap.json");
+  const pinnedVersion = pkg.dependencies["@openai/codex"];
+  assert.match(pinnedVersion, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+  assert.equal(lock.packages[""].dependencies["@openai/codex"], pinnedVersion);
+  assert.equal(lock.packages["node_modules/@openai/codex"].version, pinnedVersion);
   for (const expected of [
     {
       platform: "win32", arch: "x64", packageName: "@openai/codex-win32-x64",
-      version: "0.147.0-win32-x64", triple: "x86_64-pc-windows-msvc", executable: "codex.exe",
+      version: `${pinnedVersion}-win32-x64`, triple: "x86_64-pc-windows-msvc", executable: "codex.exe",
     },
     {
       platform: "darwin", arch: "arm64", packageName: "@openai/codex-darwin-arm64",
-      version: "0.147.0-darwin-arm64", triple: "aarch64-apple-darwin", executable: "codex",
+      version: `${pinnedVersion}-darwin-arm64`, triple: "aarch64-apple-darwin", executable: "codex",
     },
   ]) {
     const spec = managedPlatformPackageSpec(expected);
@@ -186,10 +180,10 @@ test("runtime preference and dual readiness are external user state; Managed hom
   assert.equal(await readFile(profile, "utf8"), "profile-user-state\n");
 });
 
-test("public projection authority includes new installer/Managed/Skill sources and retires doctor/release-discovery legacy waivers", async () => {
-  const policy = await readJson("config/public-export-policy.json");
-  const canonicalTargets = new Set(policy.canonicalFiles.map((entry) => entry.target));
-  const patchTargets = new Set(policy.patchFiles.map((entry) => entry.target));
+test("public release manifest includes the installer/Managed/Skill sources with exact shipped bytes", async () => {
+  // The public fork contains the assembled product, not its private export overlays.
+  const manifest = await readJson("config/release-manifest.json");
+  const targets = new Map(manifest.files.map((entry) => [entry.path, entry.sha256]));
   for (const target of [
     "config/runtime-install-mode.json",
     "config/runtime-routing-policy.json",
@@ -206,13 +200,13 @@ test("public projection authority includes new installer/Managed/Skill sources a
     "src/release-discovery.mjs",
     "src/lifecycle-contract.mjs",
     "src/platform-support.mjs",
-  ]) assert.equal(canonicalTargets.has(target), true, target);
-  for (const target of ["scripts/install.ps1", "scripts/install.sh", "scripts/doctor.mjs", "test/installer-lifecycle-windows.mjs"]) {
-    assert.equal(patchTargets.has(target), true, target);
-    assert.equal(policy.publicBase.files.includes(target), false, `${target} must not remain immutable-seed authority`);
+    "scripts/install.ps1",
+    "scripts/install.sh",
+    "scripts/doctor.mjs",
+  ]) {
+    assert.equal(targets.has(target), true, target);
+    const digest = createHash("sha256").update(await readFile(path.join(root, target))).digest("hex");
+    assert.equal(targets.get(target), digest, `${target}: stale release payload`);
   }
-  const waiverPaths = new Set(policy.legacySeedWaivers.map((entry) => entry.path));
-  assert.equal(waiverPaths.has("scripts/doctor.mjs"), false);
-  assert.equal(waiverPaths.has("src/release-discovery.mjs"), false);
-  assert.equal(policy.publicBase.files.includes("src/release-discovery.mjs"), false);
+  assert.equal(targets.has("test/installer-lifecycle-windows.mjs"), false, "tests are not installable runtime payload");
 });
