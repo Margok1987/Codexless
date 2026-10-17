@@ -167,6 +167,10 @@ function createHarness({ agentReasoningEffort = true, quotaProvider = async () =
       agents.set(snapshot.agentRef, snapshot);
       return structuredClone(snapshot);
     },
+    async steer({ agentRef }) {
+      // The official turn may complete between the caller request and its reply.
+      return structuredClone(agents.get(agentRef));
+    },
     async resolveApproval() { throw new Error("not used"); },
     async cancel() { throw new Error("not used"); },
   };
@@ -293,6 +297,23 @@ test("fixed approval can prepare and dispatch a follow-up after an interrupted p
   assert.equal(sends.length, 1);
   assert.equal(sends[0].agentRef, agentRef);
   assert.equal(sends[0].message, "CONTINUE_SAME_THREAD");
+});
+
+test("a terminal steer reply keeps the complete prepared task in its result presentation", async () => {
+  const { invoke } = createHarness();
+  const task = `STEER_TASK_START ${"preserve this prepared task body ".repeat(12).trim()} STEER_TASK_END`;
+  const prepared = await invoke("codex.agent_start", { prompt: task, requestId: "steer-task-body", cwd: projectRoot });
+  const committed = await invoke("codex.agent_commit", { taskId: prepared.structuredContent.taskId });
+  const result = await invoke("codex.agent_steer", {
+    agentRef: committed.structuredContent.agentRef,
+    expectedTurnId: committed.structuredContent.turnId,
+    message: "adjust the current turn", requestId: "steer-terminal-task-body",
+  });
+  assert.equal(result.isError, false);
+  assert.equal(result.structuredContent.status, "completed");
+  assert.equal(result.structuredContent.chatPresentation.task, task);
+  assert.equal(result.structuredContent.chatPresentation.text.includes(task), true);
+  assert.equal(Object.hasOwn(result.structuredContent, "portableTaskBody"), false);
 });
 
 test("concurrent commits of one multi-account Task ID dispatch exactly once", async () => {
