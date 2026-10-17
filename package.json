@@ -1,6 +1,6 @@
 {
   "name": "codexless",
-  "version": "0.1.2-preview.0",
+  "version": "0.1.2-preview.1",
   "private": true,
   "license": "Apache-2.0",
   "description": "Windows and Apple Silicon macOS Technical Preview: let ChatGPT use accepted Codex-backed local capabilities and escalate to Codex only when needed.",
@@ -29,7 +29,7 @@
     "test:browser-operator": "node --test test/browser-household-parity.mjs",
     "test:public-registration": "node test/public-registration-allowlist.mjs",
     "test:diagnostics": "node test/recent-call-diagnostics.mjs && node test/recent-call-http.mjs && node test/doctor-health.mjs",
-    "test": "npm run test:upstream-merge && node --test test/construction-tools-utf8.mjs && node --test test/codex-rate-limit-reset.mjs test/excel-response.mjs && node --test test/public-command-concurrency.mjs && node test/release-identity.mjs && node test/lifecycle-contract.mjs && node test/installer-lifecycle-windows.mjs && node test/bootstrap-archive-policy.mjs && node test/bootstrap-persistence.mjs && node test/codex-version-gate.mjs && node --test test/codex-app-server-lifecycle.mjs && node --test test/codex-agent-interrupt-recovery.mjs && node --test test/codex-account-official-contract.mjs && node test/browser-runtime-compat.mjs && node test/public-runtime-browser-guardrails.mjs && node test/stock-prompt-input-catalog.mjs && node test/recent-call-diagnostics.mjs && node test/recent-call-http.mjs && node test/doctor-health.mjs && node test/metered-consent.mjs && node test/codex-account-routing.mjs && node --test test/codex-account-security.mjs && node test/agent-consent-card.mjs && node test/reasoning-effort.mjs && node test/agent-steering-progress.mjs && node --test test/account-agent-steering.mjs && node test/public-command-policy.mjs && node test/public-registration-allowlist.mjs && node test/public-browser-adapter.mjs && node --test test/browser-household-parity.mjs && node test/public-contract.mjs",
+    "test": "npm run test:upstream-merge && node --test test/construction-tools-utf8.mjs && node --test test/codex-rate-limit-reset.mjs test/excel-response.mjs && node --test test/public-command-concurrency.mjs && node test/release-identity.mjs && node test/lifecycle-contract.mjs && node test/installer-lifecycle-windows.mjs && node test/bootstrap-archive-policy.mjs && node test/bootstrap-persistence.mjs && node test/codex-version-gate.mjs && node --test test/codex-app-server-lifecycle.mjs && node --test test/codex-agent-interrupt-recovery.mjs && node --test test/codex-account-official-contract.mjs && node test/browser-runtime-compat.mjs && node test/public-runtime-browser-guardrails.mjs && node test/stock-prompt-input-catalog.mjs && node test/recent-call-diagnostics.mjs && node test/recent-call-http.mjs && node test/doctor-health.mjs && node test/metered-consent.mjs && node test/codex-account-routing.mjs && node --test test/codex-account-security.mjs && node test/agent-consent-card.mjs && node test/reasoning-effort.mjs && node test/agent-steering-progress.mjs && node --test test/account-agent-steering.mjs && node test/public-command-policy.mjs && node test/public-registration-allowlist.mjs && node test/public-browser-adapter.mjs && node --test test/browser-household-parity.mjs && node test/public-contract.mjs && npm run test:extended",
     "release:manifest": "node scripts/generate-release-manifest.mjs",
     "bootstrap:materialize": "node scripts/materialize-bootstrap.mjs",
     "test:release-identity": "node test/release-identity.mjs",
@@ -43,7 +43,8 @@
     "skills:sync": "node scripts/sync-codex-skills.mjs sync",
     "test:compatibility": "node --test test/upstream-compatibility-fingerprint.mjs",
     "test:skills": "node --test test/codex-skill-sync.mjs test/public-skill-refresh.mjs",
-    "release:preflight": "node scripts/release-preflight.mjs"
+    "release:preflight": "node scripts/release-preflight.mjs",
+    "test:extended": "node --test --test-concurrency=1 test/bootstrap-updater-windows.mjs test/codex-runtime-provider.mjs test/codex-skill-sync.mjs test/installer-dual-insurance.mjs test/managed-runtime-surface.mjs test/mcp-status-pagination.mjs test/public-skill-refresh.mjs test/release-discovery.mjs test/runtime-routing-policy.mjs test/upstream-compatibility-fingerprint.mjs"
   },
   "dependencies": {
     "acorn": "8.15.0",
@@ -55,7 +56,7 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
-    "@modelcontextprotocol/client": "2.0.0"
+    "@modelcontextprotocol/client": "2.2.0"
   },
   "files": [
     "src",
