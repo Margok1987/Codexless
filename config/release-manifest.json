@@ -4,7 +4,7 @@
   "version": "0.1.2-preview.1",
   "buildIdAlgorithm": "sha256-release-identity-v1",
   "fileHashAlgorithm": "sha256-raw-file-v1",
-  "sourceRevision": "79fd47baebf473b5f93fc5de258e0d485b08e0e2",
+  "sourceRevision": "7aaf9c6dd489631247df607da88030b011749e4c",
   "hostContractVersion": "codexless-public-preview-v1",
   "stateCompatibility": {
     "migration": "none",
@@ -17,7 +17,7 @@
       }
     }
   },
-  "buildId": "69e9390147c1929ae465192dc087b7c051f8af3cf106b9f80050a7de051e8325",
+  "buildId": "a815ad3f63a541c82afc310f32c470528ba2141bc4793b8ad9df1c5bafb03dcc",
   "files": [
     { "path": "EXPORT_SYNC.md", "sha256": "2016ca37f280451a76cdb95f7223e0aa60f4a4743a41df0e11d6b4157231a839" },
     { "path": "LICENSE", "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4" },
@@ -40,7 +40,7 @@
     { "path": "config/skill-lane-policy.json", "sha256": "f9b5c189c244c13437c2e4296dcc3e5b31d461f42d44a95f93d6f737655a392c" },
     { "path": "config/toolbox-method-registry.json", "sha256": "f7ca647e64bb44f862453cac7376c9f44aa30532490f20aa3c021d4cee5f892d" },
     { "path": "npm-shrinkwrap.json", "sha256": "87f24f99546678cc34e41921f2c78070b4a8c979d0e9fc01227f49b2070c4b60" },
-    { "path": "package.json", "sha256": "39fa1e3a3314e4f02421764e593daf5ce6768fd4b68625d81991b8ba59ccec26" },
+    { "path": "package.json", "sha256": "a8ffe645765f3f0de176f4065d20c7f33fbaab25e944ba05cfe1b0f8a2dcbf9e" },
     { "path": "scripts/bootstrap-archive.ps1", "sha256": "c972086d15333bb5a4f14ddeb814500bc25440f77ee13a03c6e3fccca07c59a5" },
     { "path": "scripts/bootstrap-archive.sh", "sha256": "b557b54e58097829ff67527cccbd2c4f327c56e0445561b0286b72cd39380ab2" },
     { "path": "scripts/bootstrap.mjs", "sha256": "0cb1a5152f3ed9e7c18ad37e77300560fd0bd57e22dc5c5f20d0a8baafe817e2" },
