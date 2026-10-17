@@ -33,6 +33,8 @@ function createIsolatedPublicTestEnv(extra = {}) {
     if (key.startsWith("CODEX_TOOLBOX_") || key.startsWith("CODEXLESS_")) delete env[key];
   }
   Object.assign(env, {
+    HOME: contractStateRoot,
+    USERPROFILE: contractStateRoot,
     CODEX_BIN: codexBin,
     CODEX_HOME: contractCodexHome,
     // Poison legacy Toolwire variables deliberately. A clean Codexless runtime must ignore all of them.
@@ -214,7 +216,7 @@ try {
     name: "codex.agent_start",
     arguments: { prompt, requestId, invocationRationale: "Public contract probe for fixed-text approval." },
   });
-  assert.equal(prepared.isError, false);
+  assert.equal(prepared.isError, false, JSON.stringify(prepared.structuredContent ?? prepared.content));
   assert.equal(prepared.structuredContent?.status, "consent_required");
   assert.equal(prepared.structuredContent?.turnId, null);
   assert.equal(prepared.structuredContent?.agentRef, null);
@@ -400,3 +402,5 @@ try {
 } finally {
   await stopHttpChild();
 }
+
+console.log("public contract PASS: 47 tools over stdio and HTTP; strict schemas, consent, SSH and private-diagnostics boundaries");
