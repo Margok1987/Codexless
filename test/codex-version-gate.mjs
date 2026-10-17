@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { CodexAuthorityExecutor, normalizeCodexAuthorityProjection } from "../src/codex-authority-executor.mjs";
 import { compareCodexVersions, resolveCodexExecutable } from "../src/codex-bin.mjs";
+import { managedLaunchEnv } from "../src/codex-runtime-provider.mjs";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
 const projectionRoot = path.resolve(projectRoot);
@@ -55,50 +58,65 @@ const explicitOverride = await resolveCodexExecutable({
 assert.equal(path.resolve(explicitOverride.path), path.resolve(resolved.path));
 assert.equal(explicitOverride.source, "CODEX_BIN");
 
-const contractFirst = new CodexAuthorityExecutor({
-  codexBin: resolved.path,
-  defaultCwd: projectRoot,
-  allowUntrustedReadOnlyBootstrap: true,
-});
-const contractValidation = await contractFirst.validate();
-assert.equal(contractValidation.codexVersion, resolved.version);
-assert.equal(contractValidation.versionPolicy, "contract");
-assert.equal(contractValidation.acceptedCodexVersions, null);
-assert.equal(contractValidation.compatibilityGate?.status, "pass");
-assert.equal(contractValidation.compatibilityGate?.commandExecReadOnly, true);
-assert.equal(contractValidation.compatibilityGate?.permissionProfile, ":read-only");
+// Resolver discovery is intentionally host-native. Contract probes use a clean
+// home so they cannot inherit real account state or mutate the host sandbox cache.
+const stateRoot = await mkdtemp(path.join(os.tmpdir(), "codexless-version-gate-"));
+try {
+  const codexHome = path.join(stateRoot, "codex-home");
+  await mkdir(codexHome);
+  await writeFile(path.join(codexHome, "config.toml"),
+    `approval_policy = "on-request"\nsandbox_mode = "read-only"\n[projects.${JSON.stringify(projectRoot)}]\ntrust_level = "trusted"\n`);
+  const launchEnv = managedLaunchEnv({ ...process.env, HOME: stateRoot, USERPROFILE: stateRoot }, codexHome);
+  const contractFirst = new CodexAuthorityExecutor({
+    codexBin: resolved.path,
+    launchEnv,
+    defaultCwd: projectRoot,
+    allowUntrustedReadOnlyBootstrap: true,
+  });
+  const contractValidation = await contractFirst.validate();
+  assert.equal(contractValidation.codexVersion, resolved.version);
+  assert.equal(contractValidation.versionPolicy, "contract");
+  assert.equal(contractValidation.acceptedCodexVersions, null);
+  assert.equal(contractValidation.compatibilityGate?.status, "pass");
+  assert.equal(contractValidation.compatibilityGate?.commandExecReadOnly, true);
+  assert.equal(contractValidation.compatibilityGate?.permissionProfile, ":read-only");
 
-const explicitReject = new CodexAuthorityExecutor({
-  codexBin: resolved.path,
-  defaultCwd: projectRoot,
-  allowUntrustedReadOnlyBootstrap: true,
-  acceptedCodexVersions: ["9.9.9-not-current"],
-});
-await assert.rejects(
-  () => explicitReject.validate(),
-  /unsupported Codex CLI version.*Accepted versions: 9\.9\.9-not-current/is
-);
+  const explicitReject = new CodexAuthorityExecutor({
+    codexBin: resolved.path,
+    launchEnv,
+    defaultCwd: projectRoot,
+    allowUntrustedReadOnlyBootstrap: true,
+    acceptedCodexVersions: ["9.9.9-not-current"],
+  });
+  await assert.rejects(
+    () => explicitReject.validate(),
+    /unsupported Codex CLI version.*Accepted versions: 9\.9\.9-not-current/is
+  );
 
-const explicitAccept = new CodexAuthorityExecutor({
-  codexBin: resolved.path,
-  defaultCwd: projectRoot,
-  allowUntrustedReadOnlyBootstrap: true,
-  acceptedCodexVersions: [resolved.version],
-});
-const explicitValidation = await explicitAccept.validate();
-assert.equal(explicitValidation.versionPolicy, "allowlist+contract");
-assert.deepEqual(explicitValidation.acceptedCodexVersions, [resolved.version]);
-assert.equal(explicitValidation.compatibilityGate?.status, "pass");
+  const explicitAccept = new CodexAuthorityExecutor({
+    codexBin: resolved.path,
+    launchEnv,
+    defaultCwd: projectRoot,
+    allowUntrustedReadOnlyBootstrap: true,
+    acceptedCodexVersions: [resolved.version],
+  });
+  const explicitValidation = await explicitAccept.validate();
+  assert.equal(explicitValidation.versionPolicy, "allowlist+contract");
+  assert.deepEqual(explicitValidation.acceptedCodexVersions, [resolved.version]);
+  assert.equal(explicitValidation.compatibilityGate?.status, "pass");
 
-console.log(JSON.stringify({
-  passed: true,
-  resolved,
-  checks: {
-    dynamicResolution: true,
-    cliOnlyResolutionWithoutDesktopPrerequisite: true,
-    explicitCodexBinOverrideWins: true,
-    contractFirstDefault: true,
-    readOnlyCommandExecProbe: true,
-    explicitNarrowAllowlistStillAvailable: true,
-  },
-}, null, 2));
+  console.log(JSON.stringify({
+    passed: true,
+    resolved,
+    checks: {
+      dynamicResolution: true,
+      cliOnlyResolutionWithoutDesktopPrerequisite: true,
+      explicitCodexBinOverrideWins: true,
+      contractFirstDefault: true,
+      readOnlyCommandExecProbe: true,
+      explicitNarrowAllowlistStillAvailable: true,
+    },
+  }, null, 2));
+} finally {
+  await rm(stateRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+}
