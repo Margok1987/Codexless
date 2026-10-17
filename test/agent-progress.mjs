@@ -265,6 +265,32 @@ assert.equal(progressSnapshot.progress.latestAgentMessage.truncated, true);
 assert.equal(progressSnapshot.progress.latestAgentMessage.status, "completed");
 assert.equal(progressSnapshot.progress.activeItem, null);
 
+// A bound may fall between UTF-16 surrogate halves; never corrupt valid UTF-8 text.
+const unicodeId = "i".repeat(511) + "🦊";
+fake.emit("turn/plan/updated", {
+  threadId: fake.threadId, turnId: second.turnId,
+  explanation: "e".repeat(8_191) + "🦊",
+  plan: [{ step: "s".repeat(2_047) + "🦊", status: "p".repeat(127) + "🦊" }],
+});
+fake.emit("item/started", {
+  threadId: fake.threadId, turnId: second.turnId,
+  item: { id: unicodeId, type: "agentMessage", phase: "p".repeat(127) + "🦊", text: "🦊" + "x".repeat(8_191) },
+});
+const unicodeProgress = (await executor.show({ agentRef: started.agentRef })).progress;
+for (const [value, expected] of [
+  [unicodeProgress.latestAgentMessage.itemId, "i".repeat(511)],
+  [unicodeProgress.latestAgentMessage.phase, "p".repeat(127)],
+  [unicodeProgress.latestAgentMessage.text, "x".repeat(8_191)],
+  [unicodeProgress.plan.explanation, "e".repeat(8_191)],
+  [unicodeProgress.plan.plan[0].step, "s".repeat(2_047)],
+  [unicodeProgress.plan.plan[0].status, "p".repeat(127)],
+]) {
+  assert.equal(value, expected);
+  assert.equal(value.isWellFormed(), true);
+}
+assert.equal(unicodeProgress.latestAgentMessage.truncated, true);
+assert.equal(unicodeProgress.plan.truncated, true);
+
 // Bounded display IDs may collide; internal message/item identity must stay exact.
 const collisionPrefix = "i".repeat(512);
 const firstCollisionId = collisionPrefix + "-first";
@@ -301,6 +327,22 @@ fake.emit("item/completed", {
   item: { id: firstCollisionId, type: "commandExecution" },
 });
 assert.equal((await executor.show({ agentRef: started.agentRef })).progress.activeItem, null);
+
+// JSON permits unpaired surrogate escapes. Their exact identities must not alias
+// when a UTF-8 encoder would replace both with the same replacement character.
+fake.emit("item/started", {
+  threadId: fake.threadId, turnId: second.turnId,
+  item: { id: "\uD800", type: "agentMessage", text: "FIRST_SURROGATE_MESSAGE" },
+});
+fake.emit("item/agentMessage/delta", {
+  threadId: fake.threadId, turnId: second.turnId, itemId: "\uD801", delta: "SECOND_SURROGATE_MESSAGE",
+});
+assert.equal((await executor.show({ agentRef: started.agentRef })).progress.latestAgentMessage.text, "SECOND_SURROGATE_MESSAGE");
+fake.emit("item/completed", {
+  threadId: fake.threadId, turnId: second.turnId,
+  item: { id: "\uD800", type: "agentMessage" },
+});
+assert.equal((await executor.show({ agentRef: started.agentRef })).progress.latestAgentMessage.text, "");
 
 // Recover terminal state without a completion notification; stale active items must disappear.
 fake.emit("item/started", {
@@ -445,6 +487,44 @@ assert.doesNotMatch(
   JSON.stringify(publicShow.structuredContent.progress),
   /DROP_ME|SECRET_COMMAND|SECRET_OUTPUT|SECRET_REASONING|SECRET_TRANSCRIPT/,
 );
+
+// Field-level truncation must be reported even when the plan contains few steps.
+maliciousSnapshot.progress.latestAgentMessage.phase = "p".repeat(200);
+maliciousSnapshot.progress.latestAgentMessage.status = "s".repeat(200);
+maliciousSnapshot.progress.plan.plan = [{ step: "s".repeat(3_000), status: "p".repeat(200) }];
+maliciousSnapshot.progress.activeItem = {
+  id: "i".repeat(700), type: "t".repeat(200), status: "s".repeat(200),
+  updatedAt: 103, output: "SECRET_OUTPUT_MUST_NOT_LEAK",
+};
+const boundedShow = (await showTool.handler({ agentRef: maliciousSnapshot.agentRef, afterSeq: 0 })).structuredContent;
+assert.equal(boundedShow.progress.latestAgentMessage.phase.length, 128);
+assert.equal(boundedShow.progress.latestAgentMessage.status.length, 128);
+assert.equal(boundedShow.progress.latestAgentMessage.truncated, true);
+assert.equal(boundedShow.progress.plan.explanation.length, 8_192);
+assert.equal(boundedShow.progress.plan.plan.length, 1);
+assert.equal(boundedShow.progress.plan.plan[0].step.length, 2_048);
+assert.equal(boundedShow.progress.plan.plan[0].status.length, 128);
+assert.equal(boundedShow.progress.plan.truncated, true);
+assert.deepEqual(Object.keys(boundedShow.progress.activeItem).sort(), ["id", "status", "type", "updatedAt"]);
+assert.equal(boundedShow.progress.activeItem.id.length, 512);
+assert.equal(boundedShow.progress.activeItem.type.length, 128);
+assert.equal(boundedShow.progress.activeItem.status.length, 128);
+
+maliciousSnapshot.progress.latestAgentMessage.itemId = unicodeId;
+maliciousSnapshot.progress.latestAgentMessage.phase = "p".repeat(127) + "🦊";
+maliciousSnapshot.progress.latestAgentMessage.text = "🦊" + "x".repeat(8_191);
+maliciousSnapshot.progress.plan.explanation = "e".repeat(8_191) + "🦊";
+maliciousSnapshot.progress.plan.plan = [{ step: "s".repeat(2_047) + "🦊", status: "p".repeat(127) + "🦊" }];
+maliciousSnapshot.progress.activeItem.id = unicodeId;
+const unicodePublic = (await showTool.handler({ agentRef: maliciousSnapshot.agentRef, afterSeq: 0 })).structuredContent.progress;
+for (const value of [unicodePublic.latestAgentMessage.itemId, unicodePublic.latestAgentMessage.phase,
+  unicodePublic.latestAgentMessage.text, unicodePublic.plan.explanation, unicodePublic.plan.plan[0].step,
+  unicodePublic.plan.plan[0].status, unicodePublic.activeItem.id]) {
+  assert.equal(value.isWellFormed(), true);
+  assert.equal(Buffer.from(value, "utf8").toString("utf8"), value);
+}
+assert.equal(unicodePublic.latestAgentMessage.truncated, true);
+assert.equal(unicodePublic.plan.truncated, true);
 
 await executor.close();
 console.log("bounded native agent progress PASS");
