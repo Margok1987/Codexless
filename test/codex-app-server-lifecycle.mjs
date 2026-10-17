@@ -213,10 +213,10 @@ test("an isolated RPC timeout does not kill a healthy persistent App Server", { 
 
 test("a late response to a timed-out RPC is discarded without poisoning the protocol", { timeout: 8_000 }, async () => {
   await fixture(async ({ root, spec, setClient }) => {
-    const client = new CodexAppServerClient({ cwd: root, requestTimeoutMs: 75, stderrHandler: () => {}, launch: () => spec });
+    const client = new CodexAppServerClient({ cwd: root, requestTimeoutMs: 2_000, stderrHandler: () => {}, launch: () => spec });
     setClient(client);
     const started = await client.start();
-    await assert.rejects(client.request("late-response", {}), error => error?.name === "CodexRpcTimeoutError");
+    await assert.rejects(client.request("late-response", {}, { timeoutMs: 75 }), error => error?.name === "CodexRpcTimeoutError");
     assert.equal(client.running, true);
     await new Promise(resolve => setTimeout(resolve, 350));
     const healthy = await client.request("healthy-after-late-response", {});
@@ -229,14 +229,14 @@ test("repeated RPC timeouts do not silently kill a live persistent App Server", 
   await fixture(async ({ root, spec, setClient }) => {
     const client = new CodexAppServerClient({
       cwd: root,
-      requestTimeoutMs: 100,
+      requestTimeoutMs: 2_000,
       stderrHandler: () => {},
       launch: () => spec,
     });
     setClient(client);
     const started = await client.start();
-    await assert.rejects(client.request("stall-request", {}), error => error?.name === "CodexRpcTimeoutError");
-    await assert.rejects(client.request("stall-request", {}), error => error?.name === "CodexRpcTimeoutError");
+    await assert.rejects(client.request("stall-request", {}, { timeoutMs: 100 }), error => error?.name === "CodexRpcTimeoutError");
+    await assert.rejects(client.request("stall-request", {}, { timeoutMs: 100 }), error => error?.name === "CodexRpcTimeoutError");
     assert.equal(client.running, true, "client-side timeouts alone must not terminate a live App Server process");
     const healthy = await client.request("healthy-after-repeated-timeouts", {});
     assert.equal(healthy.pid, started.pid);
