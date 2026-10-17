@@ -3,8 +3,7 @@ import test from "node:test";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, writeFile, rm, readFile } from "node:fs/promises";
-import { resolveCodexExecutable } from "../src/codex-bin.mjs";
-import { managedLaunchEnv } from "../src/codex-runtime-provider.mjs";
+import { managedLaunchEnv, resolveManagedRuntime } from "../src/codex-runtime-provider.mjs";
 import { CodexAuthorityExecutor } from "../src/codex-authority-executor.mjs";
 import { CodexAgentExecutor } from "../src/codex-agent-executor.mjs";
 import { CodexAppServerClient } from "../src/codex-app-server-client.mjs";
@@ -33,10 +32,11 @@ for (const policyCase of ["identical", "drift", "redundant-trust"]) {
         : changedPolicy ? baseConfig.replace('"on-request"', '"never"') : baseConfig;
       await writeFile(path.join(authorityHome, "config.toml"), baseConfig);
       await writeFile(path.join(accountHome, "config.toml"), accountConfig);
-      const resolved = await resolveCodexExecutable({ env: { ...process.env, CODEX_BIN: "" } });
+      const isolatedEnv = { ...process.env, HOME: root, USERPROFILE: root, CODEXLESS_MANAGED_CODEX_HOME: authorityHome };
+      const managed = await resolveManagedRuntime({ env: isolatedEnv, stateRoot: root });
+      const resolved = { path: managed.bin, version: managed.version };
       const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
       assert.equal(resolved.version, pkg.dependencies["@openai/codex"], "test must use the exact pinned official Codex");
-      const isolatedEnv = { ...process.env, HOME: root, USERPROFILE: root };
       const authority = new CodexAuthorityExecutor({
         codexBin: resolved.path, profileOverride: ":read-only",
         launchEnv: managedLaunchEnv(isolatedEnv, authorityHome),
