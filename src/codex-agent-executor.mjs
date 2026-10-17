@@ -18,8 +18,12 @@ const MAX_PROGRESS_LABEL_CHARS = 128;
 function boundedProgressString(value, maxChars, { tail = false } = {}) {
   if (typeof value !== "string") return { value: null, truncated: false };
   if (value.length <= maxChars) return { value, truncated: false };
+  let bounded = tail ? value.slice(-maxChars) : value.slice(0, maxChars);
+  // Keep UTF-16 pairs intact so valid Unicode remains valid when encoded as UTF-8.
+  if (tail && /^[\uDC00-\uDFFF]/u.test(bounded)) bounded = bounded.slice(1);
+  if (!tail && /[\uD800-\uDBFF]$/u.test(bounded)) bounded = bounded.slice(0, -1);
   return {
-    value: tail ? value.slice(-maxChars) : value.slice(0, maxChars),
+    value: bounded,
     truncated: true,
   };
 }
@@ -85,7 +89,7 @@ function compactAgentMessage(item, fallback = null, statusOverride = null) {
 }
 
 function progressItemKey(value) {
-  return typeof value === "string" ? createHash("sha256").update(value, "utf8").digest("hex") : null;
+  return typeof value === "string" ? createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex") : null;
 }
 
 function hashRequest(
