@@ -33,6 +33,8 @@ function createIsolatedPublicTestEnv(extra = {}) {
     if (key.startsWith("CODEX_TOOLBOX_") || key.startsWith("CODEXLESS_")) delete env[key];
   }
   Object.assign(env, {
+    HOME: contractStateRoot,
+    USERPROFILE: contractStateRoot,
     CODEX_BIN: codexBin,
     CODEX_HOME: contractCodexHome,
     // Poison legacy Toolwire variables deliberately. A clean Codexless runtime must ignore all of them.
@@ -187,13 +189,14 @@ try {
     [...(steerTool?.inputSchema?.required ?? [])].sort(),
     ["agentRef", "expectedTurnId", "message", "requestId"]
   );
+  assert.equal(steerTool?.inputSchema?.additionalProperties, false);
   for (const forbidden of ["model", "reasoningEffort", "cwd", "permissionProfile", "sandbox", "outputSchema"]) {
     assert.equal(Object.hasOwn(steerTool?.inputSchema?.properties ?? {}, forbidden), false, `agent_steer must not accept ${forbidden}`);
   }
   assert.match(steerTool?.description ?? "", /official turn\/steer/i);
   assert.match(steerTool?.description ?? "", /uncertain.*must not replay|must not replay.*uncertain/i);
   assert.match(showTool?.description ?? "", /bounded native progress/i);
-  assert.match(showTool?.description ?? "", /excludes reasoning text, command output, file diffs/i);
+  assert.match(showTool?.description ?? "", /excludes raw reasoning, command output, file diffs\/patches, MCP payload\/output/i);
   assert.equal(startTool?._meta?.ui?.resourceUri, undefined);
   assert.equal(startTool?._meta?.["openai/outputTemplate"], undefined);
   assert.equal(Object.hasOwn(startTool?.inputSchema?.properties ?? {}, "consentRef"), false);
@@ -213,7 +216,7 @@ try {
     name: "codex.agent_start",
     arguments: { prompt, requestId, invocationRationale: "Public contract probe for fixed-text approval." },
   });
-  assert.equal(prepared.isError, false);
+  assert.equal(prepared.isError, false, JSON.stringify(prepared.structuredContent ?? prepared.content));
   assert.equal(prepared.structuredContent?.status, "consent_required");
   assert.equal(prepared.structuredContent?.turnId, null);
   assert.equal(prepared.structuredContent?.agentRef, null);
@@ -399,3 +402,5 @@ try {
 } finally {
   await stopHttpChild();
 }
+
+console.log("public contract PASS: 47 tools over stdio and HTTP; strict schemas, consent, SSH and private-diagnostics boundaries");

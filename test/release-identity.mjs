@@ -98,6 +98,25 @@ const second = await buildReleaseManifest({
 assert.equal(first.buildId, second.buildId, "the same release tree must produce the same buildId twice");
 assert.deepEqual(first.files, second.files, "the same release tree must produce the same ordered file manifest twice");
 assert.equal(first.productId, "codexless");
+
+// Validate npm's real file selection, not just the source checkout. An omitted
+// launcher makes the packed artifact inconsistent even when its source tests pass.
+const packArgs = ["pack", "--dry-run", "--ignore-scripts", "--json"];
+const packed = JSON.parse(execFileSync(
+  process.platform === "win32" ? "cmd.exe" : "npm",
+  process.platform === "win32" ? ["/d", "/c", "npm.cmd", ...packArgs] : packArgs,
+  { cwd: projectRoot, encoding: "utf8", windowsHide: true, timeout: 30_000 }
+))[0];
+const packedPaths = new Set(packed.files.map((entry) => entry.path));
+const releasePaths = new Set([...first.files.map((entry) => entry.path), RELEASE_MANIFEST_RELATIVE_PATH]);
+assert.deepEqual(
+  [...releasePaths].filter((entry) => !packedPaths.has(entry)), [],
+  "npm package must contain every manifest payload file and the release manifest"
+);
+assert.deepEqual(
+  [...packedPaths].filter((entry) => !releasePaths.has(entry)), [],
+  "npm package must not include unmanifested/private development or user-state files"
+);
 assert.equal(first.version, packageJson.version, "manifest version must be read from package.json");
 assert.equal(first.sourceRevision, null, "sourceRevision must remain explicit null when not injected");
 assert.equal(first.hostContractVersion, PUBLIC_SURFACE_VERSION, "PUBLIC_SURFACE_VERSION is the host contract authority");

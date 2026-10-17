@@ -25,47 +25,78 @@ function publicEvent(event) {
   return Object.fromEntries(Object.entries(event).filter(([key]) => EVENT_KEYS.has(key)));
 }
 
+function boundedPublicProgressString(value, maxChars, { tail = false } = {}) {
+  if (typeof value !== "string") return { value: null, truncated: false };
+  if (value.length <= maxChars) return { value, truncated: false };
+  let bounded = tail ? value.slice(-maxChars) : value.slice(0, maxChars);
+  // Keep UTF-16 pairs intact so valid Unicode remains valid when encoded as UTF-8.
+  if (tail && /^[\uDC00-\uDFFF]/u.test(bounded)) bounded = bounded.slice(1);
+  if (!tail && /[\uD800-\uDBFF]$/u.test(bounded)) bounded = bounded.slice(0, -1);
+  return {
+    value: bounded,
+    truncated: true,
+  };
+}
+
 function publicProgress(progress) {
   if (!progress || typeof progress !== "object") {
     return { latestAgentMessage: null, plan: null, activeItem: null };
   }
 
-  const latest = progress.latestAgentMessage && typeof progress.latestAgentMessage === "object"
+  const sourceMessage = progress.latestAgentMessage && typeof progress.latestAgentMessage === "object"
+    ? progress.latestAgentMessage
+    : null;
+  const messageText = boundedPublicProgressString(sourceMessage?.text, 8_192, { tail: true });
+  const messageItemId = boundedPublicProgressString(sourceMessage?.itemId, 512);
+  const messagePhase = boundedPublicProgressString(sourceMessage?.phase, 128);
+  const messageStatus = boundedPublicProgressString(sourceMessage?.status, 128);
+  const latestAgentMessage = sourceMessage
     ? {
-        itemId: typeof progress.latestAgentMessage.itemId === "string" ? progress.latestAgentMessage.itemId : null,
-        phase: typeof progress.latestAgentMessage.phase === "string" ? progress.latestAgentMessage.phase : null,
-        text: typeof progress.latestAgentMessage.text === "string" ? progress.latestAgentMessage.text.slice(-8_192) : "",
-        truncated: progress.latestAgentMessage.truncated === true,
-        status: typeof progress.latestAgentMessage.status === "string" ? progress.latestAgentMessage.status : null,
-        updatedAt: Number.isFinite(progress.latestAgentMessage.updatedAt) ? progress.latestAgentMessage.updatedAt : null,
+        itemId: messageItemId.value,
+        phase: messagePhase.value,
+        text: messageText.value ?? "",
+        truncated: sourceMessage.truncated === true || messageText.truncated || messageItemId.truncated
+          || messagePhase.truncated || messageStatus.truncated,
+        status: messageStatus.value,
+        updatedAt: Number.isFinite(sourceMessage.updatedAt) ? sourceMessage.updatedAt : null,
       }
     : null;
 
-  const rawPlan = progress.plan && typeof progress.plan === "object" ? progress.plan : null;
-  const plan = rawPlan
+  const sourcePlan = progress.plan && typeof progress.plan === "object" ? progress.plan : null;
+  const rawPlan = Array.isArray(sourcePlan?.plan) ? sourcePlan.plan : [];
+  const explanation = boundedPublicProgressString(sourcePlan?.explanation, 8_192);
+  let planTruncated = sourcePlan?.truncated === true || rawPlan.length > 64 || explanation.truncated;
+  const planEntries = rawPlan.slice(0, 64).map((entry) => {
+    const step = boundedPublicProgressString(entry?.step, 2_048);
+    const status = boundedPublicProgressString(entry?.status, 128);
+    planTruncated ||= step.truncated || status.truncated;
+    return { step: step.value ?? "", status: status.value };
+  });
+  const plan = sourcePlan
     ? {
-        explanation: typeof rawPlan.explanation === "string" ? rawPlan.explanation.slice(0, 8_192) : null,
-        plan: Array.isArray(rawPlan.plan)
-          ? rawPlan.plan.slice(0, 64).map((entry) => ({
-              step: typeof entry?.step === "string" ? entry.step.slice(0, 2_048) : "",
-              status: typeof entry?.status === "string" ? entry.status : null,
-            }))
-          : [],
-        truncated: rawPlan.truncated === true || (Array.isArray(rawPlan.plan) && rawPlan.plan.length > 64),
-        updatedAt: Number.isFinite(rawPlan.updatedAt) ? rawPlan.updatedAt : null,
+        explanation: explanation.value,
+        plan: planEntries,
+        truncated: planTruncated,
+        updatedAt: Number.isFinite(sourcePlan.updatedAt) ? sourcePlan.updatedAt : null,
       }
     : null;
 
-  const active = progress.activeItem && typeof progress.activeItem === "object"
+  const sourceActive = progress.activeItem && typeof progress.activeItem === "object"
+    ? progress.activeItem
+    : null;
+  const activeId = boundedPublicProgressString(sourceActive?.id, 512);
+  const activeType = boundedPublicProgressString(sourceActive?.type, 128);
+  const activeStatus = boundedPublicProgressString(sourceActive?.status, 128);
+  const activeItem = sourceActive
     ? {
-        id: typeof progress.activeItem.id === "string" ? progress.activeItem.id : null,
-        type: typeof progress.activeItem.type === "string" ? progress.activeItem.type : "unknown",
-        status: typeof progress.activeItem.status === "string" ? progress.activeItem.status : null,
-        updatedAt: Number.isFinite(progress.activeItem.updatedAt) ? progress.activeItem.updatedAt : null,
+        id: activeId.value,
+        type: activeType.value ?? "unknown",
+        status: activeStatus.value,
+        updatedAt: Number.isFinite(sourceActive.updatedAt) ? sourceActive.updatedAt : null,
       }
     : null;
 
-  return { latestAgentMessage: latest, plan, activeItem: active };
+  return { latestAgentMessage, plan, activeItem };
 }
 
 function publicPendingApproval(pendingApproval) {
@@ -2634,7 +2665,7 @@ export function registerAgentPreviewTools(server, {
     {
       title: "Show Codex Agent",
       description:
-        "Experimental Preview. Read the bounded operational state of one Codexless-owned Codex agent by opaque agentRef. Returns status, sendability, minimal pending-approval summary, a conservative approvalRiskReference, final result, bounded native progress (latest agent message, latest plan, and active item identity), and a bounded event tail. Progress is deliberately not a Codex transcript: it excludes reasoning text, command output, file diffs, and prior message history. approvalRiskReference is internal default guidance for the common 'handle routine low-risk actions for me' instruction, not a server-side decision and not an override of a more specific user-authored Profile rule. The caller must apply the in-turn priority rule to each pending action: explicit current-task user instruction first, otherwise the valid bound Profile, and the recommended default only when the Profile is missing. If the user expresses a durable preference such as 'don't ask me about this kind next time' or 'always ask me before this kind', offer to update the Profile and persist only after explicit confirmation.",
+        "Experimental Preview. Read the bounded operational state of one Codexless-owned Codex agent by opaque agentRef. Returns status, sendability, minimal pending-approval summary, a conservative approvalRiskReference, final result, bounded native progress (latest agent message, latest plan, and active item identity/status), and a bounded event tail. Progress is deliberately not a Codex transcript: it excludes raw reasoning, command output, file diffs/patches, MCP payload/output, and prior message history. approvalRiskReference is internal default guidance for the common 'handle routine low-risk actions for me' instruction, not a server-side decision and not an override of a more specific user-authored Profile rule. The caller must apply the in-turn priority rule to each pending action: explicit current-task user instruction first, otherwise the valid bound Profile, and the recommended default only when the Profile is missing. If the user expresses a durable preference such as 'don't ask me about this kind next time' or 'always ask me before this kind', offer to update the Profile and persist only after explicit confirmation.",
       inputSchema: z.object({
         agentRef: z.string().min(1).max(512),
         afterSeq: z.number().int().min(0).optional(),
@@ -2680,7 +2711,8 @@ export function registerAgentPreviewTools(server, {
         clientRequestId: requestId,
       });
       const card = cardForAgent(snapshot?.agentRef ?? agentRef);
-      return publicAgentSnapshot(snapshot, card);
+      const record = card?.taskRef ? taskRecords.get(card.taskRef) ?? null : null;
+      return publicAgentSnapshot(snapshot, card, { portableTaskBody: record?.portableTaskBody ?? null });
     })
   );
 

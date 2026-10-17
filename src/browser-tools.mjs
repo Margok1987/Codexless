@@ -1,7 +1,48 @@
 import { createRequire } from "node:module";
+import { BROWSER_FALLBACK_CALLER_CONTRACT, BROWSER_FALLBACK_CONTINUATION_FIELD } from "./browser-elicitation-bridge.mjs";
 
 const require = createRequire(import.meta.url);
 const z = require("zod/v4");
+
+const browserFallbackContinuationSchema = z.object({
+  requestState: z.string().min(1).max(8_192),
+  response: z.object({
+    action: z.enum(["accept", "decline", "cancel"]),
+  }).strict(),
+}).strict().describe(
+  "Compatibility continuation for a Browser permission request when the MCP client cannot render native elicitation. " +
+  "The signed requestState is bound to the exact Browser tool and original business arguments. " +
+  BROWSER_FALLBACK_CALLER_CONTRACT
+);
+
+// These executor paths claim/read a page, create/navigate a tab, or dispatch a
+// page action. Preparation that inspects live DOM also needs origin permission.
+// Status, policy, reset, tab listing, and prepare open/navigate/close/bulk-close
+// only inspect control state or tab-list metadata and must not expose resumable input.
+const browserElicitationTools = new Set([
+  "codex.browser_read",
+  "codex.browser_discover_elements",
+  "codex.browser_prepare_element_action",
+  "codex.browser_element_action",
+  "codex.browser_webmcp_discover",
+  "codex.browser_webmcp_call",
+  "codex.browser_screenshot",
+  "codex.browser_close_tab",
+  "codex.browser_bulk_close_tabs",
+  "codex.browser_open_tab",
+  "codex.browser_scroll",
+  "codex.browser_keypress",
+  "codex.browser_model_route_probe",
+  "codex.browser_navigate",
+  "codex.browser_prepare_click",
+  "codex.browser_click",
+  "codex.browser_prepare_download",
+  "codex.browser_download",
+  "codex.browser_prepare_upload",
+  "codex.browser_upload",
+  "codex.browser_prepare_fill",
+  "codex.browser_fill",
+]);
 
 export function registerBrowserPreviewTools(server, browser, { elicitationBridge = null } = {}) {
   if (!browser) return;
@@ -557,16 +598,34 @@ export function registerBrowserPreviewTools(server, browser, { elicitationBridge
 function browserElicitationRegistrationServer(server, elicitationBridge) {
   return {
     registerTool(name, ...args) {
+      // In particular, the policy helper must remain callable while page work
+      // waits for the caller's decision; it cannot enter that pending operation.
+      if (!browserElicitationTools.has(name)) return server.registerTool(name, ...args);
+      const options = args[0];
+      if (options?.inputSchema && typeof options.inputSchema.extend === "function") {
+        args[0] = {
+          ...options,
+          inputSchema: options.inputSchema.extend({
+            [BROWSER_FALLBACK_CONTINUATION_FIELD]: browserFallbackContinuationSchema.optional(),
+          }),
+        };
+      }
+
       const handlerIndex = args.length - 1;
       const handler = args[handlerIndex];
       if (typeof handler === "function") {
         args[handlerIndex] = async (input, ctx) => {
+          const {
+            [BROWSER_FALLBACK_CONTINUATION_FIELD]: fallbackContinuation = null,
+            ...businessInput
+          } = input;
           try {
             return await elicitationBridge.run({
               toolName: name,
-              input,
+              input: businessInput,
               mcpReq: ctx?.mcpReq ?? null,
-              task: () => handler(input, ctx),
+              fallbackContinuation,
+              task: () => handler(businessInput, ctx),
             });
           } catch (error) {
             const payload = browserErrorPayload(error);

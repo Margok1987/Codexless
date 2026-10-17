@@ -75,6 +75,8 @@ The public Browser surface supports both **Chrome and Edge**:
 
 Browser work uses the selected local browser profile and its existing site login state. Local file upload additionally requires the ChatGPT browser extension's **Allow access to file URLs** setting.
 
+Website access follows ChatGPT's **Agent permissions**. If default Browsing is **Requires approval**, first access to a new origin can require approval; **Always allow** removes those per-site browsing prompts while site-specific exceptions still apply. Codexless does not bypass or silently widen those permissions.
+
 Codexless does **not** expose arbitrary JavaScript, raw selectors, arbitrary coordinates, unrestricted keyboard input, generic CDP, or automatic Computer Use fallback on the public surface.
 
 ### Live Excel / Document Control
@@ -141,6 +143,14 @@ The operation requires a currently exhausted Codex limit, verifies the selected 
 - **ChatGPT-side availability (as of this release):** OpenAI currently documents full write/modify custom MCP support for Business, Enterprise and Edu on ChatGPT web; Pro developer mode can connect read/fetch MCPs, and MCP apps are not currently available on mobile. Codexless is not currently a Plugin Directory listing. Check current OpenAI availability before installing because this surface changes independently of Codexless.
 - **How local access works:** ChatGPT does not connect directly to `localhost`. A typical path is **local Codexless → authenticated Tunnel / remote MCP endpoint → a ChatGPT custom app / developer-mode MCP connection**.
 - **Independent project:** Codexless is not an OpenAI product and does not imply OpenAI endorsement.
+
+---
+
+## External launcher contract
+
+For the existing entry, runtime configuration, health probes, shutdown paths, and current limitations
+of external companion integration in 0.1.2 Preview, see the
+[external launcher contract](docs/EXTERNAL_LAUNCHER_CONTRACT.md).
 
 ---
 

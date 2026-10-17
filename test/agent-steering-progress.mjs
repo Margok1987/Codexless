@@ -163,6 +163,7 @@ assert.deepEqual(progress.progress.activeItem, {
   id: "cmd-1",
   type: "commandExecution",
   status: "inProgress",
+  truncated: false,
   updatedAt: progress.progress.activeItem.updatedAt,
 });
 assert.doesNotMatch(JSON.stringify(progress.progress), /SHOULD_NOT_APPEAR|--secret|value/);

@@ -159,7 +159,7 @@ async function runScenarios() {
     "doctor line one",
     'quoted \"hello world\"',
     String.raw`backslash C:\fixture\doctor`,
-    "Unicode ç‹ðŸ¦Š",
+    "Unicode 狐🦊",
   ].join("\n");
   const stageFailure = runInstaller(releaseC, mainInstall, { doctorFail: "stage", doctorFailureDetail });
   assert.notEqual(stageFailure.status, 0);
